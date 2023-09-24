@@ -1,0 +1,11 @@
+Augmentation,Probability,Low Bound,High Bound,Value
+Image Depth,,,,64
+Image Height,,,,192
+Image Width,,,,192
+Rescaling,0.33,0.75,1.25,
+Vertical Flip,0.5,,,
+Horizontal Flip,0.5,,,
+Gaussian Blur,0.33,,,3
+Adjust Contrast,0.5,0.75,1.5,
+Adjust Gamma,0.5,0.8,1.3,
+Simulate Low Resolution,0.5,1.05,2,
