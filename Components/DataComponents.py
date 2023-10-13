@@ -17,15 +17,26 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 def get_label_fname(fname):
     return 'Labels_' + fname
 
+
 # 输入图像或者标签的路径，得到已标准化的图像张量或者标签的张量
-def path_to_tensor(path, label=False):
-    # imread()将文件读取成一个numpy array
+def path_to_tensor(path, label=False, auto_normalise=True):
     # ToTensor()对16位图不方便，因此才用这招
     img = imageio.v3.imread(path)
     if not label:
-        max_value = np.iinfo(img.dtype).max if img.dtype.kind == 'u' else np.finfo(img.dtype).max
-        img = (img/max_value).astype(np.float32)
-    # from_numpy()则将numpy array转换成张量
+        if auto_normalise:
+            # Calculate the low and high threshold values
+            zero_point_one_percent_low = np.percentile(img, 0.1)
+            zero_point_one_percent_high = np.percentile(img, 99.9)
+
+            # Clip the values to be within the specified range
+            img = np.clip(img, zero_point_one_percent_low, zero_point_one_percent_high)
+
+            # Normalize to the range [0, 1]
+            img = (img - zero_point_one_percent_low) / (zero_point_one_percent_high - zero_point_one_percent_low)
+            img = img.astype(np.float32)
+        else:
+            max_value = np.iinfo(img.dtype).max if img.dtype.kind == 'u' else np.finfo(img.dtype).max
+            img = (img/max_value).astype(np.float32)
     return torch.from_numpy(img)
 
 
