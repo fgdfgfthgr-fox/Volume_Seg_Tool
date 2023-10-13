@@ -12,7 +12,7 @@ class GhostModule3D(nn.Module):
                    (kernel_size[1] - 1) // 2,
                    (kernel_size[2] - 1) // 2)
         self.primary_conv = nn.Sequential(
-            nn.Conv3d(in_channels, out_channels // 2, kernel_size=kernel_size, padding=padding),
+            nn.Conv3d(in_channels, out_channels // 2, kernel_size=1),
             nn.BatchNorm3d(out_channels // 2),
             nn.ReLU(),
         )
