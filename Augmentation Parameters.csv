@@ -1,7 +1,7 @@
 Augmentation,Probability,Low Bound,High Bound,Value
-Image Depth,,,,64
-Image Height,,,,192
-Image Width,,,,192
+Image Depth,,,,80
+Image Height,,,,160
+Image Width,,,,160
 Rescaling,0.33,0.75,1.25,
 Vertical Flip,0.5,,,
 Horizontal Flip,0.5,,,
