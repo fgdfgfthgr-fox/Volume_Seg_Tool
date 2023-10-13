@@ -12,13 +12,21 @@ from .Modules import General_Components as Modules
 class UNet(nn.Module):
     def __init__(self, base_channels=64, bn=True, depth=5):
         super(UNet, self).__init__()
-        self.encode1 = Modules.DoubleConv3D(1, base_channels, bn=bn)
-        self.decode1 = Modules.DoubleConv3D(base_channels, base_channels, bn=bn)
-
         self.depth = depth
-        for i in range(2, depth+1):
-            setattr(self, f'encode{i}', Modules.Down3D(base_channels * (2**(i-2)), base_channels * (2**(i-1)), bn=bn))
-            setattr(self, f'decode{i}', Modules.Up3D(base_channels * (2**(i-1)), base_channels * (2**(i-2)), bn=bn))
+        assert depth >= 3, "The depth needs to be at least 3."
+
+        for i in range(1, depth):
+            if i == 1:
+                setattr(self, f'encode{i}',
+                        Modules.DoubleConv3D(1, base_channels * (2 ** (i - 1)), bn=bn))
+                setattr(self, f'decode{i}',
+                        Modules.Up3D(base_channels * (2 ** i), base_channels * (2 ** (i - 1)), bn=bn))
+            else:
+                setattr(self, f'encode{i}', Modules.Down3D(base_channels * (2**(i-2)), base_channels * (2**(i-1)), bn=bn))
+                setattr(self, f'decode{i}', Modules.Up3D(base_channels * (2**i), base_channels * (2**(i-1)), bn=bn))
+
+        setattr(self, f'bottleneck{depth}',
+                Modules.Down3D(base_channels * (2 ** (depth - 2)), base_channels * (2 ** (depth - 1)), bn=bn))
 
         self.out = nn.Sequential(nn.Conv3d(base_channels, 1, kernel_size=1),
                                  nn.Sigmoid())
@@ -27,15 +35,14 @@ class UNet(nn.Module):
         encode_features = []
         x = input
 
-        for i in range(1, self.depth+1):
+        for i in range(1, self.depth):
             x = getattr(self, f"encode{i}")(x)
             encode_features.append(x)
 
-        for i in reversed(range(1, self.depth + 1)):
-            if i != 1:
-                x = getattr(self, f"decode{i}")(x, encode_features[i-2])
-            else:
-                x = getattr(self, f"decode{i}")(x)
+        x = getattr(self, f"bottleneck{self.depth}")(x)
+
+        for i in reversed(range(1, self.depth)):
+            x = getattr(self, f"decode{i}")(x, encode_features[i-1])
 
         output = self.out(x)
         return output
