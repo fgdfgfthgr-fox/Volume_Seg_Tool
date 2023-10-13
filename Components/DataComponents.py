@@ -197,12 +197,21 @@ class Train_Dataset(torch.utils.data.Dataset):
 
 
 class Val_Dataset(torch.utils.data.Dataset):
-    def __init__(self, images_dir, depth=64, height=128, width=128):
+    def __init__(self, images_dir, augmentation_csv):
         # Get a list of file paths for images and labels
         self.file_list = make_dataset_tv(images_dir)
         self.num_files = len(self.file_list)
         tensors_pairs = [(path_to_tensor(item[0], label=False), path_to_tensor(item[1], label=True)) for item in self.file_list]
         self.chopped_tensor_pairs = []
+        self.augmentation_params = pd.read_csv(augmentation_csv)
+        for _, row in self.augmentation_params.iterrows():
+            k = row['Augmentation']
+            if k == 'Image Depth':
+                depth = int(row['Value'])
+            elif k == 'Image Height':
+                height = int(row['Value'])
+            elif k == 'Image Width':
+                width = int(row['Value'])
         for pairs in tensors_pairs:
             self.depth, self.height, self.width = pairs[0].shape
             self.depth_multiplier = math.ceil(self.depth / depth)
@@ -294,11 +303,12 @@ class Val_Dataset_OUTDATED(torch.utils.data.Dataset):
 
 # 自定义的数据集结构，用于存储预测数据
 class Predict_Dataset(torch.utils.data.Dataset):
-    def __init__(self, images_dir, hw_size=512, depth_size=12, hw_overlap=32):
+    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
         self.file_list = make_dataset_predict(images_dir)
         self.hw_size = hw_size
         self.depth_size = depth_size
         self.hw_overlap = hw_overlap
+        self.depth_overlap = depth_overlap
         self.img_list = [path_to_tensor(file, label=False) for file in self.file_list]
         # Get the size of all tensors in img_list, assume all tensors in img_list are the same size
         self.depth = self.img_list[0].shape[0]
@@ -312,9 +322,12 @@ class Predict_Dataset(torch.utils.data.Dataset):
         # Padding and cropping
         self.padded_img_list = []
         for img_tensor in self.img_list:
-            paddings = (self.hw_overlap, self.width_multiplier * self.hw_size + self.hw_overlap - self.width,
-                        self.hw_overlap, self.height_multiplier * self.hw_size + self.hw_overlap - self.height,
-                        0, 0)
+            paddings = (self.hw_overlap,
+                        (self.width_multiplier * self.hw_size - self.width) + self.hw_overlap,
+                        self.hw_overlap,
+                        (self.height_multiplier * self.hw_size - self.height) + self.hw_overlap,
+                        self.depth_overlap,
+                        (self.depth_multiplier * self.depth_size - self.depth) + self.depth_overlap)
             img_tensor = img_tensor[None, :]
             img_tensor = F.pad(img_tensor, paddings, mode="constant")
             # Loop through each depth, height, and width index
@@ -322,8 +335,8 @@ class Predict_Dataset(torch.utils.data.Dataset):
                 for height_idx in range(self.height_multiplier):
                     for width_idx in range(self.width_multiplier):
                         # Calculate the start and end indices for depth, height, and width
-                        depth_start = min(depth_idx * self.depth_size, self.depth - self.depth_size)
-                        depth_end = min(depth_start + self.depth_size, self.depth)
+                        depth_start = depth_idx * self.depth_size
+                        depth_end = depth_start + self.depth_size + self.depth_overlap * 2
                         height_start = height_idx * self.hw_size
                         height_end = height_start + self.hw_size + self.hw_overlap * 2
                         width_start = width_idx * self.hw_size
@@ -405,10 +418,10 @@ class Cross_Validation_Dataset(torch.utils.data.Dataset):
         return img_tensor, lab_tensor
 
 
-def stitch_output_volumes(output_volumes, original_volume, hw_size=512, depth_size=12, overlap_size=32):
-    depth = original_volume[0]
-    height = original_volume[1]
-    width = original_volume[2]
+def stitch_output_volumes(input_volumes, original_shape, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
+    depth = original_shape[0]
+    height = original_shape[1]
+    width = original_shape[2]
     depth_multiplier = math.ceil(depth / depth_size)
     height_multiplier = math.ceil(height / hw_size)
     width_multiplier = math.ceil(width / hw_size)
@@ -421,11 +434,11 @@ def stitch_output_volumes(output_volumes, original_volume, hw_size=512, depth_si
         depth_idx = math.floor(i / tensors_in_1_layer) % depth_multiplier
         height_idx = math.floor(i / width_multiplier) % height_multiplier
         width_idx = i % width_multiplier
-        tensor_work_with = output_volumes[i][:,
-                                             overlap_size:-overlap_size,
-                                             overlap_size:-overlap_size]
-        depth_start = min(depth_idx * depth_size, depth - depth_size)
-        depth_end = min(depth_start + depth_size, depth)
+        tensor_work_with = input_volumes[i][depth_overlap:-depth_overlap,
+                                            hw_overlap:-hw_overlap,
+                                            hw_overlap:-hw_overlap]
+        depth_start = depth_idx * depth_size
+        depth_end = depth_start + depth_size
         height_start = height_idx * hw_size
         height_end = height_start + hw_size
         width_start = width_idx * hw_size
@@ -435,7 +448,7 @@ def stitch_output_volumes(output_volumes, original_volume, hw_size=512, depth_si
     return result_volume
 
 
-def predictions_to_final_img(predictions, direc, original_volume, hw_size=512, depth_size=12, hw_overlap=32):
+def predictions_to_final_img(predictions, direc, original_volume, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
     tensor_list = []
     for prediction in predictions:  # 将这些输出张量项目从predictions里拿出来
         # 分割prediction，形成包含了多个元素（图片张量）的元组，每个元素的Batch维度都是1
@@ -445,9 +458,10 @@ def predictions_to_final_img(predictions, direc, original_volume, hw_size=512, d
             single_tensor = torch.squeeze(single_tensor, (0, 1))
             list.append(tensor_list, single_tensor)
 
-    full_image = stitch_output_volumes(tensor_list, original_volume, hw_size, depth_size, hw_overlap)
+    full_image = stitch_output_volumes(tensor_list, original_volume, hw_size, depth_size, hw_overlap, depth_overlap)
     array = np.asarray(full_image)
     imageio.v3.imwrite(uri=f'{direc}/full_prediction.tif', image=np.uint8(array))
+
 
 
 # 这里的函数用于测试各个组件是否能正常运作
