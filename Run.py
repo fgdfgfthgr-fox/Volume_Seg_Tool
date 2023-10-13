@@ -33,7 +33,7 @@ SAVE_MODEL = True
 # The name which it would be saved as
 SAVE_MODEL_NAME = "placeholder.pth"
 # Use the model to predict the segmentation of predict dataset.
-ENABLE_PREDICT = False
+ENABLE_PREDICT = True
 # The csv file containing the parameters for image augmentation.
 CSV = "Augmentation Parameters.csv"
 
@@ -44,8 +44,10 @@ PATH_TO_TRAIN_DATASET = "Datasets/train"
 TRAIN_BATCH_SIZE = 1
 # The number of epochs which the network will be trained for, the larger it is, the longer the training takes.
 TRAIN_EPOCHS = 100
+# Increase the effective number of training samples in each epoch by this factor.
+TRAIN_MULTIPLIER = 8
 # Determine the size of the network, higher means more channels in each layer, and hence runs slower and more accurate.
-NETWORK_SIZE = 8
+NETWORK_SIZE = 6
 # The learning rate in which the network will start with.
 BASE_LEARNING_RATE = 0.002
 # Reduce learning rate by half when this number of epochs has passed and there's no decrease in loss.
@@ -67,10 +69,12 @@ HW_SIZE = 128
 # Same as above but is depth.
 DEPTH_SIZE = 64
 # The overlaps in height and width between each adjacent sub-pictures. Larger means more accurate segmentation, but takes more VRAM.
-HW_OVERLAP = 32
+HW_OVERLAP = 16
+# Same as above but is depth.
+DEPTH_OVERLAP = 16
 
 # The architecture of the network
-NETWORK_ARCH = UNets.UNet(base_channels=NETWORK_SIZE)
+NETWORK_ARCH = UNets.UNet(base_channels=NETWORK_SIZE, depth=3)
 
 def start_tensorboard():
     subprocess.run("tensorboard --logdir='lightning_logs'", shell=True)
@@ -138,7 +142,8 @@ class PLModule(pl.LightningModule):
             self.logger.experiment.add_scalar(f"{prefix}/Dice", epoch_averages[1], self.current_epoch + 1)
             self.logger.experiment.add_scalar(f"{prefix}/Sensitivity", epoch_averages[2], self.current_epoch + 1)
             self.logger.experiment.add_scalar(f"{prefix}/Specificity", epoch_averages[3], self.current_epoch + 1)
-            vram_usage = torch.cuda.max_memory_reserved(device)/(1024*1024)
+            vram_data = torch.cuda.mem_get_info()
+            vram_usage = (vram_data[1] - vram_data[0]) / (1024 ** 2)
             self.logger.experiment.add_scalar(f"{prefix}/VRAM Usage (MB)", vram_usage, self.current_epoch + 1)
             metrics_list.clear()
 
@@ -154,17 +159,17 @@ class PLModule(pl.LightningModule):
 if __name__ == "__main__":
     torch.set_float32_matmul_precision('medium')
     if ENABLE_TRAINING:
-        train_dataset = DataComponents.Train_Dataset(PATH_TO_TRAIN_DATASET, CSV)
+        train_dataset = DataComponents.Train_Dataset(PATH_TO_TRAIN_DATASET, CSV, TRAIN_MULTIPLIER)
         train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=TRAIN_BATCH_SIZE,
                                                    shuffle=True, num_workers=0)
         if ENABLE_VAL:
-            val_dataset = DataComponents.Val_Dataset(PATH_TO_VAL_DATASET)
+            val_dataset = DataComponents.Val_Dataset(PATH_TO_VAL_DATASET, CSV)
             val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=TRAIN_BATCH_SIZE,
                                                      num_workers=0)
         else:
             val_loader = None
         if ENABLE_TEST:
-            test_dataset = DataComponents.Val_Dataset(PATH_TO_TEST_DATASET)
+            test_dataset = DataComponents.Val_Dataset(PATH_TO_TEST_DATASET, CSV)
             test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=TRAIN_BATCH_SIZE,
                                                       num_workers=0)
     if READ_EXISTING_NETWORK:
@@ -178,7 +183,7 @@ if __name__ == "__main__":
         tensorboard_thread.start()
         trainer = pl.Trainer(max_epochs=TRAIN_EPOCHS, log_every_n_steps=1, logger=logger,# profiler="simple",
                              accelerator="gpu", enable_checkpointing=False,# gradient_clip_val=0.001,
-                             precision=32, enable_progress_bar=True, accumulate_grad_batches=16)
+                             precision=32, enable_progress_bar=True)
         #print(subprocess.run("tensorboard --logdir='lightning_logs'", shell=True))
         start_time = time.time()
         trainer.fit(model,
@@ -197,7 +202,8 @@ if __name__ == "__main__":
                              #profiler="simple"
                              )
         predict_dataset = DataComponents.Predict_Dataset(PATH_TO_PREDICT_DATASET,
-                                                         hw_size=HW_SIZE, depth_size=DEPTH_SIZE, hw_overlap=HW_OVERLAP)
+                                                         hw_size=HW_SIZE, depth_size=DEPTH_SIZE,
+                                                         hw_overlap=HW_OVERLAP, depth_overlap=DEPTH_OVERLAP)
         predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
         # predictions = 一个list，包含了维度是(b,深度,高度,宽度)的输出张量(没有C！)
         original_volume = predict_dataset.__getoriginalvol__()
@@ -207,4 +213,5 @@ if __name__ == "__main__":
         elapsed_time = end_time - start_time
         print(f"Elapsed time: {elapsed_time} seconds")
         DataComponents.predictions_to_final_img(predictions, direc=PATH_TO_RESULT, original_volume=original_volume,
-                                                hw_size=HW_SIZE, depth_size=DEPTH_SIZE, hw_overlap=HW_OVERLAP)
+                                                hw_size=HW_SIZE, depth_size=DEPTH_SIZE,
+                                                hw_overlap=HW_OVERLAP, depth_overlap=DEPTH_OVERLAP)
