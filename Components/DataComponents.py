@@ -329,7 +329,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
                         self.depth_overlap,
                         (self.depth_multiplier * self.depth_size - self.depth) + self.depth_overlap)
             img_tensor = img_tensor[None, :]
-            img_tensor = F.pad(img_tensor, paddings, mode="constant")
+            img_tensor = F.pad(img_tensor, paddings, mode="reflect")
             # Loop through each depth, height, and width index
             for depth_idx in range(self.depth_multiplier):
                 for height_idx in range(self.height_multiplier):
