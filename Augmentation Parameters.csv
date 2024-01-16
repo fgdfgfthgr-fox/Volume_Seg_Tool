@@ -1,0 +1,20 @@
+Augmentation,Probability,Low Bound,High Bound,Value
+Image Depth,,,,64
+Image Height,,,,256
+Image Width,,,,256
+Vertical Flip,0.5,0,,
+Horizontal Flip,0.5,0,,
+Rescaling,0.33,0.75,1.25,
+Gaussian Blur,0.33,,,5
+Adjust Contrast,0.75,0.5,1.5,
+Adjust Gamma,0.75,0.33,1.75,
+Adjust Brightness,0.75,0.75,1.25,
+Simulate Low Resolution,0.33,1.05,2,
+Rotate xy,0.33,0,270,
+Rotate xz,0,0,270,
+Rotate yz,0,0,270,
+Gradient Gamma,0.5,0.5,1,
+Gradient Contrast,0.5,0.75,1.25,
+Salt And Pepper,0.25,0.005,0.01,
+Label Blur,0,,,3
+Contour Blur,0,,,3
