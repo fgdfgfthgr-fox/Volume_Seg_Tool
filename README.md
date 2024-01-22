@@ -54,7 +54,7 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/).
 3. Open a terminal and navigate to the desired installation directory.
 4. Clone the repository by running the following command:
    ```shell
-   git clone [remember to add the respository]
+   git clone https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool.git
    ```
 5. Run the corresponding "install_dependencies" script for your system.
    - For Windows, it would be install_dependencies_Windows.bat
@@ -81,4 +81,4 @@ The example dataset included in this repository was collected by [Vincent Casser
 
 The [UroCell](https://github.com/MancaZerovnikMekuc/UroCell) Dataset was heavily used during the development of the tool.
 
-Special thanks to YunBo Wang from [Xidian University](https://www.xidian.edu.cn/), who gave me exceptional helps at the early stage of development.# Volume_Seg_Tool
+Special thanks to YunBo Wang from [Xidian University](https://www.xidian.edu.cn/), who gave me exceptional helps at the early stage of development.
