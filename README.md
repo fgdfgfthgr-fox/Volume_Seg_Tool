@@ -65,7 +65,7 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/).
 
 1. Run the corresponding "start_WebUI" script for your system. This would open up a terminal.
    - For Windows, it would be start_WebUI_Windows.bat
-2. Open a web browser and enter the address shown in the terminal. Which would be something like "127.0.0.1:7860"
+2. Your web browser should automatically open up a "website" with url "127.0.0.1:7860" or something similar.
 
 ## Tutorials
 

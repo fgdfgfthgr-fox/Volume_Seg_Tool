@@ -3,6 +3,7 @@ import math
 import time
 import threading
 import subprocess
+import webbrowser
 
 import lightning.pytorch as pl
 import torch
@@ -29,7 +30,11 @@ def create_logger(inputs):
 
 
 def start_tensorboard(inputs):
-    subprocess.run(f"tensorboard --logdir={inputs[tensorboard_path]}", shell=True)
+    # Read the TENSORBOARD_PORT from the environment, or use the default
+    tensorboard_port = os.environ.get('TENSORBOARD_PORT', 6006)
+    subprocess.run(f"tensorboard --logdir={inputs[tensorboard_path]} --port={str(tensorboard_port)}", shell=True)
+    tensorboard_url = f'http://localhost:{tensorboard_port}'
+    webbrowser.open(tensorboard_url)
 
 
 def open_folder():
@@ -318,7 +323,7 @@ def update_available_arch(radio_value):
 
 
 if __name__ == "__main__":
-    with gr.Blocks() as WebUI:
+    with gr.Blocks(title=f"Volume Seg Tool") as WebUI:
         with gr.Tab("Main"):
             mode_box = gr.Radio(["Semantic", "Instance (BETA)"], value="Semantic", label="Segmentation Mode")
             workflow_box = gr.CheckboxGroup(["Training", "Validation", "Test", "Predict"],
@@ -529,4 +534,4 @@ if __name__ == "__main__":
                     folder_button.click(open_folder, outputs=save_model_path)
                 save_button = gr.Button("Output TensorBoard log to Excel")
                 save_button.click(tensorboard_to_excel, inputs=[tensorboard_path_e, save_log_name, save_log_path])
-    WebUI.launch()
+    WebUI.launch(inbrowser=True)
