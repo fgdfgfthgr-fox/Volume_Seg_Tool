@@ -395,7 +395,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
     A torch.utils.data.Dataset class that handles the predict dataset of semantic segmentation.\n
     Note if the image is larger than the size specified in the augmentation_csv, it will get cropped into several
     (potentially) overlapping smaller images. The final results will be stitched together from predictions of these smaller images.\n
-    The actual height and width of each patch is hw_overlap + 2 * depth_overlap. Same goes for depth.
+    The actual height and width of each patch is hw_size + 2 * hw_overlap. Same goes for depth.
 
     Args:
         images_dir (str): Path to the directory where images are stored.
