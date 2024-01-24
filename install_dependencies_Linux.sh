@@ -44,7 +44,7 @@ printf "\e[1m\e[32mInstalling dependencies for Volume Seg Tool...\n"
 
 if [[ -z "${VIRTUAL_ENV}" ]];
 then
-    printf "Creating and activating python venv"
+    printf "Creating and activating python venv\n"
     cd "${install_dir}"/ || { printf "\e[1m\e[31mERROR: Can't cd to %s/, aborting...\e[0m" "${install_dir}"; exit 1; }
     if [[ ! -d "${venv_dir}" ]]
     then

@@ -111,8 +111,9 @@ class PLModuleInstance(pl.LightningModule):
         lr = self.lr_schedulers().optimizer.param_groups[0]['lr']
         self.logger.experiment.add_scalar(f"Other/Learn Rate", lr, self.current_epoch)
 
-        vram_data = torch.cuda.mem_get_info()
-        vram_usage = (vram_data[1]-vram_data[0])/(1024**2)
+        #vram_data = torch.cuda.mem_get_info()
+        vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
+        #vram_usage = (vram_data[1]-vram_data[0])/(1024**2)
         self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
         torch.cuda.reset_peak_memory_stats()
         if self.enable_mid_visual:

@@ -34,7 +34,7 @@ def start_tensorboard(inputs):
     tensorboard_port = os.environ.get('TENSORBOARD_PORT', 6006)
     subprocess.run(f"tensorboard --logdir={inputs[tensorboard_path]} --port={str(tensorboard_port)}", shell=True)
     tensorboard_url = f'http://localhost:{tensorboard_port}'
-    webbrowser.open(tensorboard_url)
+    webbrowser.open(tensorboard_url, 2)
 
 
 def open_folder():
@@ -112,7 +112,8 @@ def start_work_flow(inputs):
     if 'Training' in inputs[workflow_box]:
         trainer = pl.Trainer(max_epochs=inputs[max_epochs], log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=False,
-                             precision=inputs[precision], enable_progress_bar=True, num_sanity_val_steps=0)
+                             precision=inputs[precision], enable_progress_bar=True, num_sanity_val_steps=0,
+                             detect_anomaly=True)
         start_time = time.time()
         trainer.fit(model,
                     val_dataloaders=val_loader,
@@ -296,9 +297,9 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio):
 
 def change_edge_exclude(choice):
     if choice == "Fully Labelled":
-        return gr.Checkbox(scale=0, label="Exclude object borders", visible=True)
+        return gr.Checkbox(scale=0, label="Exclude object borders, do not work in Instance Segmentation Mode", visible=True)
     else:
-        return gr.Checkbox(scale=0, label="Exclude object borders", visible=False)
+        return gr.Checkbox(scale=0, label="Exclude object borders, do not work in Instance Segmentation Mode", visible=False)
 
 
 def change_edge_exclude_value_in(choice):
@@ -355,9 +356,9 @@ if __name__ == "__main__":
                     train_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
                                                   label="Dataset Mode")
                     with gr.Row():
-                        exclude_edge = gr.Checkbox(scale=0, label="Mark pictures at object borders as unlabelled, do not work in Instance Segmentation Mode", visible=False)
-                        exclude_edge_size_in = gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=False)
-                        exclude_edge_size_out = gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=False)
+                        exclude_edge = gr.Checkbox(scale=0, label="Mark pictures at object borders as unlabelled, do not work in Instance Segmentation Mode", visible=True)
+                        exclude_edge_size_in = gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=True)
+                        exclude_edge_size_out = gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=True)
                     train_dataset_mode.change(fn=change_edge_exclude, inputs=train_dataset_mode, outputs=exclude_edge)
                     train_dataset_mode.change(fn=change_edge_exclude_value_in, inputs=train_dataset_mode, outputs=exclude_edge_size_in)
                     train_dataset_mode.change(fn=change_edge_exclude_value_out, inputs=train_dataset_mode, outputs=exclude_edge_size_out)

@@ -25,7 +25,7 @@ then
         exit 1
     fi
 else
-    printf "python venv already activate: ${VIRTUAL_ENV}"
+    printf "python venv already activate: ${VIRTUAL_ENV}\n"
 fi
 
 
