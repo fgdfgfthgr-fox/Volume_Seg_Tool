@@ -125,7 +125,7 @@ class PLModuleSemantic(pl.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         x = batch
         result = self.forward(x)
-        result = torch.where(result >= 0.5, 1, 0).to(torch.int8)
+        #result = torch.where(result >= 0.5, 1, 0).to(torch.int8)
         return result
 
     def configure_optimizers(self):

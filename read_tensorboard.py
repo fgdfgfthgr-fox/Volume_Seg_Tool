@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import glob
 
-# Output Tensorboard logs into an Excel spreadsheet.
+# Output TensorBoard logs into an Excel spreadsheet.
 # Only the last step would be recorded.
 
 

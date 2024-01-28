@@ -6,6 +6,10 @@ import torch
 import math
 import scipy
 import numpy as np
+from joblib import Parallel, delayed
+from scipy.ndimage import distance_transform_edt
+from skimage.feature import peak_local_max
+from .poly_label_tensor_3D import tensor_polylabel
 
 # Various customize image augmentation implementations specialised in 4 dimensional tensors.
 # (Channel, Depth, Height, Width).
@@ -331,7 +335,7 @@ def exclude_border_labels(tensor, inward, outward):
         dilated_array = scipy.ndimage.binary_dilation(array, structuring_element, outward).astype(np.int8)
     else:
         dilated_array = array
-    eroded_tensor, dilated_tensor = torch.from_numpy(eroded_array),  torch.from_numpy(dilated_array)
+    eroded_tensor, dilated_tensor = torch.from_numpy(eroded_array), torch.from_numpy(dilated_array)
 
     # Identify excluded regions and set their values to 0
     excluded_regions = (eroded_tensor == 0) & (dilated_tensor == 1)
@@ -340,3 +344,95 @@ def exclude_border_labels(tensor, inward, outward):
     transformed_tensor[tensor == 1] = 1  # Set foreground to 1
     transformed_tensor[excluded_regions] = 0  # Set excluded regions to 0
     return transformed_tensor
+
+
+def binarisation(tensor):
+    """
+    A quick and dirty way to convert an instance labelled tensor to a semantic labelled tensor.
+    """
+    tensor = torch.clamp(tensor, 0, 1)
+    return tensor
+
+
+def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1):
+    """
+    Transform an instance segmented map into a contour map.\n
+    The contour is generated using morphological erosion and dilation.
+
+    Args:
+        input_tensor (torch.Tensor): The input instance segmented map with a shape of (D, H, W).
+                                     0 is background and every other value is a distinct object.
+        contour_inward (int): Size of morphological erosion.
+        contour_outward (int): Size of morphological dilation.
+
+    Returns:
+        torch.Tensor: Contour map where 0 are background or inside of objects while 1 are the boundaries.
+    """
+    input_array = input_tensor.numpy()
+    unique_values = np.unique(input_array)
+    structuring_element = np.ones((3, 3, 3), dtype=np.byte)
+    transformed_tensor = torch.zeros_like(input_tensor, dtype=torch.uint8)
+
+    def process_object(value):
+        if value == 0:
+            return  # Skip background
+
+        # Create a binary mask for the current object
+        object_mask = (input_array == value)
+
+        # Erosion
+        if contour_inward >= 1:
+            eroded_mask = scipy.ndimage.binary_erosion(object_mask, structuring_element, contour_inward).astype(np.byte)
+        else:
+            eroded_mask = object_mask
+
+        # Dilation
+        if contour_outward >= 1:
+            dilated_mask = scipy.ndimage.binary_dilation(object_mask, structuring_element, contour_outward).astype(np.byte)
+        else:
+            dilated_mask = object_mask
+
+        eroded_tensor, dilated_tensor = torch.from_numpy(eroded_mask), torch.from_numpy(dilated_mask)
+
+        # Mark boundary area as one
+        excluded_regions = (eroded_tensor == 0) & (dilated_tensor == 1)
+        transformed_tensor[excluded_regions] = 1
+
+    # Use joblib to parallelize the loop
+    Parallel(backend='threading', n_jobs=-1)(delayed(process_object)(value) for value in unique_values)
+
+    return transformed_tensor
+
+
+def instance_seed_transform(input_tensor):
+    # Convert PyTorch tensors to NumPy arrays
+    input_array = input_tensor.numpy()
+    unique_values = np.unique(input_array)
+
+    empty_tensor = torch.zeros_like(input_tensor)
+
+    def process_object(value):
+        if value == 0:
+            return  # Skip background
+
+        # Create a binary mask for the current object
+        object_mask = (input_tensor == value)
+        result = tensor_polylabel(object_mask, 1, False)
+        z, y, x = int(result.z), int(result.y), int(result.x)
+        if z >= empty_tensor.shape[0]:
+            z = z - 1
+        if y >= empty_tensor.shape[1]:
+            y = y - 1
+        if x >= empty_tensor.shape[2]:
+            x = x - 1
+        if z <= 0:
+            z = z + 1
+        if y <= 0:
+            y = y + 1
+        if x <= 0:
+            x = x + 1
+        empty_tensor[:, z-1:z+1, y-1:y+1, x-1:x+1] = 1
+
+    # Use joblib to parallelize the loop
+    Parallel(backend='threading', n_jobs=-1)(delayed(process_object)(value) for value in unique_values)
+    return empty_tensor

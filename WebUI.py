@@ -130,7 +130,8 @@ def start_work_flow(inputs):
         trainer = pl.Trainer(precision=inputs[precision], enable_progress_bar=True, logger=False, accelerator="gpu")
         predict_dataset = DataComponents.Predict_Dataset(inputs[predict_dataset_path],
                                                          hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
-                                                         hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap])
+                                                         hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
+                                                         TTA_hw=inputs[TTA_xy])
         predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
         meta_info = predict_dataset.__getmetainfo__()
         start_time = time.time()
@@ -140,11 +141,13 @@ def start_work_flow(inputs):
         if 'Semantic' in inputs[mode_box]:
             DataComponents.predictions_to_final_img(predictions, meta_info, direc=inputs[result_folder_path],
                                                     hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
-                                                    hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap])
+                                                    hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
+                                                    TTA_hw=inputs[TTA_xy])
         else:
             DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=inputs[result_folder_path],
                                                              hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
-                                                             hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap])
+                                                             hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
+                                                             TTA_hw=inputs[TTA_xy])
 
 
 def visualisation_activations(existing_model_path, example_image, slice_to_show,
@@ -349,7 +352,7 @@ if __name__ == "__main__":
                         max_epochs = gr.Number(40, label="Maximum Number of Epochs", precision=0)
                         train_multiplier = gr.Number(8, label="Train Multiplier (Repeats)", precision=0)
                     with gr.Row():
-                        enable_tensorboard = gr.Checkbox(scale=0, label="Enable Tensorboard Logging")
+                        enable_tensorboard = gr.Checkbox(scale=0, label="Enable TensorBoard Logging")
                         tensorboard_path = gr.Textbox('lightning_logs', scale=2, label="Path to the folder which the log will be save to")
                         folder_button = gr.Button(document_symbol, scale=0)
                         folder_button.click(open_folder, outputs=tensorboard_path)
@@ -390,6 +393,9 @@ if __name__ == "__main__":
                         result_folder_path = gr.Textbox('Datasets/result', scale=2, label="Result Folder Path")
                         folder_button = gr.Button(document_symbol, scale=0)
                         folder_button.click(open_folder, outputs=result_folder_path)
+                    with gr.Row():
+                        TTA_xy = gr.Checkbox(label="Enable Test-Time Augmentation for xy dimension", info="Horizontal And Vertical flip the image; the augmented images are then passed into the model. The output probability maps are applied via the corresponding reverse transformation and combined.")
+                        #TTA_z = gr.Checkbox(label="Enable Test-Time Augmentation for z dimension", info="Depth Wise flip the image")
             with gr.Row():
                 model_architecture = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
                 mode_box.change(update_available_arch, inputs=mode_box, outputs=model_architecture)
@@ -470,6 +476,8 @@ if __name__ == "__main__":
                 exclude_edge_size_out,
                 val_dataset_mode,
                 test_dataset_mode,
+                TTA_xy,
+#                TTA_z,
                 }
             start_button = gr.Button("Start Workflow", elem_id="start_button")
             start_button.click(start_work_flow, inputs=input_dict)

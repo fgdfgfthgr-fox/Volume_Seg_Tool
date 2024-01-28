@@ -69,7 +69,7 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/).
 
 ## Tutorials
 
-WIP
+Please see the [Wiki](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/wiki) (Mostly WIP).
 
 ## Credits
 

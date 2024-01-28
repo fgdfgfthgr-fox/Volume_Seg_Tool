@@ -10,7 +10,6 @@ import imageio
 import random
 import scipy
 import pandas as pd
-from joblib import Parallel, delayed
 from skimage import morphology
 from skimage.segmentation import watershed
 from scipy.ndimage import distance_transform_edt
@@ -59,14 +58,6 @@ def path_to_tensor(path, label=False, auto_normalise=True):
             max_value = np.iinfo(img.dtype).max if img.dtype.kind == 'u' else np.finfo(img.dtype).max
             img = (img/max_value).astype(np.float32)
     return torch.from_numpy(img)
-
-
-def binarisation(tensor):
-    """
-    A quick and dirty way to convert an instance labelled tensor to a semantic labelled tensor.
-    """
-    tensor = torch.clamp(tensor, 0, 1)
-    return tensor
 
 
 def apply_aug(img_tensor, lab_tensor, augmentation_params):
@@ -404,7 +395,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
         hw_overlap (int): The additional gain in height and width of the patches. In pixels. Helps smooth out borders between patches.
         depth_overlap (int): The additional gain in depth of the patches. In pixels. Helps smooth out borders between patches.
     """
-    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
+    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False):
         self.file_list = make_dataset_predict(images_dir)
         self.hw_size = hw_size
         self.depth_size = depth_size
@@ -414,46 +405,57 @@ class Predict_Dataset(torch.utils.data.Dataset):
         self.meta_list = []
         for file in self.file_list:
             image = path_to_tensor(file, label=False)
+            image = image[None, :]
+            image_list = []
+            image_list.append(image)
+            if TTA_hw:
+                image_list.append(T_F.hflip(image))
+                image_list.append(T_F.vflip(image))
+                image_list.append(T_F.vflip(T_F.hflip(image)))
             file_name = os.path.basename(file)
-            depth = image.shape[0]
-            height = image.shape[1]
-            width = image.shape[2]
+
+            depth = image.shape[1]
+            height = image.shape[2]
+            width = image.shape[3]
             # Calculate the multipliers for padding and cropping
             depth_multiplier = math.ceil(depth / self.depth_size)
             height_multiplier = math.ceil(height / self.hw_size)
             width_multiplier = math.ceil(width / self.hw_size)
-            #total_multiplier = depth_multiplier * height_multiplier * width_multiplier
+            TTA_multiplier = len(image_list)
             # Padding and cropping
             paddings = (hw_overlap, hw_overlap,
                         hw_overlap, hw_overlap,
                         depth_overlap, depth_overlap)
-            image = image[None, :]
             # Experiments show replicate works best compare to constant or reflect
-            padded_image = F.pad(image, paddings, mode="replicate")
+            padded_image_list = []
+            for item in image_list:
+                padded_image = F.pad(item, paddings, mode="replicate")
+                padded_image_list.append(padded_image)
             # Loop through each depth, height, and width index
-            for depth_idx in range(depth_multiplier):
-                for height_idx in range(height_multiplier):
-                    for width_idx in range(width_multiplier):
-                        if depth_multiplier > 1:
-                            depth_start = (depth_size - ((depth_size * depth_multiplier - depth) / (depth_multiplier - 1))) * depth_idx
-                            depth_start = math.floor(depth_start)
-                        else:
-                            depth_start = 0
-                        depth_end = depth_start + depth_size + (2 * depth_overlap)
-                        if height_multiplier > 1:
-                            height_start = (hw_size - ((hw_size * height_multiplier - height) / (height_multiplier - 1))) * height_idx
-                            height_start = math.floor(height_start)
-                        else:
-                            height_start = 0
-                        height_end = height_start + hw_size + (2 * hw_overlap)
-                        if width_multiplier > 1:
-                            width_start = (hw_size - ((hw_size * width_multiplier - width) / (width_multiplier - 1))) * width_idx
-                            width_start = math.floor(width_start)
-                        else:
-                            width_start = 0
-                        width_end = width_start + hw_size + (2 * hw_overlap)
-                        patch = padded_image[:, depth_start:depth_end, height_start:height_end, width_start:width_end].to(torch.float32)
-                        self.patches_list.append(patch)
+            for i in range(TTA_multiplier):
+                for depth_idx in range(depth_multiplier):
+                    for height_idx in range(height_multiplier):
+                        for width_idx in range(width_multiplier):
+                            if depth_multiplier > 1:
+                                depth_start = (depth_size - ((depth_size * depth_multiplier - depth) / (depth_multiplier - 1))) * depth_idx
+                                depth_start = math.floor(depth_start)
+                            else:
+                                depth_start = 0
+                            depth_end = depth_start + depth_size + (2 * depth_overlap)
+                            if height_multiplier > 1:
+                                height_start = (hw_size - ((hw_size * height_multiplier - height) / (height_multiplier - 1))) * height_idx
+                                height_start = math.floor(height_start)
+                            else:
+                                height_start = 0
+                            height_end = height_start + hw_size + (2 * hw_overlap)
+                            if width_multiplier > 1:
+                                width_start = (hw_size - ((hw_size * width_multiplier - width) / (width_multiplier - 1))) * width_idx
+                                width_start = math.floor(width_start)
+                            else:
+                                width_start = 0
+                            width_end = width_start + hw_size + (2 * hw_overlap)
+                            patch = padded_image_list[i][:, depth_start:depth_end, height_start:height_end, width_start:width_end].to(torch.float32)
+                            self.patches_list.append(patch)
             self.meta_list.append((file_name, image.shape))
         super().__init__()
 
@@ -481,9 +483,9 @@ class TrainDatasetInstance(torch.utils.data.Dataset):
         self.file_list = make_dataset_tv(images_dir)
         self.num_files = len(self.file_list)
         self.img_tensors = [path_to_tensor(item[0], label=False) for item in self.file_list]
-        self.lab_tensors = [binarisation(path_to_tensor(item[1], label=True)) for item in self.file_list]
+        self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], label=True)) for item in self.file_list]
         print('Generating contour map(s)...')
-        self.contour_tensors = [instance_contour_transform(path_to_tensor(item[1], label=True)) for item in self.file_list]
+        self.contour_tensors = [Aug.instance_contour_transform(path_to_tensor(item[1], label=True)) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
 
@@ -517,8 +519,8 @@ class ValDatasetInstance(torch.utils.data.Dataset):
         self.file_list = make_dataset_tv(images_dir)
         self.num_files = len(self.file_list)
         tensors_pairs = [(path_to_tensor(item[0], label=False),
-                          binarisation(path_to_tensor(item[1], label=True)),
-                          instance_contour_transform(path_to_tensor(item[1], label=True))) for item in self.file_list]
+                          Aug.binarisation(path_to_tensor(item[1], label=True)),
+                          Aug.instance_contour_transform(path_to_tensor(item[1], label=True))) for item in self.file_list]
         self.chopped_tensor_pairs = []
         self.augmentation_params = pd.read_csv(augmentation_csv)
         for _, row in self.augmentation_params.iterrows():
@@ -652,7 +654,7 @@ class Cross_Validation_Dataset(torch.utils.data.Dataset):
 '''
 
 
-def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
+def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False, TTA_depth=False):
     """
     Stitch the patches of output volumes and reconstruct the original image tensor(s).
 
@@ -669,6 +671,10 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
     """
     output_list = []
     seperator = 0
+    TTA_multiplier = 1
+    if TTA_hw:
+        TTA_multiplier *= 4
+
     for meta_info in meta_list:
         depth = meta_info[1][1]
         height = meta_info[1][2]
@@ -677,44 +683,61 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
         depth_multiplier = math.ceil(depth / depth_size)
         height_multiplier = math.ceil(height / hw_size)
         width_multiplier = math.ceil(width / hw_size)
-        total_multiplier = depth_multiplier * height_multiplier * width_multiplier
-        result_volume = torch.zeros((depth_multiplier * depth_size,
-                                     height_multiplier * hw_size,
-                                     width_multiplier * hw_size), dtype=torch.float32)
-        for i in range(seperator, seperator+total_multiplier):
-            tensors_in_1_layer = height_multiplier * width_multiplier
-            depth_idx = math.floor(i / tensors_in_1_layer) % depth_multiplier
-            height_idx = math.floor(i / width_multiplier) % height_multiplier
-            width_idx = i % width_multiplier
-            tensor_work_with = tensor_list[i][depth_overlap:-depth_overlap,
-                                              hw_overlap:-hw_overlap,
-                                              hw_overlap:-hw_overlap]
-            if depth_multiplier > 1:
-                depth_start = (depth_size - ((depth_size * depth_multiplier - depth) / (depth_multiplier - 1))) * depth_idx
-                depth_start = math.floor(depth_start)
-            else:
-                depth_start = 0
-            depth_end = depth_start + depth_size
-            if height_multiplier > 1:
-                height_start = (hw_size - ((hw_size * height_multiplier - height) / (height_multiplier - 1))) * height_idx
-                height_start = math.floor(height_start)
-            else:
-                height_start = 0
-            height_end = height_start + hw_size
-            if width_multiplier > 1:
-                width_start = (hw_size - ((hw_size * width_multiplier - width) / (width_multiplier - 1))) * width_idx
-                width_start = math.floor(width_start)
-            else:
-                width_start = 0
-            width_end = width_start + hw_size
-            result_volume[depth_start:depth_end, height_start:height_end, width_start:width_end] = tensor_work_with
+        total_multiplier = depth_multiplier * height_multiplier * width_multiplier * TTA_multiplier
+        TTA_list = []
+        for TTA_idx in range(TTA_multiplier):
+            result_volume = torch.zeros((depth_multiplier * depth_size,
+                                         height_multiplier * hw_size,
+                                         width_multiplier * hw_size), dtype=torch.float32)
+            for i in range(seperator + TTA_idx * (total_multiplier//TTA_multiplier), seperator + (TTA_idx + 1) * (total_multiplier//TTA_multiplier)):
+                tensor_work_with = tensor_list[i][depth_overlap:-depth_overlap,
+                                                  hw_overlap:-hw_overlap,
+                                                  hw_overlap:-hw_overlap]
+
+                depth_idx = math.floor(i / (height_multiplier * width_multiplier)) % depth_multiplier
+                height_idx = math.floor(i / (width_multiplier)) % height_multiplier
+                width_idx = (i) % width_multiplier
+
+                if depth_multiplier > 1:
+                    depth_start = (depth_size - (
+                                (depth_size * depth_multiplier - depth) / (depth_multiplier - 1))) * depth_idx
+                    depth_start = math.floor(depth_start)
+                else:
+                    depth_start = 0
+                depth_end = depth_start + depth_size
+                if height_multiplier > 1:
+                    height_start = (hw_size - (
+                                (hw_size * height_multiplier - height) / (height_multiplier - 1))) * height_idx
+                    height_start = math.floor(height_start)
+                else:
+                    height_start = 0
+                height_end = height_start + hw_size
+                if width_multiplier > 1:
+                    width_start = (hw_size - ((hw_size * width_multiplier - width) / (width_multiplier - 1))) * width_idx
+                    width_start = math.floor(width_start)
+                else:
+                    width_start = 0
+                width_end = width_start + hw_size
+                result_volume[depth_start:depth_end, height_start:height_end, width_start:width_end] = tensor_work_with
+            result_volume = result_volume[0:depth, 0:height, 0:width]
+            if TTA_idx == 1:
+                result_volume = T_F.hflip(result_volume)
+            elif TTA_idx == 2:
+                result_volume = T_F.vflip(result_volume)
+            elif TTA_idx == 3:
+                result_volume = T_F.vflip(T_F.hflip(result_volume))
+            TTA_list.append(result_volume)
+            #array = np.asarray(result_volume)
+            #imageio.v3.imwrite(uri=f'debug_output/{TTA_idx}.tiff', image=np.float32(array))
+        result_volume = torch.mean(torch.stack(TTA_list, dim=0), dim=0)
         seperator += total_multiplier
-        result_volume = result_volume[0:depth, 0:height, 0:width]
+        #array = np.asarray(result_volume)
+        #imageio.v3.imwrite(uri=f'TTA Output.tiff', image=np.float32(array))
         output_list.append((result_volume, file_name))
     return output_list
 
 
-def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
+def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False):
     """
     Stitch the patches of prediction output from network and save it in the selected directory.\n
     This one is for semantic segmentation.
@@ -737,13 +760,14 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
             single_tensor = torch.squeeze(single_tensor, (0, 1))
             list.append(tensor_list, single_tensor)
 
-    stitched_volumes = stitch_output_volumes(tensor_list, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
+    stitched_volumes = stitch_output_volumes(tensor_list, meta_list, hw_size, depth_size, hw_overlap, depth_overlap, TTA_hw)
     for volume in stitched_volumes:
         array = np.asarray(volume[0])
+        array = np.where(array >= 0.5, 1, 0)
         imageio.v3.imwrite(uri=f'{direc}/{volume[1]}', image=np.uint8(array))
 
 
-def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
+def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False):
     """
     Stitch the patches of prediction output from network and save it in the selected directory.\n
     This one is for instance segmentation.
@@ -769,8 +793,8 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
             single_tensor = torch.squeeze(single_tensor, (0, 1))
             list.append(tensor_list_c, single_tensor)
 
-    stitched_volumes_p = stitch_output_volumes(tensor_list_p, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
-    stitched_volumes_c = stitch_output_volumes(tensor_list_c, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
+    stitched_volumes_p = stitch_output_volumes(tensor_list_p, meta_list, hw_size, depth_size, hw_overlap, depth_overlap, TTA_hw)
+    stitched_volumes_c = stitch_output_volumes(tensor_list_c, meta_list, hw_size, depth_size, hw_overlap, depth_overlap, TTA_hw)
 #    for volume in stitched_volumes_p:
 #        array = np.asarray(volume[0])
 #        imageio.v3.imwrite(uri=f'{direc}/Pixels_{volume[1]}', image=np.uint8(array))
@@ -779,6 +803,7 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
 #        imageio.v3.imwrite(uri=f'{direc}/Contour_{volume[1]}', image=np.float32(array))
     for semantic, contour in zip(stitched_volumes_p, stitched_volumes_c):
         semantic_array = np.asarray(semantic[0])
+        semantic_array = np.where(semantic_array >= 0.5, 1, 0)
         contour_array = np.asarray(contour[0])
         imageio.v3.imwrite(uri=f'{direc}/Pixels_{semantic[1]}', image=np.uint8(semantic_array))
         imageio.v3.imwrite(uri=f'{direc}/Contour_{contour[1]}', image=np.float32(contour_array))
@@ -835,61 +860,11 @@ def hovernet_map_transform(input_tensor):
 '''
 
 
-def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1):
-    """
-    Transform an instance segmented map into a contour map.\n
-    The contour is generated using morphological erosion and dilation.
-
-    Args:
-        input_tensor (torch.Tensor): The input instance segmented map with a shape of (D, H, W).
-                                     0 is background and every other value is a distinct object.
-        contour_inward (int): Size of morphological erosion.
-        contour_outward (int): Size of morphological dilation.
-
-    Returns:
-        torch.Tensor: Contour map where 0 are background or inside of objects while 1 are the boundaries.
-    """
-    input_array = input_tensor.numpy()
-    unique_values = np.unique(input_array)
-    structuring_element = np.ones((3, 3, 3), dtype=np.byte)
-    transformed_tensor = torch.zeros_like(input_tensor, dtype=torch.uint8)
-
-    def process_object(value):
-        if value == 0:
-            return  # Skip background
-
-        # Create a binary mask for the current object
-        object_mask = (input_array == value)
-
-        # Erosion
-        if contour_inward >= 1:
-            eroded_mask = scipy.ndimage.binary_erosion(object_mask, structuring_element, contour_inward).astype(np.byte)
-        else:
-            eroded_mask = object_mask
-
-        # Dilation
-        if contour_outward >= 1:
-            dilated_mask = scipy.ndimage.binary_dilation(object_mask, structuring_element, contour_outward).astype(np.byte)
-        else:
-            dilated_mask = object_mask
-
-        eroded_tensor, dilated_tensor = torch.from_numpy(eroded_mask), torch.from_numpy(dilated_mask)
-
-        # Mark boundary area as one
-        excluded_regions = (eroded_tensor == 0) & (dilated_tensor == 1)
-        transformed_tensor[excluded_regions] = 1
-
-    # Use joblib to parallelize the loop
-    Parallel(backend='threading', n_jobs=-1)(delayed(process_object)(value) for value in unique_values)
-
-    return transformed_tensor
-
-
 def instance_segmentation_batch(semantic_maps_uint8, contour_maps_float32):
     result_list = []
 
     for semantic_map_uint8, contour_map_float32 in zip(semantic_maps_uint8, contour_maps_float32):
-        result_list.append(instance_segmentation_simple(semantic_map_uint8, contour_map_float32))
+        result_list.append(instance_segmentation(semantic_map_uint8, contour_map_float32))
 
     return result_list
 
@@ -925,22 +900,24 @@ def instance_segmentation(semantic_map_uint8, contour_map_float32, size_threshol
     return torch.tensor(segmentation, dtype=torch.uint8)
 
 
-def instance_segmentation_simple(semantic_map_uint8, contour_map_float32, size_threshold=10):
+def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10):
     """
     Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.\n
     Note this one use a simpler algorithm.
 
     Args:
-        semantic_map_uint8 (np.Array): The input semantic segmented map.
-        contour_map_float32 (np.Array): The input contour segmented map.
+        semantic_map (np.Array): The input semantic segmented map.
+        contour_map (np.Array): The input contour segmented map.
         size_threshold (int): The minimal size in pixel of each object. Object smaller than this will be removed.
 
     Returns:
         torch.Tensor: instance segmented map where 0 is background and every other value represent an object.
     """
     # Convert PyTorch tensors to NumPy arrays
-    semantic_map_np = semantic_map_uint8.cpu().numpy().astype(np.int8)
-    contour_map_np = contour_map_float32.cpu().numpy()
+    semantic_map_np = semantic_map.cpu().numpy()
+    semantic_map_np = np.where(semantic_map_np >= 0.5, 1, 0).astype(np.int8)
+
+    contour_map_np = contour_map.cpu().numpy()
 
     # Convert contour map to int8
     contour_map_np = np.where(contour_map_np > 0.5, 1, 0).astype(np.int8)

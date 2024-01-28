@@ -68,7 +68,7 @@ class PLModuleInstance(pl.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         x = batch
         result_p, result_c = self.forward(x)
-        result_p = torch.where(result_p >= 0.5, 1, 0).to(torch.int8)
+        #result_p = torch.where(result_p >= 0.5, 1, 0).to(torch.int8)
         #result_c = torch.where(result_c >= 0.5, 1, 0).to(torch.int8)
         return result_p, result_c
 

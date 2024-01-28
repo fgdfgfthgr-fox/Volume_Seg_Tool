@@ -1,2 +1,4 @@
 /venv
 /lightning_logs
+Components/poly_label_tensor_2D.py
+Components/poly_label_tensor_3D.py
