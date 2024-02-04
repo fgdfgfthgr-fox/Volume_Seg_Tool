@@ -8,7 +8,7 @@ import torchvision.transforms.v2.functional as T_F
 import numpy as np
 import imageio
 import random
-import scipy
+#import scipy
 import pandas as pd
 from skimage import morphology
 from skimage.segmentation import watershed
@@ -807,9 +807,10 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         contour_array = np.asarray(contour[0])
         imageio.v3.imwrite(uri=f'{direc}/Pixels_{semantic[1]}', image=np.uint8(semantic_array))
         imageio.v3.imwrite(uri=f'{direc}/Contour_{contour[1]}', image=np.float32(contour_array))
+        print(f'Computing instance segmentation using contour data for {contour[1]}...')
         instance_result = instance_segmentation_simple(semantic[0], contour[0])
         instance_array = np.asarray(instance_result)
-        imageio.v3.imwrite(uri=f'{direc}/Instance_{contour[1]}', image=np.uint8(instance_array))
+        imageio.v3.imwrite(uri=f'{direc}/Instance_{contour[1]}', image=np.uint16(instance_array))
 #    for volume in instance_result:
 #        array = np.asarray(volume)
 #        imageio.v3.imwrite(uri=f'{direc}/Instance_1', image=np.uint8(array))
@@ -860,74 +861,30 @@ def hovernet_map_transform(input_tensor):
 '''
 
 
-def instance_segmentation_batch(semantic_maps_uint8, contour_maps_float32):
-    result_list = []
-
-    for semantic_map_uint8, contour_map_float32 in zip(semantic_maps_uint8, contour_maps_float32):
-        result_list.append(instance_segmentation(semantic_map_uint8, contour_map_float32))
-
-    return result_list
-
-
-def instance_segmentation(semantic_map_uint8, contour_map_float32, size_threshold=10):
+def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, distance_threshold=4):
     """
-    WIP.
-    """
-    # Convert PyTorch tensors to NumPy arrays
-    semantic_map_np = semantic_map_uint8.cpu().numpy()
-    contour_map_np = contour_map_float32.cpu().numpy()
-
-    # Distance transform the semantic map
-    semantic_map_distance = distance_transform_edt(semantic_map_np)
-    coords = peak_local_max(semantic_map_distance, labels=semantic_map_np, min_distance=10)
-    mask = np.zeros(semantic_map_distance.shape, dtype=bool)
-    mask[tuple(coords.T)] = True
-    markers, _ = label(mask)
-
-    # Minus the boundary map from distance transform map to create a map that's high in the central of the object,
-    # zero as background, and large negative at the boundary.
-    new_map = semantic_map_distance - (contour_map_np * 10)
-    # Reverse the map, so it's low in the central of the object, slowly elevate as it get close to boundary,
-    # then sudden spike up at the boundary pixel. Background is still zero.
-    new_map = -new_map
-
-    # Apply watershed algorithm
-    segmentation = watershed(new_map, markers, mask=semantic_map_np)
-
-    # Remove small segments
-    segmentation = morphology.remove_small_objects(segmentation, min_size=size_threshold, connectivity=2)
-
-    return torch.tensor(segmentation, dtype=torch.uint8)
-
-
-def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10):
-    """
-    Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.\n
-    Note this one use a simpler algorithm.
+    Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.
+    Pixels in touching areas are assigned to the closest object based on the largest proportion of pixels within 5 pixel distance to the pixel.
 
     Args:
         semantic_map (np.Array): The input semantic segmented map.
         contour_map (np.Array): The input contour segmented map.
         size_threshold (int): The minimal size in pixel of each object. Object smaller than this will be removed.
+        distance_threshold (int): The radius in pixels to search for nearby pixels when allocating. Default: 4.
 
     Returns:
         torch.Tensor: instance segmented map where 0 is background and every other value represent an object.
     """
-    # Convert PyTorch tensors to NumPy arrays
-    semantic_map_np = semantic_map.cpu().numpy()
-    semantic_map_np = np.where(semantic_map_np >= 0.5, 1, 0).astype(np.int8)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    semantic_map = torch.where(semantic_map >= 0.5, 1, 0).byte()
+    contour_map = torch.where(contour_map >= 0.5, 1, 0).byte()
 
-    contour_map_np = contour_map.cpu().numpy()
+    # Find boundary that lies within foreground objects
+    touching_map = contour_map & semantic_map
+    # Remove touching area between foreground objects
+    new_map = semantic_map - touching_map
 
-    # Convert contour map to int8
-    contour_map_np = np.where(contour_map_np > 0.5, 1, 0).astype(np.int8)
-
-    # Find boundary within the foreground object
-    contour_map_np = contour_map_np * semantic_map_np
-
-    new_map = np.clip(semantic_map_np - contour_map_np, 0, 1)
-
-    structure = [
+    structure = torch.ByteTensor([
         [[0, 0, 0],
          [0, 1, 0],
          [0, 0, 0]],
@@ -937,14 +894,36 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10):
         [[0, 0, 0],
          [0, 1, 0],
          [0, 0, 0]]
-    ]
-
-    segmentation = label(new_map, structure=structure)
-
+    ])
+    # Connected Component Labelling
+    segmentation, amount = label(new_map.numpy(), structure=structure.numpy())
     # Remove small segments
-    segmentation = morphology.remove_small_objects(segmentation[0], min_size=size_threshold, connectivity=2)
+    segmentation = morphology.remove_small_objects(segmentation, min_size=size_threshold, connectivity=2)
+    segmentation = torch.from_numpy(segmentation).to(device)
 
-    return torch.tensor(segmentation, dtype=torch.uint8)
+    touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(device)
+
+    rr, cc, dd = torch.meshgrid(torch.arange(semantic_map.shape[0], device=device),
+                                torch.arange(semantic_map.shape[1], device=device),
+                                torch.arange(semantic_map.shape[2], device=device), indexing='ij')
+    # Allocates the lost pixels to the object that has the largest proportion of pixels within 5 pixel distance to
+    # the pixel.
+
+    def process_pixels(pixel):
+        x, y, z = pixel
+
+        spherical_mask = (torch.sqrt((rr - x) ** 2 + (cc - y) ** 2 + (dd - z) ** 2) <= distance_threshold).byte()
+
+        object_counts = torch.bincount(segmentation[spherical_mask == 1].flatten())
+
+        closest_object = torch.argmax(object_counts[1:]) + 1
+        segmentation[x, y, z] = closest_object.item()
+
+    for pixel in touching_pixels:
+        process_pixels(tuple(pixel))
+
+    return segmentation.to(torch.int32).to('cpu')
+
 
 # 这里的函数用于测试各个组件是否能正常运作
 if __name__ == "__main__":

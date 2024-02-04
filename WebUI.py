@@ -4,6 +4,7 @@ import time
 import threading
 import subprocess
 import webbrowser
+#import multiprocessing
 
 import lightning.pytorch as pl
 import torch
@@ -23,6 +24,8 @@ from read_tensorboard import read_all_tensorboard_event_files, write_to_excel
 
 document_symbol = '\U0001F4C4'
 
+num_cpu_cores = os.cpu_count()
+desired_num_workers = max(num_cpu_cores-1, 1)
 
 def create_logger(inputs):
     logger = TensorBoardLogger(f'{inputs[tensorboard_path]}', name='Run')
@@ -67,13 +70,14 @@ def start_work_flow(inputs):
             train_dataset = DataComponents.TrainDatasetInstance(inputs[train_dataset_path], inputs[augmentation_csv_path],
                                                                 inputs[train_multiplier])
         train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=inputs[batch_size],
-                                                   shuffle=True)
+                                                   shuffle=True, num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
         if 'Validation' in inputs[workflow_box]:
             if 'Semantic' in inputs[mode_box]:
                 val_dataset = DataComponents.ValDataset(inputs[val_dataset_path], inputs[augmentation_csv_path])
             else:
                 val_dataset = DataComponents.ValDatasetInstance(inputs[val_dataset_path], inputs[augmentation_csv_path])
-            val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=inputs[batch_size])
+            val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=inputs[batch_size],
+                                                     num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
         else:
             val_loader = None
         if 'Test' in inputs[workflow_box]:
@@ -112,8 +116,7 @@ def start_work_flow(inputs):
     if 'Training' in inputs[workflow_box]:
         trainer = pl.Trainer(max_epochs=inputs[max_epochs], log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=False,
-                             precision=inputs[precision], enable_progress_bar=True, num_sanity_val_steps=0,
-                             detect_anomaly=True)
+                             precision=inputs[precision], enable_progress_bar=True, num_sanity_val_steps=0,)
         start_time = time.time()
         trainer.fit(model,
                     val_dataloaders=val_loader,
@@ -139,15 +142,21 @@ def start_work_flow(inputs):
         end_time = time.time()
         print(f"Prediction Taken: {end_time - start_time} seconds")
         if 'Semantic' in inputs[mode_box]:
+            start_time = time.time()
             DataComponents.predictions_to_final_img(predictions, meta_info, direc=inputs[result_folder_path],
                                                     hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
                                                     hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
                                                     TTA_hw=inputs[TTA_xy])
+            end_time = time.time()
+            print(f"Converting and saving taken: {end_time - start_time} seconds")
         else:
+            start_time = time.time()
             DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=inputs[result_folder_path],
                                                              hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
                                                              hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
                                                              TTA_hw=inputs[TTA_xy])
+            end_time = time.time()
+            print(f"Converting and saving taken: {end_time - start_time} seconds")
 
 
 def visualisation_activations(existing_model_path, example_image, slice_to_show,
