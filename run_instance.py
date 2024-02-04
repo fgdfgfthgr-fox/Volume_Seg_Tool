@@ -35,6 +35,8 @@ class PLModuleInstance(pl.LightningModule):
         self.use_sparse_label_val = use_sparse_label_val
         self.use_sparse_label_test = use_sparse_label_test
         self.train_metrics, self.val_metrics, self.test_metrics = [], [], []
+        if enable_mid_visual:
+            self.mid_visual_tensor = DataComponents.path_to_tensor(self.mid_visual_image).unsqueeze(0).unsqueeze(0).to(device)
 
     def forward(self, image):
         return self.model(image)
@@ -117,9 +119,8 @@ class PLModuleInstance(pl.LightningModule):
         self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
         torch.cuda.reset_peak_memory_stats()
         if self.enable_mid_visual:
-            mid_visual_tensor = DataComponents.path_to_tensor(self.mid_visual_image).unsqueeze(0).unsqueeze(0).to(device)
             with torch.inference_mode():
-                mid_visual_pixel, mid_visual_contour = self.forward(mid_visual_tensor)
+                mid_visual_pixel, mid_visual_contour = self.forward(self.mid_visual_tensor)
                 mid_visual_pixel = mid_visual_pixel[:, :, 0:1, :, :].squeeze([0, 1])
                 mid_visual_contour = mid_visual_contour[:, :, 0:1, :, :].squeeze([0, 1])
             self.logger.experiment.add_image(f'Model Output/Pixel', mid_visual_pixel, self.current_epoch)

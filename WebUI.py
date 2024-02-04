@@ -4,7 +4,6 @@ import time
 import threading
 import subprocess
 import webbrowser
-#import multiprocessing
 
 import lightning.pytorch as pl
 import torch
@@ -26,6 +25,8 @@ document_symbol = '\U0001F4C4'
 
 num_cpu_cores = os.cpu_count()
 desired_num_workers = max(num_cpu_cores-1, 1)
+
+stop_flag = False
 
 def create_logger(inputs):
     logger = TensorBoardLogger(f'{inputs[tensorboard_path]}', name='Run')
@@ -60,103 +61,117 @@ def open_file():
     return str(file_path)
 
 
-def start_work_flow(inputs):
+def start_work_flow_thread(inputs):
+    global stop_event
+    stop_event = threading.Event()
+    thread = threading.Thread(target=start_work_flow, args=(inputs, stop_event,))
+    thread.start()
+    return thread
+
+
+def stop_work_flow_thread(thread, stop_event):
+    stop_event.set()
+    thread.join()
+
+
+def start_work_flow(inputs, stop_event):
     torch.set_float32_matmul_precision('medium')
-    if 'Training' in inputs[workflow_box]:
-        if 'Semantic' in inputs[mode_box]:
-            train_dataset = DataComponents.TrainDataset(inputs[train_dataset_path], inputs[augmentation_csv_path], inputs[train_multiplier],
-                                                        inputs[exclude_edge], inputs[exclude_edge_size_in], inputs[exclude_edge_size_out])
-        else:
-            train_dataset = DataComponents.TrainDatasetInstance(inputs[train_dataset_path], inputs[augmentation_csv_path],
-                                                                inputs[train_multiplier])
-        train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=inputs[batch_size],
-                                                   shuffle=True, num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
-        if 'Validation' in inputs[workflow_box]:
+    while not stop_event.is_set():
+        if 'Training' in inputs[workflow_box]:
             if 'Semantic' in inputs[mode_box]:
-                val_dataset = DataComponents.ValDataset(inputs[val_dataset_path], inputs[augmentation_csv_path])
+                train_dataset = DataComponents.TrainDataset(inputs[train_dataset_path], inputs[augmentation_csv_path], inputs[train_multiplier],
+                                                            inputs[exclude_edge], inputs[exclude_edge_size_in], inputs[exclude_edge_size_out])
             else:
-                val_dataset = DataComponents.ValDatasetInstance(inputs[val_dataset_path], inputs[augmentation_csv_path])
-            val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=inputs[batch_size],
-                                                     num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
+                train_dataset = DataComponents.TrainDatasetInstance(inputs[train_dataset_path], inputs[augmentation_csv_path],
+                                                                    inputs[train_multiplier])
+            train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=inputs[batch_size],
+                                                       shuffle=True, num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
+            if 'Validation' in inputs[workflow_box]:
+                if 'Semantic' in inputs[mode_box]:
+                    val_dataset = DataComponents.ValDataset(inputs[val_dataset_path], inputs[augmentation_csv_path])
+                else:
+                    val_dataset = DataComponents.ValDatasetInstance(inputs[val_dataset_path], inputs[augmentation_csv_path])
+                val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=inputs[batch_size],
+                                                         num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
+            else:
+                val_loader = None
+            if 'Test' in inputs[workflow_box]:
+                if 'Semantic' in inputs[mode_box]:
+                    test_dataset = DataComponents.ValDataset(inputs[test_dataset_path], inputs[augmentation_csv_path])
+                else:
+                    test_dataset = DataComponents.ValDatasetInstance(inputs[test_dataset_path], inputs[augmentation_csv_path])
+                test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=inputs[batch_size])
+        arch = pick_arch(inputs[model_architecture], inputs[model_channel_count], inputs[model_depth], inputs[model_z_to_xy_ratio])
+        if ('Sparsely Labelled' in inputs[train_dataset_mode]) or (inputs[exclude_edge]):
+            sparse_train = True
         else:
-            val_loader = None
-        if 'Test' in inputs[workflow_box]:
-            if 'Semantic' in inputs[mode_box]:
-                test_dataset = DataComponents.ValDataset(inputs[test_dataset_path], inputs[augmentation_csv_path])
-            else:
-                test_dataset = DataComponents.ValDatasetInstance(inputs[test_dataset_path], inputs[augmentation_csv_path])
-            test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=inputs[batch_size])
-    arch = pick_arch(inputs[model_architecture], inputs[model_channel_count], inputs[model_depth], inputs[model_z_to_xy_ratio])
-    if ('Sparsely Labelled' in inputs[train_dataset_mode]) or (inputs[exclude_edge]):
-        sparse_train = True
-    else:
-        sparse_train = False
-    if 'Semantic' in inputs[mode_box]:
-        model = PLModuleSemantic(arch,
-                                 inputs[initial_lr], inputs[patience], inputs[min_lr],
-                                 'Validation' in inputs[workflow_box], inputs[enable_mid_visualization],
-                                 inputs[mid_visualization_input],
-                                 sparse_train, 'Sparsely Labelled' in inputs[val_dataset_mode], 'Sparsely Labelled' in inputs[test_dataset_mode])
-    else:
-        model = PLModuleInstance(arch,
-                                 inputs[initial_lr], inputs[patience], inputs[min_lr],
-                                 'Validation' in inputs[workflow_box], inputs[enable_mid_visualization],
-                                 inputs[mid_visualization_input],
-                                 sparse_train, 'Sparsely Labelled' in inputs[val_dataset_mode],
-                                 'Sparsely Labelled' in inputs[test_dataset_mode])
-    if inputs[read_existing_model]:
-        model.load_state_dict(torch.load(inputs[existing_model_path]))
-    if inputs[enable_tensorboard]:
-        tensorboard_thread = threading.Thread(target=start_tensorboard, args=[inputs])
-        tensorboard_thread.daemon = True
-        tensorboard_thread.start()
-        logger = create_logger(inputs)
-    else:
-        logger = None
-    if 'Training' in inputs[workflow_box]:
-        trainer = pl.Trainer(max_epochs=inputs[max_epochs], log_every_n_steps=1, logger=logger,
-                             accelerator="gpu", enable_checkpointing=False,
-                             precision=inputs[precision], enable_progress_bar=True, num_sanity_val_steps=0,)
-        start_time = time.time()
-        trainer.fit(model,
-                    val_dataloaders=val_loader,
-                    train_dataloaders=train_loader)
-        end_time = time.time()
-        print(f"Training Taken: {end_time - start_time} seconds")
-    if 'Test' in inputs[workflow_box]:
-        trainer = pl.Trainer(precision=inputs[precision], enable_progress_bar=True, logger=False, accelerator="gpu")
-        trainer.test(model, dataloaders=test_loader)
-    if inputs[save_model]:
-        full = os.path.join(inputs[save_model_path], inputs[save_model_name])
-        torch.save(model.state_dict(), full)
-    if 'Predict' in inputs[workflow_box]:
-        trainer = pl.Trainer(precision=inputs[precision], enable_progress_bar=True, logger=False, accelerator="gpu")
-        predict_dataset = DataComponents.Predict_Dataset(inputs[predict_dataset_path],
-                                                         hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
-                                                         hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
-                                                         TTA_hw=inputs[TTA_xy])
-        predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-        meta_info = predict_dataset.__getmetainfo__()
-        start_time = time.time()
-        predictions = trainer.predict(model, predict_loader)
-        end_time = time.time()
-        print(f"Prediction Taken: {end_time - start_time} seconds")
+            sparse_train = False
         if 'Semantic' in inputs[mode_box]:
+            model = PLModuleSemantic(arch,
+                                     inputs[initial_lr], inputs[patience], inputs[min_lr],
+                                     'Validation' in inputs[workflow_box], inputs[enable_mid_visualization],
+                                     inputs[mid_visualization_input],
+                                     sparse_train, 'Sparsely Labelled' in inputs[val_dataset_mode], 'Sparsely Labelled' in inputs[test_dataset_mode])
+        else:
+            model = PLModuleInstance(arch,
+                                     inputs[initial_lr], inputs[patience], inputs[min_lr],
+                                     'Validation' in inputs[workflow_box], inputs[enable_mid_visualization],
+                                     inputs[mid_visualization_input],
+                                     sparse_train, 'Sparsely Labelled' in inputs[val_dataset_mode],
+                                     'Sparsely Labelled' in inputs[test_dataset_mode])
+        if inputs[read_existing_model]:
+            model.load_state_dict(torch.load(inputs[existing_model_path]))
+        if inputs[enable_tensorboard]:
+            tensorboard_thread = threading.Thread(target=start_tensorboard, args=[inputs])
+            tensorboard_thread.daemon = True
+            tensorboard_thread.start()
+            logger = create_logger(inputs)
+        else:
+            logger = None
+        if 'Training' in inputs[workflow_box]:
+            trainer = pl.Trainer(max_epochs=inputs[max_epochs], log_every_n_steps=1, logger=logger,
+                                 accelerator="gpu", enable_checkpointing=False,
+                                 precision=inputs[precision], enable_progress_bar=True, num_sanity_val_steps=0,)
             start_time = time.time()
-            DataComponents.predictions_to_final_img(predictions, meta_info, direc=inputs[result_folder_path],
-                                                    hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
-                                                    hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
-                                                    TTA_hw=inputs[TTA_xy])
+            trainer.fit(model,
+                        val_dataloaders=val_loader,
+                        train_dataloaders=train_loader)
             end_time = time.time()
-            print(f"Converting and saving taken: {end_time - start_time} seconds")
-        else:
-            start_time = time.time()
-            DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=inputs[result_folder_path],
+            print(f"Training Taken: {end_time - start_time} seconds")
+        if 'Test' in inputs[workflow_box]:
+            trainer = pl.Trainer(precision=inputs[precision], enable_progress_bar=True, logger=False, accelerator="gpu")
+            trainer.test(model, dataloaders=test_loader)
+        if inputs[save_model]:
+            full = os.path.join(inputs[save_model_path], inputs[save_model_name])
+            torch.save(model.state_dict(), full)
+        if 'Predict' in inputs[workflow_box]:
+            trainer = pl.Trainer(precision=inputs[precision], enable_progress_bar=True, logger=False, accelerator="gpu")
+            predict_dataset = DataComponents.Predict_Dataset(inputs[predict_dataset_path],
                                                              hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
                                                              hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
                                                              TTA_hw=inputs[TTA_xy])
+            predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+            meta_info = predict_dataset.__getmetainfo__()
+            start_time = time.time()
+            predictions = trainer.predict(model, predict_loader)
             end_time = time.time()
-            print(f"Converting and saving taken: {end_time - start_time} seconds")
+            print(f"Prediction Taken: {end_time - start_time} seconds")
+            if 'Semantic' in inputs[mode_box]:
+                start_time = time.time()
+                DataComponents.predictions_to_final_img(predictions, meta_info, direc=inputs[result_folder_path],
+                                                        hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
+                                                        hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
+                                                        TTA_hw=inputs[TTA_xy])
+                end_time = time.time()
+                print(f"Converting and saving taken: {end_time - start_time} seconds")
+            else:
+                start_time = time.time()
+                DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=inputs[result_folder_path],
+                                                                 hw_size=inputs[predict_hw_size], depth_size=inputs[predict_depth_size],
+                                                                 hw_overlap=inputs[predict_hw_overlap], depth_overlap=inputs[predict_depth_overlap],
+                                                                 TTA_hw=inputs[TTA_xy])
+                end_time = time.time()
+                print(f"Converting and saving taken: {end_time - start_time} seconds")
 
 
 def visualisation_activations(existing_model_path, example_image, slice_to_show,
@@ -336,6 +351,15 @@ def update_available_arch(radio_value):
 
 
 if __name__ == "__main__":
+    # Function to start workflow when the GUI button is pressed
+    def start_training_callback(inputs):
+        global workflow_thread
+        workflow_thread = start_work_flow_thread(inputs)
+
+    # Function to stop workflow when the GUI button is pressed
+    def stop_training_callback():
+        stop_work_flow_thread(workflow_thread, stop_event)
+
     with gr.Blocks(title=f"Volume Seg Tool") as WebUI:
         with gr.Tab("Main"):
             mode_box = gr.Radio(["Semantic", "Instance (BETA)"], value="Semantic", label="Segmentation Mode")
@@ -488,8 +512,11 @@ if __name__ == "__main__":
                 TTA_xy,
 #                TTA_z,
                 }
-            start_button = gr.Button("Start Workflow", elem_id="start_button")
-            start_button.click(start_work_flow, inputs=input_dict)
+            with gr.Row():
+                start_button = gr.Button("Start Workflow", elem_id="start_button")
+                start_button.click(start_training_callback, inputs=input_dict)
+                stop_button = gr.Button("Stop Workflow", elem_id="stop_button")
+                stop_button.click(stop_training_callback)
 
         with gr.Tab("Activations Visualisation"):
             gr.Markdown("Given an example image and a trained model weight, visualize the model output in each activation layers.")

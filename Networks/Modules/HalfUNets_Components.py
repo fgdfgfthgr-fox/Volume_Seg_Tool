@@ -9,14 +9,14 @@ class GhostModule(nn.Module):
         super(GhostModule, self).__init__()
         padding = tuple((k - 1) // 2 for k in kernel_size)
         self.primary_conv = nn.Sequential(
-            nn.Conv3d(in_channels, out_channels // 2, kernel_size=1),
+            nn.Conv3d(in_channels, out_channels // 2, kernel_size=1, bias=False),
             nn.BatchNorm3d(out_channels // 2),
             nn.ReLU(),
         )
 
         self.cheap_operation = nn.Sequential(
             nn.Conv3d(out_channels // 2, out_channels // 2, kernel_size=kernel_size, padding=padding,
-                      groups=out_channels // 2),
+                      groups=out_channels // 2, bias=False),
             nn.BatchNorm3d(out_channels // 2),
             nn.ReLU(),
         )
