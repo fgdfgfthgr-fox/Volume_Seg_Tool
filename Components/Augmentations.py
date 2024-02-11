@@ -8,7 +8,6 @@ import scipy
 import numpy as np
 from joblib import Parallel, delayed
 from scipy.ndimage import distance_transform_edt
-from skimage.feature import peak_local_max
 from .poly_label_tensor_3D import tensor_polylabel
 
 # Various customize image augmentation implementations specialised in 4 dimensional tensors.
@@ -185,7 +184,7 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True, max_atte
 
     def contains_foreground(tensor):
         total_pixels = tensor.numel()
-        pixels_greater_than_zero = (tensor > 0).sum().item()
+        pixels_greater_than_zero = (tensor > 0).sum().detach()
 
         return pixels_greater_than_zero >= (total_pixels * minimal_foreground)
 
@@ -354,6 +353,66 @@ def binarisation(tensor):
     return tensor
 
 
+def binary_dilation_torch(input, structure=None, iterations=1, mask=None,
+                          output=None):
+    """
+    Multidimensional binary dilation with the given structuring element.
+    Similar to scipy.ndimage.binary_erosion but is for Pytorch Tensors.
+
+    Parameters
+    ----------
+    input : torch.Tensor
+        Binary tensor to be dilated. Non-zero (True) elements form
+        the subset to be dilated.
+    structure : torch.Tensor, optional
+        Structuring element used for the dilation. Non-zero elements are
+        considered True. If no structuring element is provided an element
+        is generated with a square connectivity equal to one.
+    iterations : int, optional
+        The dilation is repeated `iterations` times (one, by default).
+        If iterations is less than 1, the dilation is repeated until the
+        result does not change anymore. Only an integer of iterations is
+        accepted.
+    mask : torch.Tensor, optional
+        If a mask is given, only those elements with a True value at
+        the corresponding mask element are modified at each iteration.
+    output : torch.Tensor, optional
+        Tensor of the same shape as input, into which the output is placed.
+        By default, a new tensor is created.
+
+    Returns
+    -------
+    binary_dilation : torch.Tensor of bools
+        Dilation of the input by the structuring element.
+    """
+
+    if structure is None:
+        structure = {
+            1: torch.ones(3, dtype=input.dtype, device=input.device),
+            2: torch.ones((3, 3), dtype=input.dtype, device=input.device),
+            3: torch.ones((3, 3, 3), dtype=input.dtype, device=input.device)
+        }[input.dim()]
+    unsqueezed_structure = structure.unsqueeze(0).unsqueeze(0).float()
+
+    # Determine the appropriate convolution function based on the dimensionality of the input
+    conv_function = {1: F.conv1d, 2: F.conv2d, 3: F.conv3d}[input.dim()]
+
+    # Perform binary dilation using convolution
+    for _ in range(iterations):
+        unsqueezed_input = input.unsqueeze(0).unsqueeze(0).float()
+        dilated_input = conv_function(unsqueezed_input, unsqueezed_structure, padding=1)
+        dilated_input = dilated_input.squeeze().bool()
+
+        # Apply mask if provided
+        if mask is not None:
+            dilated_input[mask == 0] = input[mask == 0]
+
+        input = dilated_input
+
+    # Return the result
+    return input if output is None else input.copy_(output)
+
+
 def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1):
     """
     Transform an instance segmented map into a contour map.\n
@@ -362,45 +421,35 @@ def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1
     Args:
         input_tensor (torch.Tensor): The input instance segmented map with a shape of (D, H, W).
                                      0 is background and every other value is a distinct object.
-        contour_inward (int): Size of morphological erosion.
+        contour_inward (int): Size of morphological erosion. No longer used.
         contour_outward (int): Size of morphological dilation.
 
     Returns:
         torch.Tensor: Contour map where 0 are background or inside of objects while 1 are the boundaries.
     """
-    input_array = input_tensor.numpy()
-    unique_values = np.unique(input_array)
-    structuring_element = np.ones((3, 3, 3), dtype=np.byte)
-    transformed_tensor = torch.zeros_like(input_tensor, dtype=torch.uint8)
-
+    #device = "cuda" if torch.cuda.is_available() else "cpu"
+    input_tensor = input_tensor#.to(device)
+    unique_values = torch.unique(input_tensor)#.to(device)
+    transformed_tensor = torch.zeros_like(input_tensor, dtype=torch.bool)#.to(device)
     def process_object(value):
         if value == 0:
             return  # Skip background
 
         # Create a binary mask for the current object
-        object_mask = (input_array == value)
-
-        # Erosion
-        if contour_inward >= 1:
-            eroded_mask = scipy.ndimage.binary_erosion(object_mask, structuring_element, contour_inward).astype(np.byte)
-        else:
-            eroded_mask = object_mask
+        object_mask = (input_tensor & value)
 
         # Dilation
         if contour_outward >= 1:
-            dilated_mask = scipy.ndimage.binary_dilation(object_mask, structuring_element, contour_outward).astype(np.byte)
+            dilated_tensor = binary_dilation_torch(object_mask, iterations=contour_outward)
         else:
-            dilated_mask = object_mask
-
-        eroded_tensor, dilated_tensor = torch.from_numpy(eroded_mask), torch.from_numpy(dilated_mask)
+            dilated_tensor = object_mask
 
         # Mark boundary area as one
-        excluded_regions = (eroded_tensor == 0) & (dilated_tensor == 1)
+        excluded_regions = (object_mask == 0) & (dilated_tensor == 1)
         transformed_tensor[excluded_regions] = 1
-
     # Use joblib to parallelize the loop
     Parallel(backend='threading', n_jobs=-1)(delayed(process_object)(value) for value in unique_values)
-
+    transformed_tensor = transformed_tensor.to(torch.uint8)#.to("cpu")
     return transformed_tensor
 
 

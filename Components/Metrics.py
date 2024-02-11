@@ -95,8 +95,8 @@ class BinaryMetrics(nn.Module):
             tpr (torch.Tensor): True Positive Rate (Sensitivity).
             tnr (torch.Tensor): True Negative Rate (Specificity).
         """
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
+        #inputs = inputs.view(-1)
+        #targets = targets.view(-1)
         # Calculate True Positives, True Negatives, False Positives, False Negatives
         if self.sparse_label:
             # Input(i): (B, 1, D, H, W), float32
@@ -123,12 +123,12 @@ class BinaryMetrics(nn.Module):
 
         # Calculate TP, FN, TN, FP
         inputs = torch.where(inputs >= 0.5, 1, 0).to(torch.int8)
-        targets = targets#.to(torch.int8)
+        #targets = targets.to(torch.int8)
 
-        true_positives = (inputs*targets).sum().item()
-        false_negatives = ((1-inputs)*targets).sum().item()
-        true_negatives = ((1-inputs)*(1-targets)).sum().item()
-        false_positives = (inputs*(1-targets)).sum().item()
+        true_positives = (inputs*targets).sum().detach()
+        false_negatives = ((1-inputs)*targets).sum().detach()
+        true_negatives = ((1-inputs)*(1-targets)).sum().detach()
+        false_positives = (inputs*(1-targets)).sum().detach()
 
         # Calculate True Positive Rate (TPR) and True Negative Rate (TNR)
         tpr = (true_positives + smooth) / (true_positives + false_negatives + smooth)

@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from Networks import *
+from prodigyopt import Prodigy
 
 logger = TensorBoardLogger('lightning_logs', name='Run')
 
@@ -21,13 +22,13 @@ def start_tensorboard():
 
 class PLModuleInstance(pl.LightningModule):
 
-    def __init__(self, network_arch, initial_lr, patience, min_lr, enable_val, enable_mid_visual, mid_visual_image,
+    def __init__(self, network_arch, enable_val, enable_mid_visual, mid_visual_image,
                  use_sparse_label_train, use_sparse_label_val, use_sparse_label_test):
         super().__init__()
         self.model = network_arch
-        self.initial_lr = initial_lr
-        self.patience = patience
-        self.min_lr = min_lr
+        #self.initial_lr = initial_lr
+        #self.patience = patience
+        #self.min_lr = min_lr
         self.enable_val = enable_val
         self.enable_mid_visual = enable_mid_visual
         self.mid_visual_image = mid_visual_image
@@ -52,13 +53,13 @@ class PLModuleInstance(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity = self._step(batch, self.use_sparse_label_train)
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=False)
+        #self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=False)
         self.train_metrics.append([loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity])
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
         loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity = self._step(batch, self.use_sparse_label_val)
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False, logger=False)
+        #self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False, logger=False)
         self.val_metrics.append([loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity])
         return {'loss': loss}
 
@@ -68,22 +69,23 @@ class PLModuleInstance(pl.LightningModule):
         return {'loss': loss}
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        x = batch
-        result_p, result_c = self.forward(x)
+        result_p, result_c = self.forward(batch)
         #result_p = torch.where(result_p >= 0.5, 1, 0).to(torch.int8)
         #result_c = torch.where(result_c >= 0.5, 1, 0).to(torch.int8)
         return result_p, result_c
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.initial_lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
-                                                               factor=0.5, patience=self.patience,
-                                                               threshold=0.001, threshold_mode='rel',
-                                                               cooldown=0, min_lr=self.min_lr)
-        metrics = "val_loss" if self.enable_val else "train_loss"
+        optimizer = Prodigy(self.parameters(), lr=1, weight_decay=0.02, use_bias_correction=True, d_coef=0.5, decouple=True)
+        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
+        #                                                       factor=0.5, patience=self.patience,
+        #                                                       threshold=0.001, threshold_mode='rel',
+        #                                                       cooldown=0, min_lr=self.min_lr)
+        scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1, last_epoch=-1)  # Essentially no schedule
+        #metrics = "val_loss" if self.enable_val else "train_loss"
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "monitor": metrics},
+        #    "lr_scheduler": {"scheduler": scheduler, "monitor": metrics},
+            "lr_scheduler": {"scheduler": scheduler},
         }
 
     def lr_scheduler_step(self, scheduler, metric):
@@ -109,15 +111,16 @@ class PLModuleInstance(pl.LightningModule):
 
     def on_train_epoch_end(self):
         self.log_metrics("Train", self.train_metrics)
-
-        lr = self.lr_schedulers().optimizer.param_groups[0]['lr']
-        self.logger.experiment.add_scalar(f"Other/Learn Rate", lr, self.current_epoch)
+        d = self.lr_schedulers().optimizer.param_groups[0]["d"]
+        k = self.lr_schedulers().optimizer.param_groups[0]["k"]
+        dlr = d * (((1 - 0.999 ** (k + 1)) ** 0.5) / (1 - 0.9 ** (k + 1))) # Technically not lr but dlr in prodigy optimizer.
+        self.logger.experiment.add_scalar(f"Other/Step Size", dlr, self.current_epoch)
 
         #vram_data = torch.cuda.mem_get_info()
         vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
         #vram_usage = (vram_data[1]-vram_data[0])/(1024**2)
         self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
-        torch.cuda.reset_peak_memory_stats()
+        #torch.cuda.reset_peak_memory_stats()
         if self.enable_mid_visual:
             with torch.inference_mode():
                 mid_visual_pixel, mid_visual_contour = self.forward(self.mid_visual_tensor)

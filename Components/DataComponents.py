@@ -303,7 +303,7 @@ class TrainDataset(torch.utils.data.Dataset):
         idx = math.floor(idx / self.train_multiplier)
         img_tensor, lab_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :]
         img_tensor, lab_tensor = apply_aug(img_tensor, lab_tensor, self.augmentation_params)
-        lab_tensor = lab_tensor.squeeze(1)
+        #lab_tensor = lab_tensor.squeeze(1)
         return img_tensor, lab_tensor
 
 
@@ -377,6 +377,7 @@ class ValDataset(torch.utils.data.Dataset):
         # Get the image and label tensors at the specified index
         # C, D, H, W
         img_tensor, lab_tensor = self.chopped_tensor_pairs[idx][0][None, :], self.chopped_tensor_pairs[idx][1][None, :]
+        #lab_tensor = lab_tensor.squeeze(1)
         return img_tensor, lab_tensor
 
 
@@ -484,7 +485,7 @@ class TrainDatasetInstance(torch.utils.data.Dataset):
         self.num_files = len(self.file_list)
         self.img_tensors = [path_to_tensor(item[0], label=False) for item in self.file_list]
         self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], label=True)) for item in self.file_list]
-        print('Generating contour map(s)...')
+        print('Generating contour map(s)... Can take a while if there are lots of objects.')
         self.contour_tensors = [Aug.instance_contour_transform(path_to_tensor(item[1], label=True)) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
@@ -497,7 +498,7 @@ class TrainDatasetInstance(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         # Get the image and label tensors at the specified index
         # C, D, H, W
-        idx = math.floor(idx / self.train_multiplier)
+        idx = idx // self.train_multiplier
         img_tensor, lab_tensor, contour_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :], self.contour_tensors[idx][None, :]
         img_tensor, lab_tensor, contour_tensor = apply_aug_instance(img_tensor, lab_tensor, contour_tensor, self.augmentation_params)
         lab_tensor = lab_tensor.squeeze(1)
