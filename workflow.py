@@ -15,6 +15,10 @@ from Networks import *
 from pytorch_lightning.loggers import TensorBoardLogger
 
 
+num_cpu_cores = os.cpu_count()
+desired_num_workers = max(num_cpu_cores-1, 1)
+
+
 def create_logger(args):
     logger = TensorBoardLogger(f'{args.tensorboard_path}', name='Run')
     return logger
@@ -65,14 +69,15 @@ def start_work_flow(args):
             train_dataset = DataComponents.TrainDatasetInstance(args.train_dataset_path, args.augmentation_csv_path,
                                                                 args.train_multiplier)
         train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size,
-                                                   shuffle=True, num_workers=0)
+                                                   shuffle=True,
+                                                   num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
         if 'Validation' in args.workflow_box:
             if 'Semantic' in args.mode_box:
                 val_dataset = DataComponents.ValDataset(args.val_dataset_path, args.augmentation_csv_path)
             else:
                 val_dataset = DataComponents.ValDatasetInstance(args.val_dataset_path, args.augmentation_csv_path)
             val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=args.batch_size,
-                                                     num_workers=0)
+                                                     num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
         else:
             val_loader = None
         if 'Test' in args.workflow_box:
@@ -113,7 +118,7 @@ def start_work_flow(args):
         trainer = pl.Trainer(max_epochs=args.max_epochs, log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=False,
                              precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
-                             profiler='simple',
+                             #profiler='simple',
                              #callbacks=[StochasticWeightAveraging(swa_lrs=0.9, swa_epoch_start=0.8, annealing_epochs=4)
                              #callbacks=[ModelPruning('l1_unstructured', amount=0.5),
                              #inference_mode=False
@@ -164,7 +169,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Deep Learning Workflow")
     parser.add_argument("--workflow_box", nargs='+', choices=["Training", "Validation", "Test", "Predict"], default=[],
                         help="Workflows to enable")
-    parser.add_argument("--mode_box", choices=["Semantic", "Instance (BETA)"], default="Semantic",
+    parser.add_argument("--mode_box", choices=["Semantic", "Instance"], default="Semantic",
                         help="Segmentation Mode")
     parser.add_argument("--train_dataset_path", type=str, default="Datasets/train", help="Train Dataset Path")
     parser.add_argument("--augmentation_csv_path", type=str, default="Augmentation Parameters.csv",

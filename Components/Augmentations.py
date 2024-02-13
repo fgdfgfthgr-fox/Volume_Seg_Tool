@@ -8,7 +8,6 @@ import scipy
 import numpy as np
 from joblib import Parallel, delayed
 from scipy.ndimage import distance_transform_edt
-from .poly_label_tensor_3D import tensor_polylabel
 
 # Various customize image augmentation implementations specialised in 4 dimensional tensors.
 # (Channel, Depth, Height, Width).
@@ -138,7 +137,7 @@ def random_rotation_3d(tensors, angle_range, plane='xy', interpolations=('biline
         raise ValueError("Number of tensors, interpolations, and fill_values should be the same.")
 
     # Generate random angles within the specified range
-    angle = random.uniform(angle_range[0], angle_range[1])
+    angle = random.randrange(angle_range[0], angle_range[1], 90)
 
     rotated_tensors = []
     for i in range(num_tensors):
@@ -451,37 +450,3 @@ def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1
     Parallel(backend='threading', n_jobs=-1)(delayed(process_object)(value) for value in unique_values)
     transformed_tensor = transformed_tensor.to(torch.uint8)#.to("cpu")
     return transformed_tensor
-
-
-def instance_seed_transform(input_tensor):
-    # Convert PyTorch tensors to NumPy arrays
-    input_array = input_tensor.numpy()
-    unique_values = np.unique(input_array)
-
-    empty_tensor = torch.zeros_like(input_tensor)
-
-    def process_object(value):
-        if value == 0:
-            return  # Skip background
-
-        # Create a binary mask for the current object
-        object_mask = (input_tensor == value)
-        result = tensor_polylabel(object_mask, 1, False)
-        z, y, x = int(result.z), int(result.y), int(result.x)
-        if z >= empty_tensor.shape[0]:
-            z = z - 1
-        if y >= empty_tensor.shape[1]:
-            y = y - 1
-        if x >= empty_tensor.shape[2]:
-            x = x - 1
-        if z <= 0:
-            z = z + 1
-        if y <= 0:
-            y = y + 1
-        if x <= 0:
-            x = x + 1
-        empty_tensor[:, z-1:z+1, y-1:y+1, x-1:x+1] = 1
-
-    # Use joblib to parallelize the loop
-    Parallel(backend='threading', n_jobs=-1)(delayed(process_object)(value) for value in unique_values)
-    return empty_tensor

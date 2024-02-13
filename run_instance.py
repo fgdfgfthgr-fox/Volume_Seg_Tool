@@ -9,7 +9,6 @@ import subprocess
 import threading
 import time
 from Networks import *
-from prodigyopt import Prodigy
 
 logger = TensorBoardLogger('lightning_logs', name='Run')
 
@@ -75,7 +74,9 @@ class PLModuleInstance(pl.LightningModule):
         return result_p, result_c
 
     def configure_optimizers(self):
-        optimizer = Prodigy(self.parameters(), lr=1, weight_decay=0.02, use_bias_correction=True, d_coef=0.5, decouple=True)
+        #optimizer = Prodigy(self.parameters(), lr=1, weight_decay=0.01, use_bias_correction=True, d_coef=1, decouple=True, growth_rate=1.5)
+        fused = True if device == "cuda" else False
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.001, fused=fused)
         #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
         #                                                       factor=0.5, patience=self.patience,
         #                                                       threshold=0.001, threshold_mode='rel',
@@ -111,10 +112,11 @@ class PLModuleInstance(pl.LightningModule):
 
     def on_train_epoch_end(self):
         self.log_metrics("Train", self.train_metrics)
-        d = self.lr_schedulers().optimizer.param_groups[0]["d"]
-        k = self.lr_schedulers().optimizer.param_groups[0]["k"]
-        dlr = d * (((1 - 0.999 ** (k + 1)) ** 0.5) / (1 - 0.9 ** (k + 1))) # Technically not lr but dlr in prodigy optimizer.
-        self.logger.experiment.add_scalar(f"Other/Step Size", dlr, self.current_epoch)
+        #lr = self.lr_schedulers().optimizer.param_groups[0]["acc_delta"]
+        #d = self.lr_schedulers().optimizer.param_groups[0]["d"]
+        #k = self.lr_schedulers().optimizer.param_groups[0]["k"]
+        #dlr = d * (((1 - 0.999 ** (k + 1)) ** 0.5) / (1 - 0.9 ** (k + 1))) # Technically not lr but dlr in prodigy optimizer.
+        #self.logger.experiment.add_scalar(f"Other/Step Size", lr, self.current_epoch)
 
         #vram_data = torch.cuda.mem_get_info()
         vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
@@ -134,14 +136,14 @@ class PLModuleInstance(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    model = PLModuleInstance(Instance_General.Residual(base_channels=16, z_to_xy_ratio=4, depth=5), 0.001, 6, 0.0005, True,
-                             True, 'Datasets/mid_visualiser/image.tif',
-                             False, False, False)
+    model = PLModuleInstance(Instance_General.UNet(base_channels=4, z_to_xy_ratio=1, depth=4, type='Basic'),
+                             True, False, None, False,
+                             False, False)
     #model.load_state_dict(torch.load('placeholder.pth'))
     tensorboard_thread = threading.Thread(target=start_tensorboard)
     tensorboard_thread.daemon = True
     tensorboard_thread.start()
-    train_dataset = DataComponents.TrainDatasetInstance("Datasets/train", "Augmentation Parameters.csv", train_multiplier=32)
+    train_dataset = DataComponents.TrainDatasetInstance("Datasets/train", "Augmentation Parameters.csv", train_multiplier=8)
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=1, shuffle=True)
     val_dataset = DataComponents.ValDatasetInstance("Datasets/val", "Augmentation Parameters.csv")
     val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)

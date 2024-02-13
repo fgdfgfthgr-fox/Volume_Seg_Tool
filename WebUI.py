@@ -27,8 +27,6 @@ from command_executor import CommandExecutor
 
 document_symbol = '\U0001F4C4'
 
-num_cpu_cores = os.cpu_count()
-desired_num_workers = max(num_cpu_cores-1, 1)
 command_executor = CommandExecutor()
 
 
@@ -280,7 +278,7 @@ if __name__ == "__main__":
 
     with gr.Blocks(title=f"Volume Seg Tool") as WebUI:
         with gr.Tab("Main"):
-            mode_box = gr.Radio(["Semantic", "Instance (BETA)"], value="Semantic", label="Segmentation Mode")
+            mode_box = gr.Radio(["Semantic", "Instance"], value="Semantic", label="Segmentation Mode")
             workflow_box = gr.CheckboxGroup(["Training", "Validation", "Test", "Predict"],
                                             label="Workflows to enable")
             with gr.Accordion("Workflows Explanation", open=False):
@@ -354,7 +352,7 @@ if __name__ == "__main__":
                 model_channel_count = gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
                                                 info="Often means the number of output channels in the first encoder block. Determines the size of the network.")
                 model_depth = gr.Number(5, label="Model Depth", precision=0, minimum=3,
-                                        info="Only work for HalfUNet and UNet, minimal is 3. Means the number of different downsampled sizes. Including un-downsampled.")
+                                        info="Minimal is 3. Means the number of different feature size exist. Including un-downsampled.")
                 model_z_to_xy_ratio = gr.Number(1.0, label="Z resolution to XY resolution ratio",
                                                 info="The ratio which the z resolution of the images in the dataset divided by their xy resolution. Determines some internal model layout. We assume xy has the same resolution.")
 #                model_growth_rate = gr.Number(12, label="Model Growth Rate", precision=0,

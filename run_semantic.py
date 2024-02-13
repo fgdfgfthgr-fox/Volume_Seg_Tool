@@ -1,5 +1,3 @@
-from typing import Any
-
 import lightning.pytorch as pl
 import torch
 import torch.utils.data
@@ -12,7 +10,6 @@ import subprocess
 import threading
 import time
 from Networks import *
-from prodigyopt import Prodigy
 
 logger = TensorBoardLogger('lightning_logs', name='Run')
 
@@ -133,7 +130,9 @@ class PLModuleSemantic(pl.LightningModule):
         return result
 
     def configure_optimizers(self):
-        optimizer = Prodigy(self.parameters(), lr=1, weight_decay=0.02, use_bias_correction=True, d_coef=0.5, decouple=True)
+        # optimizer = Prodigy(self.parameters(), lr=1, weight_decay=0.01, use_bias_correction=True, d_coef=1, decouple=True, growth_rate=1.5)
+        fused = True if device == "cuda" else False
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.001, fused=fused)
         #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
         #                                                       factor=0.5, patience=self.patience,
         #                                                       threshold=0.001, threshold_mode='rel',
@@ -166,10 +165,10 @@ class PLModuleSemantic(pl.LightningModule):
 
     def on_train_epoch_end(self):
         self.log_metrics("Train", self.train_metrics)
-        d = self.lr_schedulers().optimizer.param_groups[0]["d"]
-        k = self.lr_schedulers().optimizer.param_groups[0]["k"]
-        dlr = d * (((1 - 0.999 ** (k + 1)) ** 0.5) / (1 - 0.9 ** (k + 1)))
-        self.logger.experiment.add_scalar(f"Other/Step Size", dlr, self.current_epoch)
+        #d = self.lr_schedulers().optimizer.param_groups[0]["d"]
+        #k = self.lr_schedulers().optimizer.param_groups[0]["k"]
+        #dlr = d * (((1 - 0.999 ** (k + 1)) ** 0.5) / (1 - 0.9 ** (k + 1)))
+        #self.logger.experiment.add_scalar(f"Other/Step Size", dlr, self.current_epoch)
 
         #vram_data = torch.cuda.mem_get_info()
         vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
