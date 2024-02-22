@@ -82,24 +82,25 @@ def adj_brightness(tensor, brightness):
     tensor = (brightness * tensor).clamp(0, 1)
     return tensor
 
+#    The sigma is automatically calculated in the way same as torchvision.transforms.functional.gaussian_blur(),
+#    which is sigma = 0.3 * ((kernel_size - 1) * 0.5 - 1) + 0.8\n
 
-def gaussian_blur_3d(tensor, kernel_size=3):
+def gaussian_blur_3d(tensor, kernel_size=3, sigma=0.8):
     """
     Apply 3D Gaussian blur to a 3D tensor.
-    The sigma is automatically calculated in the way same as torchvision.transforms.functional.gaussian_blur(),
-    which is sigma = 0.3 * ((kernel_size - 1) * 0.5 - 1) + 0.8\n
     High kernel_size could slow down augmentation significantly.
 
     Args:
         tensor (torch.Tensor): Input 3D tensor of shape {C, D, H, W}.
         kernel_size (int): Size of the Gaussian kernel. Default: 3.
+        sigma (float): Sigma of the Gaussian blur. Default: 0.8.
 
     Returns:
         torch.Tensor: 3D tensor after applying Gaussian blur with the same shape as the input.
     """
     # Generate 1D Gaussian kernel along each dimension
     input_channels = tensor.shape[0]
-    sigma = 0.3 * ((kernel_size - 1) * 0.5 - 1) + 0.8
+    #sigma = 0.3 * ((kernel_size - 1) * 0.5 - 1) + 0.8
     x = torch.arange(-math.floor(kernel_size/2), math.ceil(kernel_size/2), dtype=torch.float32)
     kernel_1d = torch.exp(-0.5 * (x / sigma) ** 2)
 

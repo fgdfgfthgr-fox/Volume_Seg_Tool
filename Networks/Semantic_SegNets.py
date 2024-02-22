@@ -1,5 +1,6 @@
 import torch.nn as nn
 from .Modules.SegNets_Components import SegEncodeBlock_2, SegEncodeBlock_3, SegDecodeBlock_2, SegDecodeBlock_3
+from .Modules.General_Components import scSE
 import math
 
 
@@ -50,13 +51,14 @@ class Original(nn.Module):
 
 
 class Auto(nn.Module):
-    def __init__(self, base_channels=64, depth=5, z_to_xy_ratio=1):
+    def __init__(self, base_channels=64, depth=5, z_to_xy_ratio=1, se=False):
         super(Auto, self).__init__()
         if depth < 2:
             raise ValueError("The depth needs to be at least 2 (2 different feature map size exist).")
         depth = depth - 1 # The way I wrote SegNet modules means it's actually always one layer more than specified
         self.depth = depth
         self.special_layers = math.floor(math.log2(z_to_xy_ratio))
+        self.se = se
         if abs(self.special_layers) + 1 >= depth:
             raise ValueError("Current Z to XY ratio require deeper depth to make network effective.")
         kernel_sizes_conv = []
@@ -75,15 +77,19 @@ class Auto(nn.Module):
             if i == 0:
                 setattr(self, f'encode0',
                         SegEncodeBlock_2(1, base_channels, kernel_sizes_conv[0], kernel_sizes_pool[0]))
+                if se: setattr(self, f'encode_se0', scSE(base_channels))
                 setattr(self, f'decode0',
                         SegDecodeBlock_2(base_channels, 2, kernel_sizes_conv[0], kernel_sizes_pool[0]))
+                if se: setattr(self, f'decode_se0', scSE(2))
             else:
                 setattr(self, f'encode{i}',
                         SegEncodeBlock_3(base_channels * (2 ** (i-1)), (base_channels * (2 ** i)),
                                          kernel_sizes_conv[i], kernel_sizes_pool[i]))
+                if se: setattr(self, f'encode_se{i}', scSE(base_channels * (2 ** i)))
                 setattr(self, f'decode{i}',
                         SegDecodeBlock_3(base_channels * (2 ** i), (base_channels * (2 ** (i-1))),
                                          kernel_sizes_conv[i], kernel_sizes_pool[i]))
+                if se: setattr(self, f'decode_se{i}', scSE(base_channels * (2 ** (i-1))))
         self.final = nn.Sequential(nn.Conv3d(2, 1, kernel_size=1),
                                    nn.Sigmoid())
 
@@ -93,10 +99,12 @@ class Auto(nn.Module):
 
         for i in range(self.depth):
             x, indices = getattr(self, f"encode{i}")(x)
+            if self.se: x = getattr(self, f"encode_se{i}")(x)
             encode_indices.append(indices)
 
         for i in reversed(range(self.depth)):
             x = getattr(self, f"decode{i}")(x, encode_indices[i])
+            if self.se: x = getattr(self, f"decode_se{i}")(x)
 
         output = self.final(x)
 

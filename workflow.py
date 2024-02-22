@@ -32,31 +32,31 @@ def start_tensorboard(args):
     webbrowser.open(tensorboard_url)
 
 
-def pick_arch(arch, base_channels, depth, z_to_xy_ratio):
+def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
     if arch == "HalfUNetBasic":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Basic')
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "HalfUNetGhost":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Ghost')
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Ghost', se)
     elif arch == "HalfUNetResidual":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Residual')
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
     elif arch == "HalfUNetResidualBottleneck":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck')
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
     elif arch == "UNetBasic":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic')
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "UNetResidual":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual')
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
     elif arch == "UNetResidualBottleneck":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck')
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
     elif arch == "SegNet":
-        return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio)
+        return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio, se)
     #elif arch == "Tiniest":
     #    return Testing_Models.Tiniest(base_channels, depth, z_to_xy_ratio)
     elif arch == "InstanceBasic":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic')
+        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "InstanceResidual":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual')
+        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
     elif arch == "InstanceResidualBottleneck":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck')
+        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
 
 
 def start_work_flow(args):
@@ -86,7 +86,7 @@ def start_work_flow(args):
             else:
                 test_dataset = DataComponents.ValDatasetInstance(args.test_dataset_path, args.augmentation_csv_path)
             test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size)
-    arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.model_z_to_xy_ratio)
+    arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.model_z_to_xy_ratio, args.model_se)
     if ('Sparsely Labelled' in args.train_dataset_mode) or (args.exclude_edge):
         sparse_train = True
     else:
@@ -203,7 +203,8 @@ if __name__ == "__main__":
                         help="Model Architecture")
     parser.add_argument("--model_channel_count", type=int, default=8, help="Base Channel Count")
     parser.add_argument("--model_depth", type=int, default=5, help="Model Depth")
-    parser.add_argument("--model_z_to_xy_ratio", type=float, default=1.0, help="Z resolution to XY resolution ratio")
+    parser.add_argument("--model_z_to_xy_ratio", type=float, default=1.0, help="Enable Squeeze-and-Excitation plug-in")
+    parser.add_argument("--model_se", action="store_true")
     parser.add_argument("--train_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],
                         default="Fully Labelled", help="Dataset Mode")
     parser.add_argument("--exclude_edge", action="store_true", help="Mark pictures at object borders as unlabelled")

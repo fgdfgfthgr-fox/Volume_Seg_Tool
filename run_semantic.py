@@ -84,7 +84,7 @@ class PLModuleSemantic(pl.LightningModule):
                  use_sparse_label_train, use_sparse_label_val, use_sparse_label_test):
         super().__init__()
         self.model = network_arch
-        #self.initial_lr = initial_lr
+        self.initial_lr = 0.001
         #self.patience = patience
         #self.min_lr = min_lr
         self.enable_val = enable_val
@@ -109,13 +109,13 @@ class PLModuleSemantic(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss, dice, sensitivity, specificity = self._step(batch, self.use_sparse_label_train)
-        #self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=False)
+        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=False)
         self.train_metrics.append([loss, dice, sensitivity, specificity])
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
         loss, dice, sensitivity, specificity = self._step(batch, self.use_sparse_label_val)
-        #self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False, logger=False)
+        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=False, logger=False)
         self.val_metrics.append([loss, dice, sensitivity, specificity])
         return {'loss': loss}
 
@@ -132,17 +132,16 @@ class PLModuleSemantic(pl.LightningModule):
     def configure_optimizers(self):
         # optimizer = Prodigy(self.parameters(), lr=1, weight_decay=0.01, use_bias_correction=True, d_coef=1, decouple=True, growth_rate=1.5)
         fused = True if device == "cuda" else False
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.001, fused=fused)
-        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
-        #                                                       factor=0.5, patience=self.patience,
-        #                                                       threshold=0.001, threshold_mode='rel',
-        #                                                       cooldown=0, min_lr=self.min_lr)
-        scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1, last_epoch=-1)  # Essentially no schedule
-        #metrics = "val_loss" if self.enable_val else "train_loss"
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.initial_lr, fused=fused)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
+                                                               factor=0.25, patience=10,
+                                                               threshold_mode='rel',
+                                                               cooldown=0, min_lr=0.00025)
+        metrics = "val_loss" if self.enable_val else "train_loss"
         return {
             "optimizer": optimizer,
-            #"lr_scheduler": {"scheduler": scheduler, "monitor": metrics},
-            "lr_scheduler": {"scheduler": scheduler},
+            "lr_scheduler": {"scheduler": scheduler, "monitor": metrics},
+            #"lr_scheduler": {"scheduler": scheduler},
         }
 
     def lr_scheduler_step(self, scheduler, metric):
@@ -171,9 +170,10 @@ class PLModuleSemantic(pl.LightningModule):
         #self.logger.experiment.add_scalar(f"Other/Step Size", dlr, self.current_epoch)
 
         #vram_data = torch.cuda.mem_get_info()
-        vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
-        self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
-        #torch.cuda.reset_peak_memory_stats()
+        if device == 'cuda':
+            vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
+            self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
+            torch.cuda.reset_peak_memory_stats()
         if self.enable_mid_visual:
             with torch.inference_mode():
                 mid_visual_result = self.forward(self.mid_visual_tensor)

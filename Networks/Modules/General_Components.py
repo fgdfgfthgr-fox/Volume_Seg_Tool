@@ -62,3 +62,45 @@ class BasicBlock(nn.Module):
         x = self.relu(self.bn(self.conv_1(x)))
         x = self.relu(self.bn(self.conv_2(x)))
         return x
+
+
+class cSE(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool3d(1)
+        self.fc1 = nn.Conv3d(in_channels, in_channels // 2, kernel_size=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.fc2 = nn.Conv3d(in_channels // 2, in_channels, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        x_avg = self.avg_pool(x)
+        x_avg = self.fc1(x_avg)
+        x_avg = self.relu(x_avg)
+        x_avg = self.fc2(x_avg)
+        x_avg = self.sigmoid(x_avg)
+        return x * x_avg
+
+
+class sSE(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.fc = nn.Conv3d(in_channels, 1, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        x_spatial = self.fc(x)
+        x_spatial = self.sigmoid(x_spatial)
+        return x * x_spatial
+
+
+class scSE(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.cse = cSE(in_channels)
+        self.sse = sSE(in_channels)
+
+    def forward(self, x):
+        cse_output = self.cse(x)
+        sse_output = self.sse(x)
+        return cse_output + sse_output

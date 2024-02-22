@@ -89,13 +89,15 @@ def start_work_flow(inputs):
         cmd += "--enable_mid_visualization "
     if inputs[TTA_xy]:
         cmd += "--TTA_xy "
+    if inputs[model_se]:
+        cmd += "--model_se "
 
     command_executor.execute_command(cmd)
 
 
 def visualisation_activations(existing_model_path, example_image, slice_to_show,
-                              model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio):
-    arch = pick_arch(model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio)
+                              model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio, model_se):
+    arch = pick_arch(model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio, model_se)
     model = V_N_PLModule(arch)
     model.load_state_dict(torch.load(existing_model_path))
     figure_list = []
@@ -218,31 +220,31 @@ available_architectures_instance = ['InstanceBasic',
                                     'InstanceResidualBottleneck',]
 
 
-def pick_arch(arch, base_channels, depth, z_to_xy_ratio):
+def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
     if arch == "HalfUNetBasic":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Basic')
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "HalfUNetGhost":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Ghost')
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Ghost', se)
     elif arch == "HalfUNetResidual":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Residual')
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
     elif arch == "HalfUNetResidualBottleneck":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck')
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
     elif arch == "UNetBasic":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic')
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "UNetResidual":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual')
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
     elif arch == "UNetResidualBottleneck":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck')
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
     elif arch == "SegNet":
-        return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio)
+        return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio, se)
     #elif arch == "Tiniest":
     #    return Testing_Models.Tiniest(base_channels, depth, z_to_xy_ratio)
     elif arch == "InstanceBasic":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic')
+        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "InstanceResidual":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual')
+        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
     elif arch == "InstanceResidualBottleneck":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck')
+        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
 
 
 def change_edge_exclude(choice):
@@ -359,6 +361,8 @@ if __name__ == "__main__":
 #                                              info="Only work for DenseNet, check out their paper for more detail.")
 #                model_dropout_p = gr.Number(0.2, label="Model Dropout Probability", step=0.1,
 #                                            info="Only work for DenseNet, check out their paper for more detail.")
+                model_se = gr.Checkbox(scale=0, label="Enable Squeeze-and-Excitation plug-in",
+                                       info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.")
             with gr.Row():
                 augmentation_csv_path = gr.Textbox('Augmentation Parameters.csv', scale=2, label="Csv File for Data Augmentation Settings")
                 file_button = gr.Button(document_symbol, scale=0)
@@ -420,6 +424,7 @@ if __name__ == "__main__":
                 model_channel_count,
                 model_depth,
                 model_z_to_xy_ratio,
+                model_se,
                 train_dataset_mode,
                 exclude_edge,
                 exclude_edge_size_in,
@@ -461,11 +466,12 @@ if __name__ == "__main__":
 #                                            info="Only work for DenseNet, check out their paper for more detail.")
                 model_z_to_xy_ratio_v = gr.Number(1.0, label="Z resolution to XY resolution ratio",
                                                   info="The ratio which the z resolution of the images in the dataset divided by their xy resolution. Determines some internal model layout. We assume xy has the same resolution.")
+                model_se_v = gr.Checkbox(scale=0, label="Enable Squeeze-and-Excitation plug-in")
             outputs = gr.Gallery(label="Output Images", preview=True, selected_index=0)
             start_button = gr.Button("Show Visualization")
             start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show,
                                                                   model_architecture_v, model_channel_count_v, model_depth_v,
-                                                                  model_z_to_xy_ratio_v], outputs=outputs)
+                                                                  model_z_to_xy_ratio_v, model_se_v], outputs=outputs)
 
         with gr.Tab("Augmentations Visualisation"):
             gr.Markdown("Given your Training Dataset and Augmentation CSV, show some examples of augmented images that will be fed into the network.")

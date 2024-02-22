@@ -155,7 +155,8 @@ def getvrand(fiji_dic: str, ground_truth, predicted):
     Essentially The Rand error, for more information please see https://imagej.net/plugins/tws/rand-error.\n
     Best used to evaluate membrane segmentation task, e.g. ISBI-2012 segmentation challenge.\n
     ImageJ (Fiji) must be installed in order to use it.\n
-    Note: Calculating V-Rand score is fairly slow.
+    Note: Calculating V-Rand score is fairly slow.\n
+    Note2: Require a very specific data format, where 0 is the edge label and 255 is everything else.
 
     Args:
         fiji_dic (str): Installation directory of your Fiji.app folder.
@@ -199,7 +200,8 @@ def getvinfo(fiji_dic: str, ground_truth, predicted):
     For more information please see https://github.com/akhadangi/Segmentation-Evaluation-after-border-thinning.\n
     Best used to evaluate membrane segmentation task, e.g. ISBI-2012 segmentation challenge.\n
     ImageJ (Fiji) must be installed in order to use it.\n
-    Note: Calculating V-Info score is fairly slow.
+    Note: Calculating V-Info score is fairly slow.\n
+    Note2: Require a very specific data format, where 0 is the edge label and 255 is everything else.
 
     Args:
         fiji_dic (str): Installation directory of your Fiji.app folder.

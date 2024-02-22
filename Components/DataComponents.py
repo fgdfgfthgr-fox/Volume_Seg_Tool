@@ -101,13 +101,13 @@ def apply_aug(img_tensor, lab_tensor, augmentation_params):
                                                               height,
                                                               width)
         elif augmentation_method == 'Rotate xy' and random.random() < prob:
-            img_tensor, lab_tensor = Aug.random_rotation_3d((img_tensor, lab_tensor), interpolations=('bilinear', 'nearest'),
+            img_tensor, lab_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor], interpolations=('bilinear', 'nearest'),
                                                             plane='xy', angle_range=(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Rotate xz' and random.random() < prob:
-            img_tensor, lab_tensor = Aug.random_rotation_3d((img_tensor, lab_tensor), interpolations=('bilinear', 'nearest'),
+            img_tensor, lab_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor], interpolations=('bilinear', 'nearest'),
                                                             plane='xz', angle_range=(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Rotate yz' and random.random() < prob:
-            img_tensor, lab_tensor = Aug.random_rotation_3d((img_tensor, lab_tensor), interpolations=('bilinear', 'nearest'),
+            img_tensor, lab_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor], interpolations=('bilinear', 'nearest'),
                                                             plane='yz', angle_range=(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Vertical Flip' and random.random() < prob:
             img_tensor, lab_tensor = T_F.vflip(img_tensor), T_F.vflip(lab_tensor)
@@ -116,7 +116,7 @@ def apply_aug(img_tensor, lab_tensor, augmentation_params):
         elif augmentation_method == 'Simulate Low Resolution' and random.random() < prob:
             img_tensor = Aug.sim_low_res(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gaussian Blur' and random.random() < prob:
-            img_tensor = Aug.gaussian_blur_3d(img_tensor, int(row['Value']))
+            img_tensor = Aug.gaussian_blur_3d(img_tensor, int(row['Value']), random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gradient Gamma' and random.random() < prob:
             img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gradient Contrast' and random.random() < prob:
@@ -131,7 +131,7 @@ def apply_aug(img_tensor, lab_tensor, augmentation_params):
             img_tensor = Aug.salt_and_pepper_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Label Blur' and random.random() < prob:
             lab_tensor = lab_tensor.to(torch.float32)
-            lab_tensor = Aug.gaussian_blur_3d(lab_tensor, int(row['Value']))
+            lab_tensor = Aug.gaussian_blur_3d(lab_tensor, int(row['Value']), random.uniform(row['Low Bound'], row['High Bound']))
     return img_tensor, lab_tensor
 
 
@@ -181,15 +181,15 @@ def apply_aug_instance(img_tensor, lab_tensor, contour_tensor, augmentation_para
                                                                               height,
                                                                               width)
         elif augmentation_method == 'Rotate xy' and random.random() < prob:
-            img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d((img_tensor, lab_tensor, contour_tensor),
+            img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor, contour_tensor],
                                                                             interpolations=('bilinear', 'nearest', 'nearest'), fill_values=(0,0,0),
                                                                             plane='xy', angle_range=(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Rotate xz' and random.random() < prob:
-            img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d((img_tensor, lab_tensor, contour_tensor),
+            img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor, contour_tensor],
                                                                             interpolations=('bilinear', 'nearest', 'nearest'), fill_values=(0,0,0),
                                                                             plane='xz', angle_range=(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Rotate yz' and random.random() < prob:
-            img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d((img_tensor, lab_tensor, contour_tensor),
+            img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor, contour_tensor],
                                                                             interpolations=('bilinear', 'nearest', 'nearest'), fill_values=(0,0,0),
                                                                             plane='yz', angle_range=(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Vertical Flip' and random.random() < prob:
@@ -214,10 +214,10 @@ def apply_aug_instance(img_tensor, lab_tensor, contour_tensor, augmentation_para
             img_tensor = Aug.salt_and_pepper_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Label Blur' and random.random() < prob:
             lab_tensor = lab_tensor.to(torch.float32)
-            lab_tensor = Aug.gaussian_blur_3d(lab_tensor, int(row['Value']))
+            lab_tensor = Aug.gaussian_blur_3d(lab_tensor, int(row['Value']), random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Contour Blur' and random.random() < prob:
             contour_tensor = contour_tensor.to(torch.float32)
-            contour_tensor = Aug.gaussian_blur_3d(contour_tensor, int(row['Value']))
+            contour_tensor = Aug.gaussian_blur_3d(contour_tensor, int(row['Value']), random.uniform(row['Low Bound'], row['High Bound']))
     return img_tensor, lab_tensor, contour_tensor
 
 
@@ -396,7 +396,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
         hw_overlap (int): The additional gain in height and width of the patches. In pixels. Helps smooth out borders between patches.
         depth_overlap (int): The additional gain in depth of the patches. In pixels. Helps smooth out borders between patches.
     """
-    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False):
+    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False, leave_out_idx=None):
         self.file_list = make_dataset_predict(images_dir)
         self.hw_size = hw_size
         self.depth_size = depth_size
@@ -404,6 +404,10 @@ class Predict_Dataset(torch.utils.data.Dataset):
         self.depth_overlap = depth_overlap
         self.patches_list = []
         self.meta_list = []
+        if leave_out_idx is not None:
+            self.file = self.file_list[leave_out_idx]
+            self.file_list = []
+            self.file_list.append(self.file)
         for file in self.file_list:
             image = path_to_tensor(file, label=False)
             image = image[None, :]
@@ -538,7 +542,6 @@ class ValDatasetInstance(torch.utils.data.Dataset):
             height_multiplier = math.ceil(self.height / height)
             width_multiplier = math.ceil(self.width / width)
             self.total_multiplier = depth_multiplier * height_multiplier * width_multiplier
-            self.leave_out_list = []
             # Loop through each depth, height, and width index
             for depth_idx in range(depth_multiplier):
                 for height_idx in range(height_multiplier):
@@ -581,9 +584,8 @@ class ValDatasetInstance(torch.utils.data.Dataset):
         return img_tensor, lab_tensor, contour_tensor
 
 
-'''
-class Cross_Validation_Dataset(torch.utils.data.Dataset):
-    def __init__(self, images_dir, augmentation_csv, leave_out_index=0, train_mode=True, train_multiplier=1):
+class CrossValidationDataset(torch.utils.data.Dataset):
+    def __init__(self, images_dir, augmentation_csv, leave_out_index=0, mode='Train', train_multiplier=1):
         self.file_list = make_dataset_tv(images_dir)
         self.num_files = len(self.file_list)
         self.leave_out = self.file_list.pop(leave_out_index)
@@ -591,9 +593,10 @@ class Cross_Validation_Dataset(torch.utils.data.Dataset):
         self.lab_tensors = [path_to_tensor(item[1], label=True) for item in self.file_list]
         self.train_multiplier = train_multiplier
 
-        self.leave_out_img = path_to_tensor(self.leave_out[0], label=False)
-        self.leave_out_label = path_to_tensor(self.leave_out[1], label=True)
-        self.train_mode = train_mode
+        self.leave_out_img = path_to_tensor(self.leave_out[0], label=False)[None, :]
+        leave_out_img_name = os.path.basename(self.leave_out[0])
+        self.leave_out_label = path_to_tensor(self.leave_out[1], label=True)[None, :]
+        self.mode = mode
         self.augmentation_params = pd.read_csv(augmentation_csv)
         for _, row in self.augmentation_params.iterrows():
             k = row['Augmentation']
@@ -604,12 +607,13 @@ class Cross_Validation_Dataset(torch.utils.data.Dataset):
             elif k == 'Image Width':
                 width = int(row['Value'])
 
-        self.depth, self.height, self.width = self.leave_out_img.shape
+        unused, self.depth, self.height, self.width = self.leave_out_img.shape
         depth_multiplier = math.ceil(self.depth / depth)
         height_multiplier = math.ceil(self.height / height)
         width_multiplier = math.ceil(self.width / width)
         self.total_multiplier = depth_multiplier * height_multiplier * width_multiplier
         self.leave_out_list = []
+        self.meta_list = []
         # Loop through each depth, height, and width index
         for depth_idx in range(depth_multiplier):
             for height_idx in range(height_multiplier):
@@ -630,32 +634,38 @@ class Cross_Validation_Dataset(torch.utils.data.Dataset):
                     else:
                         width_start = 0
                     width_end = width_start + width
-                    cropped_img = self.leave_out_img[depth_start:depth_end, height_start:height_end,
+                    cropped_img = self.leave_out_img[:, depth_start:depth_end, height_start:height_end,
                                                      width_start:width_end]
-                    cropped_lab = self.leave_out_label[depth_start:depth_end, height_start:height_end,
+                    cropped_lab = self.leave_out_label[:, depth_start:depth_end, height_start:height_end,
                                                        width_start:width_end]
                     self.leave_out_list.append((cropped_img, cropped_lab))
+        self.meta_list.append((leave_out_img_name, self.leave_out_img.shape))
         super().__init__()
 
     def __len__(self):
-        if self.train_mode:
+        if self.mode == 'Train':
             return (self.num_files - 1) * self.train_multiplier
         else:
             return self.total_multiplier
 
     def __getitem__(self, idx):
-        if self.train_mode == True:
+        if self.mode == 'Train':
             idx = math.floor(idx / self.train_multiplier)
             img_tensor, lab_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :]
             img_tensor, lab_tensor = apply_aug(img_tensor, lab_tensor, self.augmentation_params)
-            lab_tensor = lab_tensor.squeeze(1)
+            return img_tensor, lab_tensor
+        elif self.mode == 'Val':
+            img_tensor, lab_tensor = self.leave_out_list[idx][0], self.leave_out_list[idx][1]
+            return img_tensor, lab_tensor
         else:
-            img_tensor, lab_tensor = self.leave_out_list[idx][0][None, :], self.leave_out_list[idx][1][None, :]
-        return img_tensor, lab_tensor
-'''
+            img_tensor = self.leave_out_list[idx][0][None, :]
+            return img_tensor
+
+    def __getmetainfo__(self):
+        return self.meta_list
 
 
-def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False, TTA_depth=False):
+def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False):
     """
     Stitch the patches of output volumes and reconstruct the original image tensor(s).
 

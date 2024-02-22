@@ -1,4 +1,5 @@
 /venv
 /lightning_logs
+/Cross_Validate_Dataset
 Components/poly_label_tensor_2D.py
 Components/poly_label_tensor_3D.py
