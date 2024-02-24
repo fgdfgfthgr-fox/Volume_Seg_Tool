@@ -72,6 +72,21 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/).
 
 Please see the [Wiki](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/wiki) (Mostly WIP).
 
+## Evaluation
+All number below were obtained with semantic segmentation
+<!------>
+  | Dataset                                                                                     | Network Configuration                                                     | Dice Score                                 | Peak VRAM Use |
+  |---------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|--------------------------------------------|---------------|
+  | [UroCell](https://github.com/MancaZerovnikMekuc/UroCell) Mitochondria 5 fold cross-validate | Residual UNet, base channel of 16 and depth of 5. Patch size 128x128x128. | 0.8856                                     | 7907MB        |
+  | [Lucchi++](https://casser.io/connectomics/) Mitochondria 2 fold cross-validate              | Residual UNet, base channel of 16 and depth of 5. Patch size 256x128x128. | 0.9193                                     | 10200MB       |
+  | [ISBI 2012](https://imagej.net/events/isbi-2012-segmentation-challenge)                     | Residual UNet, base channel of 16 and depth of 5. Patch size 256x256x16.  | 0.7868<br/>V_Rand:0.9725<br/>V_Info:0.9852 | 1812MB        |
+  | [Kasthuri++](https://casser.io/connectomics/) 2 fold cross-validate                         | Residual UNet, base channel of 16 and depth of 5. Patch size 384x382x32.  | 0.9596                                     | 7958MB        |
+
+Ground Truth Segmentation of one of the UroCell Dataset sub-volumes showing the mitochondria:
+![Ground Truth.png](GitHub_Res%2FGround Truth.png)
+Model prediction using information learned from the 4 other sub-volumes, Dice score of 0.9238:
+![Model Predict.png](GitHub_Res%2FModel Predicted.png)
+(Image rendered using [MIB](https://mib.helsinki.fi/))
 ## Credits
 
 This tool was developed under the scholarship funding from [AgResearch](https://www.agresearch.co.nz/),
