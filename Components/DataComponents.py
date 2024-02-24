@@ -818,7 +818,7 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         contour_array = np.asarray(contour[0])
         imageio.v3.imwrite(uri=f'{direc}/Pixels_{semantic[1]}', image=np.uint8(semantic_array))
         imageio.v3.imwrite(uri=f'{direc}/Contour_{contour[1]}', image=np.float32(contour_array))
-        print(f'Computing instance segmentation using contour data for {contour[1]}...')
+        print(f'Computing instance segmentation using contour data for {contour[1]}... Can take a while if the image is big.')
         instance_result = instance_segmentation_simple(semantic[0], contour[0])
         instance_array = np.asarray(instance_result)
         imageio.v3.imwrite(uri=f'{direc}/Instance_{contour[1]}', image=np.uint16(instance_array))
