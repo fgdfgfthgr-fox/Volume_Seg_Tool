@@ -83,9 +83,9 @@ All number below were obtained with semantic segmentation
   | [Kasthuri++](https://casser.io/connectomics/) 2 fold cross-validate                         | Residual UNet, base channel of 16 and depth of 5. Patch size 384x382x32.  | 0.9596                                     | 7958MB        |
 
 Ground Truth Segmentation of one of the UroCell Dataset sub-volumes showing the mitochondria:
-![Ground Truth.png](GitHub_Res%2FGround Truth.png)
+![Ground Truth.png](GitHub_Res/Ground_Truth.png)
 Model prediction using information learned from the 4 other sub-volumes, Dice score of 0.9238:
-![Model Predict.png](GitHub_Res%2FModel Predicted.png)
+![Model Predict.png](GitHub_Res/Model_Predicted.png)
 (Image rendered using [MIB](https://mib.helsinki.fi/))
 ## Credits
 
