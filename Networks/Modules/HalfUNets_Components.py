@@ -32,7 +32,6 @@ class GhostDoubleConv(nn.Module):
         super(GhostDoubleConv, self).__init__()
         self.conv1 = GhostModule(in_channels, out_channels, kernel_size)
         self.conv2 = GhostModule(out_channels, out_channels, kernel_size)
-#        self.relu = nn.ReLU()
 
     def forward(self, x):
         x = self.conv1(x)

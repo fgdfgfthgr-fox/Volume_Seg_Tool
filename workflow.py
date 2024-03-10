@@ -51,6 +51,8 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
         return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio, se)
     #elif arch == "Tiniest":
     #    return Testing_Models.Tiniest(base_channels, depth, z_to_xy_ratio)
+    #elif arch == "SingleTopLayer":
+    #    return Testing_Models.SingleTopLayer(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "InstanceBasic":
         return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "InstanceResidual":
@@ -97,14 +99,14 @@ def start_work_flow(args):
                                  'Validation' in args.workflow_box, args.enable_mid_visualization,
                                  args.mid_visualization_input,
                                  sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
-                                 'Sparsely Labelled' in args.test_dataset_mode)
+                                 'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
     else:
         model = PLModuleInstance(arch,
                                  #args.initial_lr, args.patience, args.min_lr,
                                  'Validation' in args.workflow_box, args.enable_mid_visualization,
                                  args.mid_visualization_input,
                                  sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
-                                 'Sparsely Labelled' in args.test_dataset_mode)
+                                 'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
     if args.read_existing_model:
         model.load_state_dict(torch.load(args.existing_model_path))
     if args.enable_tensorboard:
@@ -113,15 +115,12 @@ def start_work_flow(args):
         tensorboard_thread.start()
         logger = create_logger(args)
     else:
-        logger = None
+        logger = False
     if 'Training' in args.workflow_box:
         trainer = pl.Trainer(max_epochs=args.max_epochs, log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=False,
                              precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
                              #profiler='simple',
-                             #callbacks=[StochasticWeightAveraging(swa_lrs=0.9, swa_epoch_start=0.8, annealing_epochs=4)
-                             #callbacks=[ModelPruning('l1_unstructured', amount=0.5),
-                             #inference_mode=False
                              )
         start_time = time.time()
         trainer.fit(model,

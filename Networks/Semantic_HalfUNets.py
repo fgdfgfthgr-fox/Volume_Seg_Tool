@@ -1,6 +1,6 @@
 import torch.nn as nn
 from .Modules.HalfUNets_Components import GhostDoubleConv, merge
-from .Modules.General_Components import BasicBlock, ResBasicBlock, ResBottleneckBlock, scSE
+from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, scSE
 import math
 
 
@@ -63,6 +63,6 @@ class HalfUNet(nn.Module):
             if self.se: x_1 = getattr(self, f"encode_se{i}")(x_1)
             x = merge(x, x_1)
         x = getattr(self, f'decoder')(x)
-        if self.se: x = getattr(self, f"decode_se")(x)
+        if self.se: x = getattr(self, f"decoder_se")(x)
         x = self.out(x)
         return x

@@ -17,8 +17,6 @@ from pytorch_lightning.profilers import Profiler
 from run_semantic import PLModuleSemantic
 from run_instance import PLModuleInstance
 from Components import DataComponents
-from pytorch_lightning.loggers import TensorBoardLogger
-from lightning.pytorch.callbacks import StochasticWeightAveraging, ModelPruning
 from tkinter import filedialog
 from Networks import *
 from Visualise_Network import V_N_PLModule
@@ -214,6 +212,7 @@ available_architectures_semantic = ['HalfUNetBasic',
                                     'UNetResidualBottleneck',
                                     'SegNet',
                                     #'Tiniest'
+                                    #'SingleTopLayer'
                                     ]
 available_architectures_instance = ['InstanceBasic',
                                     'InstanceResidual',
@@ -239,6 +238,8 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
         return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio, se)
     #elif arch == "Tiniest":
     #    return Testing_Models.Tiniest(base_channels, depth, z_to_xy_ratio)
+    #elif arch == "SingleTopLayer":
+    #    return Testing_Models.SingleTopLayer(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "InstanceBasic":
         return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "InstanceResidual":

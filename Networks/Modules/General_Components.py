@@ -64,6 +64,20 @@ class BasicBlock(nn.Module):
         return x
 
 
+class BasicBlockSingle(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=(3, 3, 3)):
+        super().__init__()
+        padding = tuple((k - 1) // 2 for k in kernel_size)
+        self.conv_1 = nn.Conv3d(in_channels, out_channels,
+                                kernel_size=kernel_size, padding=padding, padding_mode='zeros', bias=False)
+        self.bn = nn.BatchNorm3d(out_channels, track_running_stats=False)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.relu(self.bn(self.conv_1(x)))
+        return x
+
+
 class cSE(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -101,6 +115,4 @@ class scSE(nn.Module):
         self.sse = sSE(in_channels)
 
     def forward(self, x):
-        cse_output = self.cse(x)
-        sse_output = self.sse(x)
-        return cse_output + sse_output
+        return self.cse(x) + self.sse(x)

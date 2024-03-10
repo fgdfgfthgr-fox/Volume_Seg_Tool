@@ -1,6 +1,6 @@
 import torch.nn as nn
 import math
-from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, scSE
+from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, BasicBlockSingle, scSE
 
 # Ronneberger, O., Fischer, P., & Brox, T. (2015). U-net: Convolutional networks for biomedical image segmentation.
 # In Medical Image Computing and Computer-Assisted Intervention–MICCAI 2015: 18th International Conference, Munich,
@@ -43,13 +43,14 @@ class UNet(nn.Module):
                                   (2, 1, 1) if self.special_layers < 0 and i < -self.special_layers else
                                   (2, 2, 2) for i in range(depth)]
         block = {'Basic': BasicBlock, 'Residual': ResBasicBlock, 'ResidualBottleneck': ResBottleneckBlock}[type]
+        block_top = {'Basic': BasicBlockSingle, 'Residual': ResBasicBlock, 'ResidualBottleneck': ResBottleneckBlock}[type]
         for i in range(depth):
             if i == 0:
                 setattr(self, f'encode0',
-                        block(1, base_channels, kernel_sizes_conv[0]))
+                        block_top(1, base_channels, kernel_sizes_conv[0]))
                 if se: setattr(self, f'encode_se0', scSE(base_channels))
                 setattr(self, f'decode0',
-                        block(base_channels, base_channels, kernel_sizes_conv[0]))
+                        block_top(base_channels, base_channels, kernel_sizes_conv[0]))
                 if se: setattr(self, f'decode_se0', scSE(base_channels))
                 setattr(self, f'up0',
                         nn.ConvTranspose3d(2*base_channels, base_channels, kernel_sizes_transpose[0], kernel_sizes_transpose[0]))

@@ -81,7 +81,7 @@ def start_tensorboard():
 class PLModuleSemantic(pl.LightningModule):
 
     def __init__(self, network_arch, enable_val, enable_mid_visual, mid_visual_image,
-                 use_sparse_label_train, use_sparse_label_val, use_sparse_label_test):
+                 use_sparse_label_train, use_sparse_label_val, use_sparse_label_test, logging):
         super().__init__()
         self.model = network_arch
         self.initial_lr = 0.001
@@ -93,6 +93,7 @@ class PLModuleSemantic(pl.LightningModule):
         self.use_sparse_label_train = use_sparse_label_train
         self.use_sparse_label_val = use_sparse_label_val
         self.use_sparse_label_test = use_sparse_label_test
+        self.logging = logging
         self.train_metrics, self.val_metrics, self.test_metrics = [], [], []
         if enable_mid_visual:
             self.mid_visual_tensor = DataComponents.path_to_tensor(self.mid_visual_image).unsqueeze(0).unsqueeze(0).to(device)
@@ -160,28 +161,31 @@ class PLModuleSemantic(pl.LightningModule):
             metrics_list.clear()
 
     def on_validation_epoch_end(self):
-        self.log_metrics("Val", self.val_metrics)
+        if self.logging:
+            self.log_metrics("Val", self.val_metrics)
 
     def on_train_epoch_end(self):
-        self.log_metrics("Train", self.train_metrics)
-        #d = self.lr_schedulers().optimizer.param_groups[0]["d"]
-        #k = self.lr_schedulers().optimizer.param_groups[0]["k"]
-        #dlr = d * (((1 - 0.999 ** (k + 1)) ** 0.5) / (1 - 0.9 ** (k + 1)))
-        #self.logger.experiment.add_scalar(f"Other/Step Size", dlr, self.current_epoch)
+        if self.logging:
+            self.log_metrics("Train", self.train_metrics)
+            #d = self.lr_schedulers().optimizer.param_groups[0]["d"]
+            #k = self.lr_schedulers().optimizer.param_groups[0]["k"]
+            #dlr = d * (((1 - 0.999 ** (k + 1)) ** 0.5) / (1 - 0.9 ** (k + 1)))
+            #self.logger.experiment.add_scalar(f"Other/Step Size", dlr, self.current_epoch)
 
-        #vram_data = torch.cuda.mem_get_info()
-        if device == 'cuda':
-            vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
-            self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
-            torch.cuda.reset_peak_memory_stats()
-        if self.enable_mid_visual:
-            with torch.inference_mode():
-                mid_visual_result = self.forward(self.mid_visual_tensor)
-                mid_visual_result = mid_visual_result[:, :, 0:1, :, :].squeeze([0, 1])
-            self.logger.experiment.add_image(f'Model Output', mid_visual_result, self.current_epoch)
+            #vram_data = torch.cuda.mem_get_info()
+            if device == 'cuda':
+                vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
+                self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
+                torch.cuda.reset_peak_memory_stats()
+            if self.enable_mid_visual:
+                with torch.inference_mode():
+                    mid_visual_result = self.forward(self.mid_visual_tensor)
+                    mid_visual_result = mid_visual_result[:, :, 0:1, :, :].squeeze([0, 1])
+                self.logger.experiment.add_image(f'Model Output', mid_visual_result, self.current_epoch)
 
     def on_test_epoch_end(self):
-        self.log_metrics("Test", self.test_metrics)
+        if self.logging:
+            self.log_metrics("Test", self.test_metrics)
 
 '''
 if __name__ == "__main__":
