@@ -32,7 +32,7 @@ def train_model(model, k):
     trainer = Trainer(max_epochs=1, log_every_n_steps=1, logger=logger,
                       accelerator="gpu", enable_checkpointing=False,
                       precision=32, callbacks=early_stop_callback, min_epochs=1)
-    model = Run.PLModuleSemantic(model, 0.001, 8, 0.0001, True, False, None,
+    model = run_semantic.PLModuleSemantic(model, True, 8, 0.0001, True, False, None,
                                  False, False, False)
     trainer.fit(model,
                 val_dataloaders=val_loader,

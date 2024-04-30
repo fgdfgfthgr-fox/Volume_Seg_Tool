@@ -3,10 +3,12 @@ import math
 import numpy as np
 import torch
 from skimage.io import imread_collection, imsave
-import imageio
+from joblib import Parallel, delayed
+from numba import cuda
+from tqdm import tqdm
 import imagej
-import torch.nn.functional as F
 import torch.nn as nn
+import time
 
 
 class DiceLoss(nn.Module):
@@ -95,8 +97,6 @@ class BinaryMetrics(nn.Module):
             tpr (torch.Tensor): True Positive Rate (Sensitivity).
             tnr (torch.Tensor): True Negative Rate (Specificity).
         """
-        #inputs = inputs.view(-1)
-        #targets = targets.view(-1)
         # Calculate True Positives, True Negatives, False Positives, False Negatives
         if self.sparse_label:
             # Input(i): (B, 1, D, H, W), float32
@@ -147,6 +147,96 @@ class BinaryMetrics(nn.Module):
             loss = 1 - dice_score
 
         return loss, dice_score, tpr, tnr
+
+
+def get_bounding_boxes(tensor):
+    """
+    Returns a dictionary of bounding boxes for each object in the tensor.
+    Each box is represented as [min_depth, min_height, min_width, max_depth, max_height, max_width].
+    """
+    objects = tensor.unique()[1:]  # Exclude background
+    boxes = {}
+    for obj in objects:
+        positions = (tensor == obj).nonzero(as_tuple=False)
+        mins = torch.min(positions, dim=0).values
+        maxs = torch.max(positions, dim=0).values
+        boxes[obj] = torch.cat((mins, maxs), dim=0)
+    return boxes
+
+
+def instance_segmentation_metrics(pred_map, gt_map, iou_threshold):
+    """
+    Simple metrics for evaluating instance segmentation. Based on the following principles:
+    An instance in the result is considered as a TP if it overlaps with an instance in the ground truth and if this overlapping,
+    which is measured by an IOU metric voxel-wise, is higher than a selected threshold.
+    If we have multiple instances for one ground truth object,
+    the one with the highest IOU is considered as the TP and all the others are counted as FP.
+
+    Args:
+        pred_map (torch.Tensor): The segmentation map to be evaluated. Should have a shape of (Depth, Height, Width)
+        gt_map (torch.Tensor): Ground Truth Map. Should be the same shape as pred_map
+        iou_threshold (float): threshold for the IOU to be considered as TP
+
+    Returns:
+        tpr, fpr, fnr, precision, recall (float): The calculated metrics.
+    """
+    assert pred_map.shape == gt_map.shape, "Prediction and ground truth maps size mismatch!"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    pred_map = pred_map.to(device=device)
+    gt_map = gt_map.to(device=device)
+
+    def calculate_iou(pred, gt):
+        intersection = torch.logical_and(pred, gt).sum()
+        union = torch.logical_or(pred, gt).sum()
+        return intersection / union if union != 0 else 0.0
+
+    pred_boxes = get_bounding_boxes(pred_map)
+    gt_boxes = get_bounding_boxes(gt_map)
+
+    tp = torch.tensor(0, dtype=torch.int32, device=device)
+    fp = torch.tensor(0, dtype=torch.int32, device=device)
+    fn = torch.tensor(len(gt_boxes), dtype=torch.int32, device=device)
+
+    gt_to_pred_iou = {}
+
+    with tqdm(total=len(gt_boxes), desc="Processing", unit="objects") as pbar:
+        for gt_object, gt_box in gt_boxes.items():
+            gt_object_mask = (gt_map == gt_object)
+            best_iou = 0.0
+            best_pred_object = None
+
+            for pred_object, pred_box in pred_boxes.items():
+                # Quick bounding box overlap check before expensive IOU calculation
+                if not (pred_box[3] < gt_box[0] or pred_box[0] > gt_box[3] or
+                        pred_box[4] < gt_box[1] or pred_box[1] > gt_box[4] or
+                        pred_box[5] < gt_box[2] or pred_box[2] > gt_box[5]):
+                    pred_object_mask = (pred_map == pred_object)
+                    iou = calculate_iou(pred_object_mask, gt_object_mask)
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_pred_object = pred_object
+
+            if best_iou > iou_threshold:
+                tp += 1
+                if best_pred_object in gt_to_pred_iou and gt_to_pred_iou[best_pred_object][0] < best_iou:
+                    fp += 1  # Previous best is now considered FP
+                gt_to_pred_iou[best_pred_object] = (best_iou, gt_object)
+            else:
+                if best_pred_object is not None:
+                    fp += 1
+
+            pbar.update(1)
+
+    fp += len(pred_boxes) - len(gt_to_pred_iou)  # All non-matching predictions are FPs
+    fn -= tp  # Adjust FN
+
+    tpr = tp / len(gt_boxes) if gt_boxes else 0
+    fpr = fp / (fp + tp) if (fp + tp) > 0 else 0
+    fnr = fn / len(gt_boxes) if gt_boxes else 0
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+
+    return tpr.cpu(), fpr.cpu(), fnr.cpu(), precision.cpu(), recall.cpu()
 
 
 def getvrand(fiji_dic: str, ground_truth, predicted):
@@ -235,7 +325,7 @@ maxScore = metric.getMaximalVInfoAfterThinning( 0.0, maxThres, 0.1 );
 VInfo = maxScore;
 """
 
-    VInfo = ij.py.run_script(Language_extension, macroVInfo).getOutput('VRand')
+    VInfo = ij.py.run_script(Language_extension, macroVInfo).getOutput('VInfo')
     return VInfo
 
 # test_ground = torch.as_tensor(imageio.v3.imread("/mnt/7018F20D48B6C548/PycharmProjects/Deeplearning/CV/train-labels.tif"))

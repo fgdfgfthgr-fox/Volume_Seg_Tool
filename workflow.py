@@ -12,7 +12,7 @@ from run_semantic import PLModuleSemantic
 from run_instance import PLModuleInstance
 from Components import DataComponents
 from Networks import *
-from pytorch_lightning.loggers import TensorBoardLogger
+from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 
 
 num_cpu_cores = os.cpu_count()
@@ -129,7 +129,7 @@ def start_work_flow(args):
         end_time = time.time()
         print(f"Training Taken: {end_time - start_time} seconds")
     if 'Test' in args.workflow_box:
-        trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=False, accelerator="gpu")
+        trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=logger, accelerator="gpu")
         trainer.test(model, dataloaders=test_loader)
     if args.save_model:
         full = os.path.join(args.save_model_path, args.save_model_name)

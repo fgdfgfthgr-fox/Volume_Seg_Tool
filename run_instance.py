@@ -4,7 +4,7 @@ import torch.utils.data
 from Components import DataComponents
 from Components import Metrics
 import torch.utils.tensorboard
-from pytorch_lightning.loggers import TensorBoardLogger
+from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 import subprocess
 import threading
 import time
@@ -45,7 +45,7 @@ class PLModuleInstance(pl.LightningModule):
     def _step(self, batch, sparse):
         img, lab, contour = batch
         p_output, c_output = self.forward(img)
-        Loss_Fn = Metrics.BinaryMetrics(use_log_cosh=False, sparse_label=sparse)
+        Loss_Fn = Metrics.BinaryMetrics(use_log_cosh=True, sparse_label=sparse)
         p_loss, p_dice, p_sensitivity, p_specificity = Loss_Fn(p_output, lab)
         c_loss, c_dice, c_sensitivity, c_specificity = Loss_Fn(c_output, contour)
         loss = p_loss + c_loss

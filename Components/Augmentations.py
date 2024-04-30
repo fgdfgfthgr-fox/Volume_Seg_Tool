@@ -5,9 +5,12 @@ import random
 import torch
 import math
 import scipy
+import os
 import numpy as np
 from joblib import Parallel, delayed
+
 from scipy.ndimage import distance_transform_edt
+import torch.multiprocessing as mp
 
 # Various customize image augmentation implementations specialised in 4 dimensional tensors.
 # (Channel, Depth, Height, Width).
@@ -138,7 +141,7 @@ def random_rotation_3d(tensors, angle_range, plane='xy', interpolations=('biline
         raise ValueError("Number of tensors, interpolations, and fill_values should be the same.")
 
     # Generate random angles within the specified range
-    angle = random.randrange(angle_range[0], angle_range[1], 90)
+    angle = random.randrange(angle_range[0], angle_range[1], 30)
 
     rotated_tensors = []
     for i in range(num_tensors):
@@ -427,27 +430,69 @@ def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1
     Returns:
         torch.Tensor: Contour map where 0 are background or inside of objects while 1 are the boundaries.
     """
-    #device = "cuda" if torch.cuda.is_available() else "cpu"
-    input_tensor = input_tensor#.to(device)
-    unique_values = torch.unique(input_tensor)#.to(device)
-    transformed_tensor = torch.zeros_like(input_tensor, dtype=torch.bool)#.to(device)
+    input_tensor = input_tensor
+    unique_values = torch.unique(input_tensor)
+    transformed_tensor = torch.zeros_like(input_tensor, dtype=torch.bool)
     def process_object(value):
         if value == 0:
             return  # Skip background
 
         # Create a binary mask for the current object
-        object_mask = (input_tensor & value)
+        object_mask = (input_tensor == value)
 
-        # Dilation
-        if contour_outward >= 1:
-            dilated_tensor = binary_dilation_torch(object_mask, iterations=contour_outward)
-        else:
-            dilated_tensor = object_mask
+        # Calculate bounding box for the object
+        non_zero_indices = torch.nonzero(object_mask, as_tuple=True)
+        min_indices = torch.min(non_zero_indices[0]), torch.min(non_zero_indices[1]), torch.min(non_zero_indices[2])
+        max_indices = torch.max(non_zero_indices[0]), torch.max(non_zero_indices[1]), torch.max(non_zero_indices[2])
+
+        # Add padding for dilation
+        pad = contour_outward
+        min_indices = torch.clamp(torch.tensor([min_indices[0] - pad, min_indices[1] - pad, min_indices[2] - pad]), 0)
+        max_indices = torch.clamp(torch.tensor([max_indices[0] + pad+1, max_indices[1] + pad+1, max_indices[2] + pad+1]),
+                                  None,
+                                  torch.tensor([input_tensor.shape[0], input_tensor.shape[1], input_tensor.shape[2]]))
+
+        # Crop the map according to the bounding box
+        cropped_object = object_mask[min_indices[0]:max_indices[0],
+                                     min_indices[1]:max_indices[1],
+                                     min_indices[2]:max_indices[2]]
+
+        # Perform dilation on the cropped object
+        dilated_object = binary_dilation_torch(cropped_object, iterations=contour_outward)
 
         # Mark boundary area as one
-        excluded_regions = (object_mask == 0) & (dilated_tensor == 1)
-        transformed_tensor[excluded_regions] = 1
+        excluded_regions = (cropped_object == 0) & (dilated_object == 1)
+
+        transformed_tensor[min_indices[0]:max_indices[0],
+                           min_indices[1]:max_indices[1],
+                           min_indices[2]:max_indices[2]] += excluded_regions
+
     # Use joblib to parallelize the loop
     Parallel(backend='threading', n_jobs=-1)(delayed(process_object)(value) for value in unique_values)
-    transformed_tensor = transformed_tensor.to(torch.uint8)#.to("cpu")
+    transformed_tensor = transformed_tensor.to(torch.uint8)
     return transformed_tensor
+
+
+def nearest_interpolate(input_tensor, target_size):
+    """
+    Scaling a tensor into target size.\n
+    The native torch.nn.functional.interpolate doesn't work on tensors with dtype of uint16 or uint32.
+    So I have to implement my own.
+
+    Args:
+        input_tensor (torch.Tensor): The input tensor with a shape of (B, C, D, H, W).
+        target_size (tuple or list): Output spacial size. In (D, H, W).
+    """
+    batch, channels, depth, height, width = input_tensor.shape
+    new_depth, new_height, new_width = target_size
+
+    depth_indices = torch.linspace(0, depth-1, new_depth, device=input_tensor.device).round().long()
+    height_indices = torch.linspace(0, height-1, new_height, device=input_tensor.device).round().long()
+    width_indices = torch.linspace(0, width-1, new_width, device=input_tensor.device).round().long()
+
+    output_tensor = input_tensor[:, :,
+                                 depth_indices[:, None, None],
+                                 height_indices[None, :, None],
+                                 width_indices[None, None, :]]
+
+    return output_tensor

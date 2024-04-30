@@ -338,9 +338,9 @@ if __name__ == "__main__":
                         folder_button.click(open_folder, outputs=predict_dataset_path)
                     with gr.Row():
                         predict_hw_size = gr.Number(128, label="Height and Width of each Patch (px)", precision=0, step=16, minimum=16)
-                        predict_depth_size = gr.Number(128, label="Depth of each Patch (px)", precision=0, step=16, minimum=16)
-                        predict_hw_overlap = gr.Number(8, label="Expansion in Height and Width for each Patch (px)", precision=0, step=8, minimum=8)
-                        predict_depth_overlap = gr.Number(8, label="Expansion in Depth for each Patch (px)", precision=0, step=8, minimum=8)
+                        predict_depth_size = gr.Number(128, label="Depth of each Patch (px)", precision=0, step=8, minimum=8)
+                        predict_hw_overlap = gr.Number(8, label="Expansion in Height and Width for each Patch (px)", precision=0, step=8, minimum=0)
+                        predict_depth_overlap = gr.Number(8, label="Expansion in Depth for each Patch (px)", precision=0, step=4, minimum=0)
                     with gr.Row():
                         result_folder_path = gr.Textbox('Datasets/result', scale=2, label="Result Folder Path")
                         folder_button = gr.Button(document_symbol, scale=0)
