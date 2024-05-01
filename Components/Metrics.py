@@ -4,7 +4,6 @@ import numpy as np
 import torch
 from skimage.io import imread_collection, imsave
 from joblib import Parallel, delayed
-from numba import cuda
 from tqdm import tqdm
 import imagej
 import torch.nn as nn
