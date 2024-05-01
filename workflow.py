@@ -69,7 +69,7 @@ def start_work_flow(args):
                                                         args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out)
         else:
             train_dataset = DataComponents.TrainDatasetInstance(args.train_dataset_path, args.augmentation_csv_path,
-                                                                args.train_multiplier)
+                                                                args.train_multiplier, args.contour_map_width)
         train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size,
                                                    shuffle=True,
                                                    num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
@@ -77,7 +77,7 @@ def start_work_flow(args):
             if 'Semantic' in args.mode_box:
                 val_dataset = DataComponents.ValDataset(args.val_dataset_path, args.augmentation_csv_path)
             else:
-                val_dataset = DataComponents.ValDatasetInstance(args.val_dataset_path, args.augmentation_csv_path)
+                val_dataset = DataComponents.ValDatasetInstance(args.val_dataset_path, args.augmentation_csv_path, args.contour_map_width)
             val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=args.batch_size,
                                                      num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
         else:
@@ -86,7 +86,7 @@ def start_work_flow(args):
             if 'Semantic' in args.mode_box:
                 test_dataset = DataComponents.ValDataset(args.test_dataset_path, args.augmentation_csv_path)
             else:
-                test_dataset = DataComponents.ValDatasetInstance(args.test_dataset_path, args.augmentation_csv_path)
+                test_dataset = DataComponents.ValDatasetInstance(args.test_dataset_path, args.augmentation_csv_path, args.contour_map_width)
             test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size)
     arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.model_z_to_xy_ratio, args.model_se)
     if ('Sparsely Labelled' in args.train_dataset_mode) or (args.exclude_edge):
@@ -209,6 +209,7 @@ if __name__ == "__main__":
     parser.add_argument("--exclude_edge", action="store_true", help="Mark pictures at object borders as unlabelled")
     parser.add_argument("--exclude_edge_size_in", type=int, default=1, help="Pixels to exclude (inward)")
     parser.add_argument("--exclude_edge_size_out", type=int, default=1, help="Pixels to exclude (outward)")
+    parser.add_argument("--contour_map_width", type=int, default=1, help="Width of contour (outward)")
     parser.add_argument("--val_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"], default="Fully Labelled",
                         help="Dataset Mode")
     parser.add_argument("--test_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],

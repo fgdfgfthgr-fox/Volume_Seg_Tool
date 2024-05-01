@@ -74,6 +74,7 @@ def start_work_flow(inputs):
            f"--model_depth {inputs[model_depth]} --model_z_to_xy_ratio {inputs[model_z_to_xy_ratio]} "
            f"--train_dataset_mode {train_dataset_mode_n} "
            f"--exclude_edge_size_in {inputs[exclude_edge_size_in]} --exclude_edge_size_out {inputs[exclude_edge_size_out]} "
+           f"--contour_map_width {inputs[contour_map_width]} "
            f"--val_dataset_mode {val_dataset_mode_n} --test_dataset_mode {test_dataset_mode_n} ")
     if inputs[enable_tensorboard]:
         cmd += "--enable_tensorboard "
@@ -269,6 +270,13 @@ def change_edge_exclude_value_out(choice):
         return gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=False, minimum=0)
 
 
+def change_contour_map_width_value(choice):
+    if choice == "Instance":
+        return gr.Number(1, label="Width of contour (outward)", precision=0, visible=True, minimum=1)
+    else:
+        return gr.Number(1, label="Width of contour (outward)", precision=0, visible=False, minimum=1)
+
+
 def update_available_arch(radio_value):
     if radio_value == 'Semantic':
         return gr.Dropdown(available_architectures_semantic, label="Model Architecture")
@@ -314,9 +322,12 @@ if __name__ == "__main__":
                         exclude_edge = gr.Checkbox(scale=0, label="Mark pictures at object borders as unlabelled, do not work in Instance Segmentation Mode", visible=True)
                         exclude_edge_size_in = gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=True, minimum=0)
                         exclude_edge_size_out = gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=True, minimum=0)
+                    with gr.Row():
+                        contour_map_width = gr.Number(1, label="Width of contour (outward)", precision=0, visible=False, minimum=1)
                     train_dataset_mode.change(fn=change_edge_exclude, inputs=train_dataset_mode, outputs=exclude_edge)
                     train_dataset_mode.change(fn=change_edge_exclude_value_in, inputs=train_dataset_mode, outputs=exclude_edge_size_in)
                     train_dataset_mode.change(fn=change_edge_exclude_value_out, inputs=train_dataset_mode, outputs=exclude_edge_size_out)
+                    mode_box.change(fn=change_contour_map_width_value, inputs=mode_box, outputs=contour_map_width)
                 with gr.Tab("Validation Settings"):
                     with gr.Row():
                         val_dataset_path = gr.Textbox('Datasets/val', scale=2, label="Validation Dataset Path")
@@ -430,6 +441,7 @@ if __name__ == "__main__":
                 exclude_edge,
                 exclude_edge_size_in,
                 exclude_edge_size_out,
+                contour_map_width,
                 val_dataset_mode,
                 test_dataset_mode,
                 TTA_xy,

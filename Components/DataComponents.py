@@ -516,7 +516,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
         return self.meta_list
 
 
-def get_contour_maps(file_name, folder_path):
+def get_contour_maps(file_name, folder_path, contour_map_width):
     """
     Try get the contour map for the images file. Will first try to load previously saved one from folder_path,
     if failed, will generate new one and save it to folder_path.
@@ -527,7 +527,7 @@ def get_contour_maps(file_name, folder_path):
     contour_img_path = os.path.join(folder_path, contour_img_name)
     if not os.path.exists(contour_img_path):
         print(f'Generating contour map for {img_name}... Can take a while if there are lots of objects.')
-        contour_img = Aug.instance_contour_transform(path_to_tensor(img_path, label=True))
+        contour_img = Aug.instance_contour_transform(path_to_tensor(img_path, label=True), contour_outward=contour_map_width)
         array = np.asarray(contour_img)
         imageio.v3.imwrite(uri=f'{contour_img_path}', image=np.uint8(array))
         print(f'Saved {contour_img_name}')
@@ -546,15 +546,16 @@ class TrainDatasetInstance(torch.utils.data.Dataset):
         images_dir (str): Path to the directory where images are stored.
         augmentation_csv (str): Path to the .csv file that contains the image augmentations parameters.
         train_multiplier (int): A.k.a repeat, the number of training images in each epoch are multiplied by this number. Default: 1.
+        contour_map_width (int): Width of the contour map. Default: 1.
     """
 
-    def __init__(self, images_dir, augmentation_csv, train_multiplier=1):
+    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, contour_map_width=1):
         # Get a list of file paths for images and labels
         self.file_list = make_dataset_tv(images_dir)
         self.num_files = len(self.file_list)
         self.img_tensors = [path_to_tensor(item[0], label=False) for item in self.file_list]
         self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], label=True)) for item in self.file_list]
-        self.contour_tensors = [get_contour_maps(item, 'generated_contour_maps') for item in self.file_list]
+        self.contour_tensors = [get_contour_maps(item, 'generated_contour_maps', contour_map_width) for item in self.file_list]
         # self.contour_tensors = [Aug.instance_contour_transform(path_to_tensor(item[1], label=True)) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
@@ -585,16 +586,17 @@ class ValDatasetInstance(torch.utils.data.Dataset):
     Args:
         images_dir (str): Path to the directory where images are stored.
         augmentation_csv (str): Path to the .csv file that contains the image augmentations parameters.
+        contour_map_width (int): Width of the contour map. Default: 1.
     """
 
-    def __init__(self, images_dir, augmentation_csv):
+    def __init__(self, images_dir, augmentation_csv, contour_map_width=1):
         # Get a list of file paths for images and labels
         self.file_list = make_dataset_tv(images_dir)
         self.num_files = len(self.file_list)
 
         tensors_pairs = [(path_to_tensor(item[0], label=False),
                           Aug.binarisation(path_to_tensor(item[1], label=True)),
-                          get_contour_maps(item, 'generated_contour_maps')) for item in self.file_list]
+                          get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in self.file_list]
         self.chopped_tensor_pairs = []
         self.augmentation_params = pd.read_csv(augmentation_csv)
         for _, row in self.augmentation_params.iterrows():
