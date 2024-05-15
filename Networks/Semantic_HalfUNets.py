@@ -30,8 +30,8 @@ class HalfUNet(nn.Module):
             raise ValueError("Current Z to XY ratio require deeper depth to make network effective.")
         if depth < 2:
             raise ValueError("The depth needs to be at least 2 (2 different feature map size exist).")
-        kernel_sizes_conv = [(1, 3, 3) if self.special_layers > 0 and i < self.special_layers else
-                             (3, 1, 1) if self.special_layers < 0 and i < -self.special_layers else
+        kernel_sizes_conv = [(3, 3, 3) if self.special_layers > 0 and i < self.special_layers else
+                             (3, 3, 3) if self.special_layers < 0 and i < -self.special_layers else
                              (3, 3, 3) for i in range(depth)]
         block = {'Basic': BasicBlock, 'Ghost': GhostDoubleConv, 'Residual': ResBasicBlock, 'ResidualBottleneck': ResBottleneckBlock}[type]
 

@@ -65,10 +65,10 @@ class Auto(nn.Module):
         kernel_sizes_pool = []
         for i in range(depth):
             if self.special_layers > 0 and i < self.special_layers:
-                kernel_sizes_conv.append((1, 3, 3))
+                kernel_sizes_conv.append((3, 3, 3))
                 kernel_sizes_pool.append((1, 2, 2))
             elif self.special_layers < 0 and i < -self.special_layers:
-                kernel_sizes_conv.append((3, 1, 1))
+                kernel_sizes_conv.append((3, 3, 3))
                 kernel_sizes_pool.append((2, 1, 1))
             else:
                 kernel_sizes_conv.append((3, 3, 3))

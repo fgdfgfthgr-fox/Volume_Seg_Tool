@@ -351,26 +351,26 @@ class ValDataset(torch.utils.data.Dataset):
 
     def __init__(self, images_dir, augmentation_csv):
         # Get a list of file paths for images and labels
-        self.file_list = make_dataset_tv(images_dir)
-        self.num_files = len(self.file_list)
+        file_list = make_dataset_tv(images_dir)
+        self.num_files = len(file_list)
         tensors_pairs = [(path_to_tensor(item[0], label=False), path_to_tensor(item[1], label=True)) for item in
-                         self.file_list]
+                         file_list]
         self.chopped_tensor_pairs = []
-        self.augmentation_params = pd.read_csv(augmentation_csv)
-        for _, row in self.augmentation_params.iterrows():
+        augmentation_params = pd.read_csv(augmentation_csv)
+        for _, row in augmentation_params.iterrows():
             k = row['Augmentation']
             if k == 'Image Depth':
-                depth = int(row['Value'])
+                d_depth = int(row['Value'])
             elif k == 'Image Height':
-                height = int(row['Value'])
+                d_height = int(row['Value'])
             elif k == 'Image Width':
-                width = int(row['Value'])
+                d_width = int(row['Value'])
         # Crop the tensors, so they are the standard shape specified in the augmentation csv.
         for pairs in tensors_pairs:
-            self.depth, self.height, self.width = pairs[0].shape
-            depth_multiplier = math.ceil(self.depth / depth)
-            height_multiplier = math.ceil(self.height / height)
-            width_multiplier = math.ceil(self.width / width)
+            depth, height, width = pairs[0].shape
+            depth_multiplier = math.ceil(depth / d_depth)
+            height_multiplier = math.ceil(height / d_height)
+            width_multiplier = math.ceil(width / d_width)
             self.total_multiplier = depth_multiplier * height_multiplier * width_multiplier
             self.leave_out_list = []
             # Loop through each depth, height, and width index
@@ -379,26 +379,26 @@ class ValDataset(torch.utils.data.Dataset):
                     for width_idx in range(width_multiplier):
                         # Calculate the start and end indices for depth, height, and width
                         if depth_multiplier > 1:
-                            depth_start = (depth - (
-                                        (depth * depth_multiplier - self.depth) / (depth_multiplier - 1))) * depth_idx
+                            depth_start = (d_depth - (
+                                        (d_depth * depth_multiplier - depth) / (depth_multiplier - 1))) * depth_idx
                             depth_start = math.floor(depth_start)
                         else:
                             depth_start = 0
-                        depth_end = depth_start + depth
+                        depth_end = depth_start + d_depth
                         if height_multiplier > 1:
-                            height_start = (height - ((height * height_multiplier - self.height) / (
+                            height_start = (d_height - ((d_height * height_multiplier - height) / (
                                         height_multiplier - 1))) * height_idx
                             height_start = math.floor(height_start)
                         else:
                             height_start = 0
-                        height_end = height_start + height
+                        height_end = height_start + d_height
                         if width_multiplier > 1:
-                            width_start = (width - (
-                                        (width * width_multiplier - self.width) / (width_multiplier - 1))) * width_idx
+                            width_start = (d_width - (
+                                        (d_width * width_multiplier - width) / (width_multiplier - 1))) * width_idx
                             width_start = math.floor(width_start)
                         else:
                             width_start = 0
-                        width_end = width_start + width
+                        width_end = width_start + d_width
                         cropped_img = pairs[0][depth_start:depth_end, height_start:height_end,
                                       width_start:width_end]
                         cropped_lab = pairs[1][depth_start:depth_end, height_start:height_end,
@@ -410,8 +410,6 @@ class ValDataset(torch.utils.data.Dataset):
         return self.num_files * self.total_multiplier
 
     def __getitem__(self, idx):
-        # Get the image and label tensors at the specified index
-        # C, D, H, W
         img_tensor, lab_tensor = self.chopped_tensor_pairs[idx][0][None, :], self.chopped_tensor_pairs[idx][1][None, :]
         # lab_tensor = lab_tensor.squeeze(1)
         return img_tensor, lab_tensor
@@ -435,22 +433,15 @@ class Predict_Dataset(torch.utils.data.Dataset):
 
     def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False,
                  leave_out_idx=None):
-        self.file_list = make_dataset_predict(images_dir)
-        self.hw_size = hw_size
-        self.depth_size = depth_size
-        self.hw_overlap = hw_overlap
-        self.depth_overlap = depth_overlap
+        file_list = make_dataset_predict(images_dir)
         self.patches_list = []
         self.meta_list = []
         if leave_out_idx is not None:
             self.file = self.file_list[leave_out_idx]
-            self.file_list = []
-            self.file_list.append(self.file)
-        for file in self.file_list:
-            image = path_to_tensor(file, label=False)
-            image = image[None, :]
-            image_list = []
-            image_list.append(image)
+            file_list = [self.file]
+        for file in file_list:
+            image = path_to_tensor(file, label=False)[None, :]
+            image_list = [image]
             if TTA_hw:
                 image_list.append(T_F.hflip(image))
                 image_list.append(T_F.vflip(image))
@@ -461,9 +452,9 @@ class Predict_Dataset(torch.utils.data.Dataset):
             height = image.shape[2]
             width = image.shape[3]
             # Calculate the multipliers for padding and cropping
-            depth_multiplier = math.ceil(depth / self.depth_size)
-            height_multiplier = math.ceil(height / self.hw_size)
-            width_multiplier = math.ceil(width / self.hw_size)
+            depth_multiplier = math.ceil(depth / depth_size)
+            height_multiplier = math.ceil(height / hw_size)
+            width_multiplier = math.ceil(width / hw_size)
             TTA_multiplier = len(image_list)
             # Padding and cropping
             paddings = (hw_overlap, hw_overlap,
@@ -472,8 +463,9 @@ class Predict_Dataset(torch.utils.data.Dataset):
             # Experiments show replicate works best compare to constant or reflect
             padded_image_list = []
             for item in image_list:
-                padded_image = F.pad(item, paddings, mode="replicate")
-                padded_image_list.append(padded_image)
+                item = F.pad(item, paddings, mode="replicate")
+                padded_image_list.append(item)
+            del image_list, item
             # Loop through each depth, height, and width index
             for i in range(TTA_multiplier):
                 for depth_idx in range(depth_multiplier):
@@ -500,8 +492,10 @@ class Predict_Dataset(torch.utils.data.Dataset):
                             else:
                                 width_start = 0
                             width_end = width_start + hw_size + (2 * hw_overlap)
-                            patch = padded_image_list[i][:, depth_start:depth_end, height_start:height_end,
-                                    width_start:width_end].to(torch.float32)
+                            patch = padded_image_list[i][:,
+                                                         depth_start:depth_end,
+                                                         height_start:height_end,
+                                                         width_start:width_end]
                             self.patches_list.append(patch)
             self.meta_list.append((file_name, image.shape))
         super().__init__()
@@ -551,15 +545,14 @@ class TrainDatasetInstance(torch.utils.data.Dataset):
 
     def __init__(self, images_dir, augmentation_csv, train_multiplier=1, contour_map_width=1):
         # Get a list of file paths for images and labels
-        self.file_list = make_dataset_tv(images_dir)
-        self.num_files = len(self.file_list)
-        self.img_tensors = [path_to_tensor(item[0], label=False) for item in self.file_list]
-        self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], label=True)) for item in self.file_list]
-        self.contour_tensors = [get_contour_maps(item, 'generated_contour_maps', contour_map_width) for item in self.file_list]
+        file_list = make_dataset_tv(images_dir)
+        self.num_files = len(file_list)
+        self.img_tensors = [path_to_tensor(item[0], label=False) for item in file_list]
+        self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], label=True)) for item in file_list]
+        self.contour_tensors = [get_contour_maps(item, 'generated_contour_maps', contour_map_width) for item in file_list]
         # self.contour_tensors = [Aug.instance_contour_transform(path_to_tensor(item[1], label=True)) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
-
         super().__init__()
 
     def __len__(self):
@@ -569,8 +562,7 @@ class TrainDatasetInstance(torch.utils.data.Dataset):
         # Get the image and label tensors at the specified index
         # C, D, H, W
         idx = idx // self.train_multiplier
-        img_tensor, lab_tensor, contour_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :], \
-        self.contour_tensors[idx][None, :]
+        img_tensor, lab_tensor, contour_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :], self.contour_tensors[idx][None, :]
         img_tensor, lab_tensor, contour_tensor = apply_aug_instance(img_tensor, lab_tensor, contour_tensor,
                                                                     self.augmentation_params)
         lab_tensor = lab_tensor.squeeze(1)
@@ -591,27 +583,27 @@ class ValDatasetInstance(torch.utils.data.Dataset):
 
     def __init__(self, images_dir, augmentation_csv, contour_map_width=1):
         # Get a list of file paths for images and labels
-        self.file_list = make_dataset_tv(images_dir)
-        self.num_files = len(self.file_list)
+        file_list = make_dataset_tv(images_dir)
+        self.num_files = len(file_list)
 
         tensors_pairs = [(path_to_tensor(item[0], label=False),
                           Aug.binarisation(path_to_tensor(item[1], label=True)),
-                          get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in self.file_list]
+                          get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in file_list]
         self.chopped_tensor_pairs = []
-        self.augmentation_params = pd.read_csv(augmentation_csv)
-        for _, row in self.augmentation_params.iterrows():
+        augmentation_params = pd.read_csv(augmentation_csv)
+        for _, row in augmentation_params.iterrows():
             k = row['Augmentation']
             if k == 'Image Depth':
-                depth = int(row['Value'])
+                d_depth = int(row['Value'])
             elif k == 'Image Height':
-                height = int(row['Value'])
+                d_height = int(row['Value'])
             elif k == 'Image Width':
-                width = int(row['Value'])
+                d_width = int(row['Value'])
         for pairs in tensors_pairs:
-            self.depth, self.height, self.width = pairs[0].shape
-            depth_multiplier = math.ceil(self.depth / depth)
-            height_multiplier = math.ceil(self.height / height)
-            width_multiplier = math.ceil(self.width / width)
+            depth, height, width = pairs[0].shape
+            depth_multiplier = math.ceil(depth / d_depth)
+            height_multiplier = math.ceil(height / d_height)
+            width_multiplier = math.ceil(width / d_width)
             self.total_multiplier = depth_multiplier * height_multiplier * width_multiplier
             # Loop through each depth, height, and width index
             for depth_idx in range(depth_multiplier):
@@ -619,32 +611,35 @@ class ValDatasetInstance(torch.utils.data.Dataset):
                     for width_idx in range(width_multiplier):
                         # Calculate the start and end indices for depth, height, and width
                         if depth_multiplier > 1:
-                            depth_start = (depth - (
-                                        (depth * depth_multiplier - self.depth) / (depth_multiplier - 1))) * depth_idx
+                            depth_start = (d_depth - (
+                                        (d_depth * depth_multiplier - depth) / (depth_multiplier - 1))) * depth_idx
                             depth_start = math.floor(depth_start)
                         else:
                             depth_start = 0
-                        depth_end = depth_start + depth
+                        depth_end = depth_start + d_depth
                         if height_multiplier > 1:
-                            height_start = (height - ((height * height_multiplier - self.height) / (
+                            height_start = (d_height - ((d_height * height_multiplier - height) / (
                                         height_multiplier - 1))) * height_idx
                             height_start = math.floor(height_start)
                         else:
                             height_start = 0
-                        height_end = height_start + height
+                        height_end = height_start + d_height
                         if width_multiplier > 1:
-                            width_start = (width - (
-                                        (width * width_multiplier - self.width) / (width_multiplier - 1))) * width_idx
+                            width_start = (d_width - (
+                                        (d_width * width_multiplier - width) / (width_multiplier - 1))) * width_idx
                             width_start = math.floor(width_start)
                         else:
                             width_start = 0
-                        width_end = width_start + width
-                        cropped_img = pairs[0][depth_start:depth_end, height_start:height_end,
-                                      width_start:width_end]
-                        cropped_lab = pairs[1][depth_start:depth_end, height_start:height_end,
-                                      width_start:width_end]
-                        cropped_contour = pairs[2][depth_start:depth_end, height_start:height_end,
-                                          width_start:width_end]
+                        width_end = width_start + d_width
+                        cropped_img = pairs[0][depth_start:depth_end,
+                                               height_start:height_end,
+                                               width_start:width_end]
+                        cropped_lab = pairs[1][depth_start:depth_end,
+                                               height_start:height_end,
+                                               width_start:width_end]
+                        cropped_contour = pairs[2][depth_start:depth_end,
+                                                   height_start:height_end,
+                                                   width_start:width_end]
                         self.chopped_tensor_pairs.append((cropped_img, cropped_lab, cropped_contour))
         super().__init__()
 
@@ -862,10 +857,11 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
         for single_tensor in splitted:  # 将这个元组里每个单独元素（图片张量）拆分出来
             # It appears that if the final output is a volume, I will need to squeeze the first dimension(Batch)
             single_tensor = torch.squeeze(single_tensor, (0, 1))
-            list.append(tensor_list, single_tensor)
-
+            tensor_list.append(single_tensor)
+    del splitted, single_tensor
     stitched_volumes = stitch_output_volumes(tensor_list, meta_list, hw_size, depth_size, hw_overlap, depth_overlap,
                                              TTA_hw)
+    del tensor_list
     for volume in stitched_volumes:
         array = np.asarray(volume[0])
         array = np.where(array >= 0.5, 1, 0)
@@ -894,15 +890,19 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         splitted_c = torch.split(prediction[1], split_size_or_sections=1, dim=0)
         for single_tensor in splitted_p:
             single_tensor = torch.squeeze(single_tensor, (0, 1))
-            list.append(tensor_list_p, single_tensor)
+            tensor_list_p.append(single_tensor)
+        del splitted_p
         for single_tensor in splitted_c:
             single_tensor = torch.squeeze(single_tensor, (0, 1))
-            list.append(tensor_list_c, single_tensor)
-
+            tensor_list_c.append(single_tensor)
+        del splitted_c
+    del predictions
     stitched_volumes_p = stitch_output_volumes(tensor_list_p, meta_list, hw_size, depth_size, hw_overlap, depth_overlap,
                                                TTA_hw)
+    del tensor_list_p
     stitched_volumes_c = stitch_output_volumes(tensor_list_c, meta_list, hw_size, depth_size, hw_overlap, depth_overlap,
                                                TTA_hw)
+    del tensor_list_c
     #    for volume in stitched_volumes_p:
     #        array = np.asarray(volume[0])
     #        imageio.v3.imwrite(uri=f'{direc}/Pixels_{volume[1]}', image=np.uint8(array))

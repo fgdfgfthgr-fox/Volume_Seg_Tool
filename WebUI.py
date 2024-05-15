@@ -17,6 +17,7 @@ from pytorch_lightning.profilers import Profiler
 from run_semantic import PLModuleSemantic
 from run_instance import PLModuleInstance
 from Components import DataComponents
+from Components import Metrics
 from tkinter import filedialog
 from Networks import *
 from Visualise_Network import V_N_PLModule
@@ -98,6 +99,7 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show,
                               model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio, model_se):
     arch = pick_arch(model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio, model_se)
     model = V_N_PLModule(arch)
+    del arch
     model.load_state_dict(torch.load(existing_model_path))
     figure_list = []
     tensor = DataComponents.path_to_tensor(example_image).unsqueeze(0).unsqueeze(0)
@@ -118,7 +120,11 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show,
 
     for i, activation in enumerate(model.activations):
         if len(activation.shape) == 5:
-            activation = activation[:, :, slice_to_show:slice_to_show+1, :, :]
+            tensor_depth = activation.shape[-3]
+            if tensor_depth <= slice_to_show:
+                activation = activation[:, :, 0:1, :, :]
+            else:
+                activation = activation[:, :, slice_to_show:slice_to_show+1, :, :]
             tensor_width = activation.shape[-1]
             tensor_height = activation.shape[-2]
             if tensor_width >= 4 and tensor_height >= 4:
@@ -248,6 +254,13 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
     elif arch == "InstanceResidualBottleneck":
         return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
 
+def get_stats_between_maps(predicted_path, groundtruth_path):
+    ground_truth = DataComponents.path_to_tensor(groundtruth_path, label=True)
+    predicted = DataComponents.path_to_tensor(predicted_path, label=True)
+    Loss_Fn = Metrics.BinaryMetrics(use_log_cosh=False, sparse_label=False)
+    loss, dice, sensitivity, specificity = Loss_Fn(predicted, ground_truth)
+    return dice.item(), sensitivity.item(), specificity.item()
+
 
 def change_edge_exclude(choice):
     if choice == "Fully Labelled":
@@ -336,6 +349,11 @@ if __name__ == "__main__":
                     val_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
                                                 label="Dataset Mode")
                 with gr.Tab("Test Settings"):
+                    gr.Markdown("Due to the limitation of the built-in test function. The dice score obtained via the")
+                    gr.Markdown("test workflow may not represent the actual overall dice score. Especially if the image")
+                    gr.Markdown("contains large area without any foreground object.")
+                    gr.Markdown("If you want to obtain the actual dice score, it's recommended to process the image via")
+                    gr.Markdown("the Predict workflow. Then use the 'Extras' tab above to extract the overall dice score.")
                     with gr.Row():
                         test_dataset_path = gr.Textbox('Datasets/test', scale=2, label="Test Dataset Path")
                         folder_button = gr.Button(document_symbol, scale=0)
@@ -400,7 +418,8 @@ if __name__ == "__main__":
                 save_model = gr.Checkbox(label="Save Trained Model Weight")
                 save_model_name = gr.Textbox('example_name.pth', label="File Name for Model Saved, including extension",
                                              info="Recommend extension: .pth")
-                save_model_path = gr.Textbox("''", scale=2, label="Path to Save the Model Weight")
+                save_model_path = gr.Textbox("'enter where you want the model to be saved'", scale=2, label="Path to Save the Model Weight",
+                                             info="For path with space in it, put '' on both sides")
                 folder_button = gr.Button(document_symbol, scale=0)
                 folder_button.click(open_folder, outputs=save_model_path)
             input_dict = {
@@ -513,7 +532,24 @@ if __name__ == "__main__":
                                                label="File name for the output Excel file, including extension")
                     save_log_path = gr.Textbox(scale=2, label="Path to Save the Excel file")
                     folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=save_model_path)
+                    folder_button.click(open_folder, outputs=save_log_path)
                 save_button = gr.Button("Output TensorBoard log to Excel")
                 save_button.click(tensorboard_to_excel, inputs=[tensorboard_path_e, save_log_name, save_log_path])
+            with gr.Accordion("Calculate statistics between the predicted labels and ground truth labels"):
+                with gr.Row():
+                    predicted_img_path = gr.Textbox(label='Path to the predicted image')
+                    file_button = gr.Button(document_symbol, scale=0)
+                    file_button.click(open_file, outputs=predicted_img_path)
+                with gr.Row():
+                    ground_truth_img_path = gr.Textbox(label='Path to the ground truth image')
+                    file_button = gr.Button(document_symbol, scale=0)
+                    file_button.click(open_file, outputs=ground_truth_img_path)
+                with gr.Row():
+                    dice = gr.Number(interactive=False, label="Dice Score")
+                    sensitivity = gr.Number(interactive=False, label="Sensitivity")
+                    specificity = gr.Number(interactive=False, label="Specificity")
+                start_button = gr.Button("Get statistics!")
+                start_button.click(get_stats_between_maps, inputs=[predicted_img_path, ground_truth_img_path],
+                                   outputs=[dice, sensitivity, specificity])
+
     WebUI.launch(inbrowser=True)

@@ -7,6 +7,7 @@ import webbrowser
 
 import lightning.pytorch as pl
 import torch
+from torch.utils.data import DataLoader
 
 from run_semantic import PLModuleSemantic
 from run_instance import PLModuleInstance
@@ -70,16 +71,21 @@ def start_work_flow(args):
         else:
             train_dataset = DataComponents.TrainDatasetInstance(args.train_dataset_path, args.augmentation_csv_path,
                                                                 args.train_multiplier, args.contour_map_width)
-        train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=args.batch_size,
-                                                   shuffle=True,
-                                                   num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
+        train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
+                                  shuffle=True,
+                                  #num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
+                                  num_workers=0, pin_memory=True)
+        del train_dataset
         if 'Validation' in args.workflow_box:
             if 'Semantic' in args.mode_box:
                 val_dataset = DataComponents.ValDataset(args.val_dataset_path, args.augmentation_csv_path)
             else:
                 val_dataset = DataComponents.ValDatasetInstance(args.val_dataset_path, args.augmentation_csv_path, args.contour_map_width)
-            val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=args.batch_size,
-                                                     num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
+            val_loader = DataLoader(dataset=val_dataset, batch_size=args.batch_size,
+                                    #num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
+                                    num_workers=0, pin_memory=True)
+
+            del val_dataset
         else:
             val_loader = None
         if 'Test' in args.workflow_box:
@@ -87,7 +93,8 @@ def start_work_flow(args):
                 test_dataset = DataComponents.ValDataset(args.test_dataset_path, args.augmentation_csv_path)
             else:
                 test_dataset = DataComponents.ValDatasetInstance(args.test_dataset_path, args.augmentation_csv_path, args.contour_map_width)
-            test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=args.batch_size)
+            test_loader = DataLoader(dataset=test_dataset, batch_size=args.batch_size)
+            del test_dataset
     arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.model_z_to_xy_ratio, args.model_se)
     if ('Sparsely Labelled' in args.train_dataset_mode) or (args.exclude_edge):
         sparse_train = True
@@ -107,6 +114,7 @@ def start_work_flow(args):
                                  args.mid_visualization_input,
                                  sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
                                  'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
+    del arch
     if args.read_existing_model:
         model.load_state_dict(torch.load(args.existing_model_path))
     if args.enable_tensorboard:
@@ -126,11 +134,13 @@ def start_work_flow(args):
         trainer.fit(model,
                     val_dataloaders=val_loader,
                     train_dataloaders=train_loader)
+        del val_loader, train_loader
         end_time = time.time()
         print(f"Training Taken: {end_time - start_time} seconds")
     if 'Test' in args.workflow_box:
         trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=logger, accelerator="gpu")
         trainer.test(model, dataloaders=test_loader)
+        del test_loader
     if args.save_model:
         full = os.path.join(args.save_model_path, args.save_model_name)
         torch.save(model.state_dict(), full)
@@ -140,11 +150,13 @@ def start_work_flow(args):
                                                          hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                          hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
                                                          TTA_hw=args.TTA_xy)
-        predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
         meta_info = predict_dataset.__getmetainfo__()
+        predict_loader = DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+        del predict_dataset
         start_time = time.time()
         predictions = trainer.predict(model, predict_loader)
         end_time = time.time()
+        del predict_loader
         print(f"Prediction Taken: {end_time - start_time} seconds")
         if 'Semantic' in args.mode_box:
             start_time = time.time()

@@ -104,6 +104,8 @@ class BinaryMetrics(nn.Module):
             # 0 = Unlabelled
             # 1 = Foreground
             # 2 = Background
+            targets = targets.flatten()
+            inputs = inputs.flatten()
             targets = torch.where(targets == 0, math.nan, targets)
             targets = 1 - (targets - 1)
             known_label = ~torch.isnan(targets)
@@ -117,8 +119,9 @@ class BinaryMetrics(nn.Module):
 
         # Calculate Dice Score
         intersection = 2 * torch.sum(targets * inputs) + smooth
-        union = torch.sum(inputs) + torch.sum(targets) + (smooth * 2)
+        union = torch.sum(inputs) + torch.sum(targets) + smooth
         dice_score = intersection / union
+
 
         # Calculate TP, FN, TN, FP
         inputs = torch.where(inputs >= 0.5, 1, 0).to(torch.int8)
@@ -132,10 +135,9 @@ class BinaryMetrics(nn.Module):
         # Calculate True Positive Rate (TPR) and True Negative Rate (TNR)
         tpr = (true_positives + smooth) / (true_positives + false_negatives + smooth)
         tnr = (true_negatives + smooth) / (true_negatives + false_positives + smooth)
-
         if dice_score == 1:
             print('Dice Score Too High (==1)! That is unrealistic in most of cases!')
-        elif dice_score <= 0.001:
+        elif intersection > smooth and dice_score <= 0.001:
             print(f'Dice Score Too Low! Current stats: intersection={intersection}, union={union}, tp={true_positives}, fn={false_negatives}, tn={true_negatives}, fp={false_positives}')
 
         if self.use_log_cosh:

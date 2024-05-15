@@ -166,11 +166,13 @@ def random_rotation_3d(tensors, angle_range, plane='xy', interpolations=('biline
     return rotated_tensors
 
 
-def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True, max_attempts=99, minimal_foreground=0.01):
+def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True,
+                     max_attempts=50, minimal_foreground=0.01, force_foreground=0.80):
     """
-    Randomly crop a list of 3D PyTorch tensors given the desired depth, height, and width, ensuring at least 1% foreground object.\n
+    Randomly crop a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least 1% foreground object.\n
     Whether it contains foreground object is determined by the second tensor in the list,
-    pixels with values larger or equal to 1 are considered foreground.
+    pixels with values larger or equal to 1 are considered foreground.\n
+    If no foreground object is found after max_attempts attempts, it will output a warning message and crop a random volume.
 
     Args:
         tensors (list of torch.Tensor): List of input tensors of shape (Channel, Depth, Height, Width).
@@ -178,8 +180,9 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True, max_atte
         height (int): Desired height of the cropped tensors.
         width (int): Desired width of the cropped tensors.
         pad_if_needed (bool): If True, pad the input tensors when they're smaller than any desired dimension (default: True).
-        max_attempts (int): Maximum number of attempts to find a crop with at least 1% foreground object (default: 99).
+        max_attempts (int): Maximum number of attempts to find a crop with at least 1% foreground object (default: 50).
         minimal_foreground (float): Proportion of desired minimal foreground pixels (default: 0.01).
+        force_foreground (float): Desired proportion of crops that has a foreground object (default:0.67)
 
     Returns:
         List of cropped tensors.
@@ -192,47 +195,55 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True, max_atte
         return pixels_greater_than_zero >= (total_pixels * minimal_foreground)
 
     attempts = 0
-    while attempts < max_attempts:
-        # Reset attempts counter
-        attempts += 1
+    # Suppose all the tensors in the list are the exact same shape.
+    c, d, h, w = tensors[0].shape
 
-        # Suppose all the tensors in the list are the exact same shape.
-        c, d, h, w = tensors[0].shape
-
-        if d < depth or h < height or w < width:
-            if not pad_if_needed:
-                raise ValueError("Input tensor dimensions are smaller than the crop size.")
-            else:
-                # Calculate the amount of padding needed for each dimension
-                d_pad = max(0, depth - d)
-                h_pad = max(0, height - h)
-                w_pad = max(0, width - w)
-                padded_list = []
-                for tensor in tensors:
-                    # Pad the tensor if needed
-                    tensor = F.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
-                    padded_list.append(tensor)
+    if d < depth or h < height or w < width:
+        if not pad_if_needed:
+            raise ValueError("Input tensor dimensions are smaller than the crop size.")
         else:
-            padded_list = tensors
+            # Calculate the amount of padding needed for each dimension
+            d_pad = max(0, depth - d)
+            h_pad = max(0, height - h)
+            w_pad = max(0, width - w)
+            padded_list = []
+            for tensor in tensors:
+                # Pad the tensor if needed
+                tensor = F.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
+                padded_list.append(tensor)
+    else:
+        padded_list = tensors
 
-        # Randomly select a depth slice within the valid range
+    def cropping(padded_list):
+        cropped_tensors = []
+        # Randomly select crop starting locations within the valid range
         d_offset = random.randint(0, padded_list[0].shape[1] - depth)
         h_offset = random.randint(0, padded_list[0].shape[2] - height)
         w_offset = random.randint(0, padded_list[0].shape[3] - width)
-
-        cropped_tensors = []
         for tensor in padded_list:
             cropped_tensor = tensor[:, d_offset:d_offset + depth,
                                     h_offset:h_offset + height,
                                     w_offset:w_offset + width]
             cropped_tensors.append(cropped_tensor)
+        return cropped_tensors
+    if random.random() <= force_foreground:
+        while attempts < max_attempts:
+            attempts += 1
 
-        # Check if the label tensor (2nd tensor) contains a foreground object
-        if contains_foreground(cropped_tensors[1]):
-            return cropped_tensors
+            cropped_tensors = cropping(padded_list)
 
-    # If no suitable crop is found after max_attempts, raise an exception
-    raise ValueError("Random clop failed: No suitable crop with foreground object found after {} attempts.".format(max_attempts))
+            # Check if the label tensor (2nd tensor) contains a foreground object
+            if contains_foreground(cropped_tensors[1]):
+                return cropped_tensors
+        # If no suitable crop is found after max_attempts, raise a warning
+        print(f"Random clop failed: No suitable crop with foreground object found after {max_attempts} attempts. Will "
+              f"return a random crop.")
+        cropped_tensors = cropping(padded_list)
+        return cropped_tensors
+    else:
+        cropped_tensors = cropping(padded_list)
+        return cropped_tensors
+
 
 
 def random_gradient(tensor, range=(0.5, 1.5), gamma=True):
