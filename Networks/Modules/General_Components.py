@@ -12,14 +12,14 @@ class ResBasicBlock(nn.Module):
         self.conv_2 = nn.Conv3d(out_channels, out_channels, kernel_size=kernel_size,
                                 padding=padding, padding_mode='zeros')
         self.bn = nn.BatchNorm3d(out_channels, track_running_stats=False)
-        self.relu = nn.ReLU(inplace=True)
+        self.celu = nn.CELU(inplace=True)
 
     def forward(self, x):
         x_id = x
-        x = self.relu(self.bn(self.conv_1(x)))
+        x = self.celu(self.bn(self.conv_1(x)))
         x = self.conv_2(x)
         x_id = self.mapping(x_id) if self.mapping else x_id
-        x = self.relu(self.bn(x + x_id))
+        x = self.celu(self.bn(x + x_id))
         return x
 
 
@@ -35,15 +35,15 @@ class ResBottleneckBlock(nn.Module):
         self.conv_3 = nn.Conv3d(middle_channel, out_channels, kernel_size=1)
         self.bn1 = nn.BatchNorm3d(middle_channel, track_running_stats=False)
         self.bn2 = nn.BatchNorm3d(out_channels, track_running_stats=False)
-        self.relu = nn.ReLU(inplace=True)
+        self.celu = nn.CELU(inplace=True)
 
     def forward(self, x):
         x_id = x
-        x = self.relu(self.bn1(self.conv_1(x)))
-        x = self.relu(self.bn1(self.conv_2(x)))
+        x = self.celu(self.bn1(self.conv_1(x)))
+        x = self.celu(self.bn1(self.conv_2(x)))
         x = self.conv_3(x)
         x_id = self.mapping(x_id) if self.mapping else x_id
-        x = self.relu(self.bn2(x + x_id))
+        x = self.celu(self.bn2(x + x_id))
         return x
 
 
@@ -56,11 +56,11 @@ class BasicBlock(nn.Module):
         self.conv_2 = nn.Conv3d(out_channels, out_channels,
                                 kernel_size=kernel_size, padding=padding, padding_mode='zeros', bias=False)
         self.bn = nn.BatchNorm3d(out_channels, track_running_stats=False)
-        self.relu = nn.ReLU(inplace=True)
+        self.celu = nn.CELU(inplace=True)
 
     def forward(self, x):
-        x = self.relu(self.bn(self.conv_1(x)))
-        x = self.relu(self.bn(self.conv_2(x)))
+        x = self.celu(self.bn(self.conv_1(x)))
+        x = self.celu(self.bn(self.conv_2(x)))
         return x
 
 
@@ -71,10 +71,10 @@ class BasicBlockSingle(nn.Module):
         self.conv_1 = nn.Conv3d(in_channels, out_channels,
                                 kernel_size=kernel_size, padding=padding, padding_mode='zeros', bias=False)
         self.bn = nn.BatchNorm3d(out_channels, track_running_stats=False)
-        self.relu = nn.ReLU(inplace=True)
+        self.celu = nn.CELU(inplace=True)
 
     def forward(self, x):
-        x = self.relu(self.bn(self.conv_1(x)))
+        x = self.celu(self.bn(self.conv_1(x)))
         return x
 
 
@@ -82,18 +82,19 @@ class cSE(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool3d(1)
-        self.fc1 = nn.Conv3d(in_channels, in_channels // 2, kernel_size=1)
+        self.fc1 = nn.Linear(in_channels, in_channels // 2)
         self.relu = nn.ReLU(inplace=True)
-        self.fc2 = nn.Conv3d(in_channels // 2, in_channels, kernel_size=1)
+        self.fc2 = nn.Linear(in_channels // 2, in_channels)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x_avg = self.avg_pool(x)
+        batch_size, num_channels, D, H, W = x.size()
+        x_avg = self.avg_pool(x).view(batch_size, num_channels)
         x_avg = self.fc1(x_avg)
         x_avg = self.relu(x_avg)
         x_avg = self.fc2(x_avg)
         x_avg = self.sigmoid(x_avg)
-        return x * x_avg
+        return x * (x_avg.view(batch_size, num_channels, 1, 1, 1))
 
 
 class sSE(nn.Module):

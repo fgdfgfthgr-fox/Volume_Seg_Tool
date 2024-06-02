@@ -137,7 +137,7 @@ class PLModuleSemantic(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                                factor=0.25, patience=10,
                                                                threshold_mode='rel',
-                                                               cooldown=0, min_lr=0.00025)
+                                                               cooldown=0, min_lr=0.00025, verbose=True)
         metrics = "val_loss" if self.enable_val else "train_loss"
         return {
             "optimizer": optimizer,

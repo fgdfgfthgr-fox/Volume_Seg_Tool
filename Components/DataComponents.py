@@ -433,13 +433,13 @@ class Predict_Dataset(torch.utils.data.Dataset):
 
     def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False,
                  leave_out_idx=None):
-        file_list = make_dataset_predict(images_dir)
+        self.file_list = make_dataset_predict(images_dir)
         self.patches_list = []
         self.meta_list = []
         if leave_out_idx is not None:
-            self.file = self.file_list[leave_out_idx]
-            file_list = [self.file]
-        for file in file_list:
+            file = self.file_list[leave_out_idx]
+            self.file_list = [file]
+        for file in self.file_list:
             image = path_to_tensor(file, label=False)[None, :]
             image_list = [image]
             if TTA_hw:
