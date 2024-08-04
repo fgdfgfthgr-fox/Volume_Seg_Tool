@@ -7,6 +7,7 @@ from joblib import Parallel, delayed
 from tqdm import tqdm
 import imagej
 import torch.nn as nn
+import torch.nn.functional as F
 import time
 
 
@@ -67,19 +68,56 @@ class DiceLoss(nn.Module):
 
 
 class BinaryMetrics(nn.Module):
-    def __init__(self, use_log_cosh=False, sparse_label=False):
+    def __init__(self, loss_mode: str, smooth=1e-8):
         """
-        Initializes the BinaryMetrics module.
+        Initializes the BinaryMetrics module. Which can be set for using Boundary loss (for semantic map)
+        or Focal Loss (for contour map).
 
         Args:
-            use_log_cosh (bool): A flag indicating whether to use the Log-Cosh Dice Loss (default is False).
-            sparse_label (bool): A flag indicating whether the target labels are sparse (default is False).
+            loss_mode (str): A string indicating whether to use boundary loss ("boundary") or focal loss ("focal") or dice loss ("dice")
+            smooth (float): A smoothing factor for numerical stability (default is 1e-8)
         """
         super(BinaryMetrics, self).__init__()
-        self.use_log_cosh = use_log_cosh
-        self.sparse_label = sparse_label
+        self.loss_mode = loss_mode
+        self.smooth = smooth
 
-    def forward(self, inputs, targets, smooth=1):
+    @staticmethod
+    def sparse_preprocessing(inputs: torch.Tensor, targets: torch.Tensor):
+        # In sparse label cases:
+        # Input: 1 = Foreground, 0 = Background. Can be any number in between.
+        # Target: 0 = Unlabelled, 1 = Foreground, 2 = Background
+        targets = targets.flatten()
+        inputs = inputs.flatten()
+        targets = torch.where(targets == 0, math.nan, targets)
+        targets = 1 - (targets - 1)
+        known_label = ~torch.isnan(targets)
+        inputs = inputs[known_label]
+        targets = targets[known_label]
+        return inputs, targets
+
+    def calculate_dice_and_metrics(self, inputs: torch.Tensor, targets: torch.Tensor):
+        intersection = 2 * torch.sum(targets * inputs) + self.smooth
+        union = torch.sum(inputs) + torch.sum(targets) + self.smooth
+        dice_score = intersection / union
+
+        inputs = torch.where(inputs >= 0.5, 1, 0).to(torch.int8)
+
+        true_positives = (inputs*targets).sum().detach()
+        false_negatives = ((1-inputs)*targets).sum().detach()
+        true_negatives = ((1-inputs)*(1-targets)).sum().detach()
+        false_positives = (inputs*(1-targets)).sum().detach()
+
+        # Calculate True Positive Rate (TPR) and True Negative Rate (TNR)
+        tpr = (true_positives + self.smooth) / (true_positives + false_negatives + self.smooth)
+        tnr = (true_negatives + self.smooth) / (true_negatives + false_positives + self.smooth)
+        return dice_score, tpr, tnr
+
+    def dice_loss(self, inputs: torch.Tensor, targets: torch.Tensor):
+        dice_score, tpr, tnr = self.calculate_dice_and_metrics(inputs, targets)
+        loss = 1 - dice_score
+        return loss, dice_score, tpr, tnr
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor, sparse_label=False):
         """
         Calculate binary classification metrics and loss based on the provided inputs and targets.
 
@@ -88,7 +126,8 @@ class BinaryMetrics(nn.Module):
             targets (torch.Tensor): The target labels (B, 1, D, H, W).
                 When `sparse_label` is True: 0 for unlabeled, 1 for foreground, 2 for background
                 When `sparse_label` is False: 0.0 for background, 1.0 for foreground
-            smooth (float, optional): A small smoothing factor to prevent division by zero (default is 1e-8).
+            sparse_label (bool): A flag indicating whether the target labels are sparse (default is False).
+            If true, will force to dice loss.
 
         Returns:
             loss (torch.Tensor): The calculated loss value based on the chosen loss function.
@@ -96,58 +135,47 @@ class BinaryMetrics(nn.Module):
             tpr (torch.Tensor): True Positive Rate (Sensitivity).
             tnr (torch.Tensor): True Negative Rate (Specificity).
         """
-        # Calculate True Positives, True Negatives, False Positives, False Negatives
-        if self.sparse_label:
-            # Input(i): (B, 1, D, H, W), float32
-            # 1 = Foreground, 0 = Background. Can be any number in between.
-            # Target(t): (B, 1, D, H, W), int8
-            # 0 = Unlabelled
-            # 1 = Foreground
-            # 2 = Background
-            targets = targets.flatten()
-            inputs = inputs.flatten()
-            targets = torch.where(targets == 0, math.nan, targets)
-            targets = 1 - (targets - 1)
-            known_label = ~torch.isnan(targets)
-            inputs = inputs[known_label]
-            targets = targets[known_label]
-        # In Non-sparse_label cases:
-        # Input(i): (B, 1, D, H, W), float32
-        # 1 = Foreground, 0 = Background. Can be any number in between.
-        # Target(t): (B, 1, D, H, W), float32
-        # 1 = Foreground, 0 = Background. Can be any number in between.
+        # In Non-sparse label cases:
+        # Input: 1 = Foreground, 0 = Background. Can be any number in between.
+        # Target: 1 = Foreground, 0 = Background. Can be any number in between.
+        if sparse_label:
+            inputs, targets = self.sparse_label_transform(inputs, targets)
+            return self.dice_loss(inputs, targets)
 
-        # Calculate Dice Score
-        intersection = 2 * torch.sum(targets * inputs) + smooth
-        union = torch.sum(inputs) + torch.sum(targets) + smooth
-        dice_score = intersection / union
-
-
-        # Calculate TP, FN, TN, FP
-        inputs = torch.where(inputs >= 0.5, 1, 0).to(torch.int8)
-        #targets = targets.to(torch.int8)
-
-        true_positives = (inputs*targets).sum().detach()
-        false_negatives = ((1-inputs)*targets).sum().detach()
-        true_negatives = ((1-inputs)*(1-targets)).sum().detach()
-        false_positives = (inputs*(1-targets)).sum().detach()
-
-        # Calculate True Positive Rate (TPR) and True Negative Rate (TNR)
-        tpr = (true_positives + smooth) / (true_positives + false_negatives + smooth)
-        tnr = (true_negatives + smooth) / (true_negatives + false_positives + smooth)
-        if dice_score == 1:
-            print('Dice Score Too High (==1)! That is unrealistic in most of cases!')
-        elif intersection > smooth and dice_score <= 0.001:
-            print(f'Dice Score Too Low! Current stats: intersection={intersection}, union={union}, tp={true_positives}, fn={false_negatives}, tn={true_negatives}, fp={false_positives}')
-
-        if self.use_log_cosh:
-            # Calculate Log-Cosh Dice Loss
-            loss = torch.log(torch.cosh(1.0 - dice_score))
+        if self.loss_mode == "boundary":
+            # thanks pywick!
+            # boundary map
+            n, c, d, h, w = inputs.shape
+            gt_b = F.max_pool3d(1-targets, kernel_size=5, stride=1, padding=2)
+            gt_b -= 1 - targets
+            pred_b = F.max_pool3d(1-inputs, kernel_size=5, stride=1, padding=2)
+            pred_b -= 1 - inputs
+            # extended boundary map
+            gt_b_ext = F.max_pool3d(gt_b, kernel_size=7, stride=1, padding=3)
+            pred_b_ext = F.max_pool3d(pred_b, kernel_size=7, stride=1, padding=3)
+            # reshape
+            gt_b = gt_b.view(n, -1)
+            pred_b = pred_b.view(n, -1)
+            gt_b_ext = gt_b_ext.view(n, -1)
+            pred_b_ext = pred_b_ext.view(n, -1)
+            # Precision and Recall
+            P = (torch.sum(pred_b * gt_b_ext, dim=1)+self.smooth) / (torch.sum(pred_b, dim=1)+self.smooth)
+            R = (torch.sum(pred_b_ext * gt_b, dim=1)+self.smooth) / (torch.sum(gt_b, dim=1)+self.smooth)
+            # Boundary F1 Score
+            BF1 = (2 * P * R) / (P + R + self.smooth)
+            loss = torch.mean(1 - BF1)
+            dice_score, tpr, tnr = self.calculate_dice_and_metrics(inputs, targets)
+            return loss, dice_score, tpr, tnr
+        elif self.loss_mode == "focal":
+            BCE_loss = F.binary_cross_entropy(inputs, targets, reduction='none')
+            pt = torch.exp(-BCE_loss)
+            F_loss = (1-pt) ** 1.333 * BCE_loss
+            dice_score, tpr, tnr = self.calculate_dice_and_metrics(inputs, targets)
+            return F_loss.mean(), dice_score, tpr, tnr
+        elif self.loss_mode == "dice":
+            return self.dice_loss(inputs, targets)
         else:
-            # Calculate Dice Loss
-            loss = 1 - dice_score
-
-        return loss, dice_score, tpr, tnr
+            raise ValueError("Invalid loss. Use 'boundary' or 'focal' or 'dice'.")
 
 
 def get_bounding_boxes(tensor):

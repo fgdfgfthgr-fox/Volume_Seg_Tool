@@ -1,21 +1,13 @@
 import os
 import math
-import time
-import threading
-import subprocess
-import webbrowser
-import signal
 
-import lightning.pytorch as pl
 import torch
+import imageio
 import gradio as gr
 import tkinter as tk
 import matplotlib.pyplot as plt
 import numpy as np
-from pytorch_lightning.profilers import Profiler
 
-from run_semantic import PLModuleSemantic
-from run_instance import PLModuleInstance
 from Components import DataComponents
 from Components import Metrics
 from tkinter import filedialog
@@ -57,26 +49,29 @@ def start_work_flow(inputs):
     test_dataset_mode_n = f'"{inputs[test_dataset_mode]}"'
     augmentation_csv_path_n = f'"{inputs[augmentation_csv_path]}"'
     cmd = (f"python workflow.py "
-           f"--workflow_box {workflow_box_n} --mode_box {inputs[mode_box]} "
+           f"--workflow_box {workflow_box_n} --segmentation_mode {inputs[segmentation_mode]} "
            f"--train_dataset_path {inputs[train_dataset_path]} "
            f"--augmentation_csv_path {augmentation_csv_path_n} --train_multiplier {inputs[train_multiplier]} "
-           f"--batch_size {inputs[batch_size]} --max_epochs {inputs[max_epochs]} "
+           f"--batch_size {inputs[batch_size]} --num_epochs {inputs[num_epochs]} "
            f"--tensorboard_path {inputs[tensorboard_path]} "
            f"--val_dataset_path {inputs[val_dataset_path]} --test_dataset_path {inputs[test_dataset_path]} "
            f"--predict_dataset_path {inputs[predict_dataset_path]} "
            f"--existing_model_path {existing_model_path_n} "
            f"--precision {inputs[precision]} "
            f"--save_model_name {inputs[save_model_name]} --save_model_path {inputs[save_model_path]} "
+           f"--hw_size {inputs[hw_size]} --d_size {inputs[d_size]} "
            f"--predict_hw_size {inputs[predict_hw_size]} --predict_depth_size {inputs[predict_depth_size]} "
            f"--predict_hw_overlap {inputs[predict_hw_overlap]} --predict_depth_overlap {inputs[predict_depth_overlap]} "
            f"--result_folder_path {inputs[result_folder_path]} "
            f"--mid_visualization_input {inputs[mid_visualization_input]} "
            f"--model_architecture {inputs[model_architecture]} --model_channel_count {inputs[model_channel_count]} "
-           f"--model_depth {inputs[model_depth]} --model_z_to_xy_ratio {inputs[model_z_to_xy_ratio]} "
+           f"--model_depth {inputs[model_depth]} --z_to_xy_ratio {inputs[z_to_xy_ratio]} "
            f"--train_dataset_mode {train_dataset_mode_n} "
            f"--exclude_edge_size_in {inputs[exclude_edge_size_in]} --exclude_edge_size_out {inputs[exclude_edge_size_out]} "
            f"--contour_map_width {inputs[contour_map_width]} "
            f"--val_dataset_mode {val_dataset_mode_n} --test_dataset_mode {test_dataset_mode_n} ")
+    if inputs[pairing_samples]:
+        cmd += " --pairing_samples "
     if inputs[enable_tensorboard]:
         cmd += "--enable_tensorboard "
     if inputs[save_model]:
@@ -91,6 +86,8 @@ def start_work_flow(inputs):
         cmd += "--TTA_xy "
     if inputs[model_se]:
         cmd += "--model_se "
+    if inputs[find_max_channel_count]:
+        cmd += "--find_max_channel_count "
 
     command_executor.execute_command(cmd)
 
@@ -164,14 +161,13 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show,
     return figure_list
 
 
-def visualisation_augmentations(train_dataset_path, augmentation_csv, slice_to_show):
-    dataset = DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1)
+def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_csv, slice_to_show=1, num_copies=6, size=(8, 4.5)):
+    dataset = DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size)
     num_data = len(dataset.img_tensors)
-    num_copies = 12
     figure_list = []
     for i in range(0, num_data):
-        # 1600 x 900
-        plt.figure(figsize=(16, 9))
+        # 800 x 450
+        plt.figure(figsize=size)
         image_name = dataset.file_list[i][0]
         plt.suptitle(f'{image_name}')
         rows = math.floor(math.sqrt(num_copies * 2))
@@ -226,70 +222,6 @@ available_architectures_instance = ['InstanceBasic',
                                     'InstanceResidualBottleneck',]
 
 
-def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
-    if arch == "HalfUNetBasic":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
-    elif arch == "HalfUNetGhost":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Ghost', se)
-    elif arch == "HalfUNetResidual":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
-    elif arch == "HalfUNetResidualBottleneck":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
-    elif arch == "UNetBasic":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
-    elif arch == "UNetResidual":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
-    elif arch == "UNetResidualBottleneck":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
-    elif arch == "SegNet":
-        return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio, se)
-    #elif arch == "Tiniest":
-    #    return Testing_Models.Tiniest(base_channels, depth, z_to_xy_ratio)
-    #elif arch == "SingleTopLayer":
-    #    return Testing_Models.SingleTopLayer(base_channels, depth, z_to_xy_ratio, 'Basic', se)
-    elif arch == "InstanceBasic":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
-    elif arch == "InstanceResidual":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
-    elif arch == "InstanceResidualBottleneck":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
-
-def get_stats_between_maps(predicted_path, groundtruth_path):
-    ground_truth = DataComponents.path_to_tensor(groundtruth_path, label=True)
-    predicted = DataComponents.path_to_tensor(predicted_path, label=True)
-    Loss_Fn = Metrics.BinaryMetrics(use_log_cosh=False, sparse_label=False)
-    loss, dice, sensitivity, specificity = Loss_Fn(predicted, ground_truth)
-    return dice.item(), sensitivity.item(), specificity.item()
-
-
-def change_edge_exclude(choice):
-    if choice == "Fully Labelled":
-        return gr.Checkbox(scale=0, label="Exclude object borders, do not work in Instance Segmentation Mode", visible=True)
-    else:
-        return gr.Checkbox(scale=0, label="Exclude object borders, do not work in Instance Segmentation Mode", visible=False)
-
-
-def change_edge_exclude_value_in(choice):
-    if choice == "Fully Labelled":
-        return gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=True, minimum=0)
-    else:
-        return gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=False, minimum=0)
-
-
-def change_edge_exclude_value_out(choice):
-    if choice == "Fully Labelled":
-        return gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=True, minimum=0)
-    else:
-        return gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=False, minimum=0)
-
-
-def change_contour_map_width_value(choice):
-    if choice == "Instance":
-        return gr.Number(1, label="Width of contour (outward)", precision=0, visible=True, minimum=1)
-    else:
-        return gr.Number(1, label="Width of contour (outward)", precision=0, visible=False, minimum=1)
-
-
 def update_available_arch(radio_value):
     if radio_value == 'Semantic':
         return gr.Dropdown(available_architectures_semantic, label="Model Architecture")
@@ -297,33 +229,198 @@ def update_available_arch(radio_value):
         return gr.Dropdown(available_architectures_instance, label="Model Architecture")
 
 
-if __name__ == "__main__":
-    # Function to start workflow when the GUI button is pressed
+def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
+    model_classes = {
+        "HalfUNetBasic": (Semantic_HalfUNets.HalfUNet, 'Basic'),
+        "HalfUNetGhost": (Semantic_HalfUNets.HalfUNet, 'Ghost'),
+        "HalfUNetResidual": (Semantic_HalfUNets.HalfUNet, 'Residual'),
+        "HalfUNetResidualBottleneck": (Semantic_HalfUNets.HalfUNet, 'ResidualBottleneck'),
+        "UNetBasic": (Semantic_General.UNet, 'Basic'),
+        "UNetResidual": (Semantic_General.UNet, 'Residual'),
+        "UNetResidualBottleneck": (Semantic_General.UNet, 'ResidualBottleneck'),
+        "SegNet": (Semantic_SegNets.Auto, 'Auto'),
+        "InstanceBasic": (Instance_General.UNet, 'Basic'),
+        "InstanceResidual": (Instance_General.UNet, 'Residual'),
+        "InstanceResidualBottleneck": (Instance_General.UNet, 'ResidualBottleneck')
+    }
 
-    with gr.Blocks(title=f"Volume Seg Tool") as WebUI:
+    model_class, model_type = model_classes[arch]
+    return model_class(base_channels, depth, z_to_xy_ratio, model_type, se)
+
+
+def get_stats_between_maps(predicted_path, groundtruth_path):
+    ground_truth = DataComponents.path_to_tensor(groundtruth_path, label=True)
+    predicted = DataComponents.path_to_tensor(predicted_path, label=True)
+    ground_truth, predicted = torch.clamp(ground_truth, 0, 1), torch.clamp(predicted, 0, 1)
+    Loss_Fn = Metrics.BinaryMetrics(use_log_cosh=False, sparse_label=False)
+    loss, dice, sensitivity, specificity = Loss_Fn(predicted, ground_truth)
+    return dice.item(), sensitivity.item(), specificity.item()
+
+
+if __name__ == "__main__":
+    with gr.Blocks(title=f"Volume Seg Tool", theme=gr.themes.Base()) as WebUI:
         with gr.Tab("Main"):
-            mode_box = gr.Radio(["Semantic", "Instance"], value="Semantic", label="Segmentation Mode")
+            segmentation_mode = gr.Radio(["Semantic", "Instance"], value="Semantic", label="Segmentation Mode")
             workflow_box = gr.CheckboxGroup(["Training", "Validation", "Test", "Predict"],
                                             label="Workflows to enable")
             with gr.Accordion("Workflows Explanation", open=False):
                 gr.Markdown("Training: Train a network using the training dataset.")
-                gr.Markdown("Validation: Use a Validation Dataset to evaluate the network during training.")
+                gr.Markdown("Validation: Use a Validation Dataset to evaluate the segmentation quality during training.")
                 gr.Markdown("Test: Similar to Validation, but only run once after the model has finished training.")
                 gr.Markdown("Predict: Use a (trained) network to predict the label of the predict dataset.")
                 gr.Markdown("Note that if the validation is not enabled, the script will use train dataset loss to determine when to reduce the learning rate.")
             with gr.Row():
+                with gr.Tab("Dataset Information"):
+                    gr.Markdown("Necessary questions regarding the dataset in order to compute some hyperparameters.")
+                    gr.Markdown("Should always be filled.")
+                    with gr.Row():
+                        question1 = gr.Number(32,
+                                              label="Size to spot feature",
+                                              info="Given a square shaped 2d patch randomly taken from your dataset,"
+                                                    " what's the minimum side length (in pixels) you would need to tell"
+                                                    " and segment the cellular structure of interest from the patch? "
+                                                    "\nIs used to compute the network's patch size, aka field of view.",
+                                              precision=0)
+                        z_to_xy_ratio = gr.Number(1.0, label="Z-resolution to XY-resolution ratio",
+                                                  info="The ratio of the z-resolution of the images in the dataset to their xy-resolution. "
+                                                       "We assume xy has the same resolution.")
+                        manual_mode = gr.Checkbox(scale=0,
+                                                  label="Check to allow manual editing of the parameters below, "
+                                                        "instead of being calculated automatically")
+                    with gr.Accordion("Example of various field of view", open=False):
+                        with gr.Row():
+                            gr.Image("GitHub_Res/roi too small.png", image_mode="L", show_download_button=False,
+                                     interactive=False, label="Field of view too small, cannot tell the feature")
+                            gr.Image("GitHub_Res/roi just right.png", image_mode="L", show_download_button=False,
+                                     interactive=False, label="Field of view just right")
+                            gr.Image("GitHub_Res/roi too big.png", image_mode="L", show_download_button=False,
+                                     interactive=False, label="Field of view too big, unnecessary computation and memory use")
+                    with gr.Accordion("Automatically computed hyperparameters", open=False):
+                        with gr.Row():
+                            hw_size = gr.Number(48, label="Patch Height and Width (px)", interactive=False)
+                            model_depth = gr.Number(4, label="Model Depth", interactive=False)
+                            d_size = gr.Number(48, label="Patch Depth (px)", interactive=False)
+                            dk = gr.Number(0, label="floor(log2([Z to XY ratio]))", interactive=False)
+                        
+                        def change_dataset_info_mode(choice):
+                            if choice:
+                                options = (gr.Number(48, label="Patch Height and Width (px)", interactive=True, precision=0),
+                                           gr.Number(4, label="Model Depth", interactive=True, precision=0),
+                                           gr.Number(48, label="Patch Depth (px)", interactive=True, precision=0))
+                                return options
+                            else:
+                                options = (gr.Number(48, label="Patch Height and Width (px)", interactive=False),
+                                           gr.Number(4, label="Model Depth", interactive=False),
+                                           gr.Number(48, label="Patch Depth (px)", interactive=False))
+                                return options
+                        manual_mode.change(fn=change_dataset_info_mode, inputs=segmentation_mode, outputs=[hw_size, model_depth, d_size])
+
+                        def calculate_dhw_size(question1, z_to_xy_ratio):
+                            hw_estimate = 1.5 * question1
+                            model_depth = max(round(math.log2(hw_estimate) - 3), 3)
+                            hw_precision = 2 ** (model_depth - 1)
+                            hw_size = hw_precision * max(round(hw_estimate / hw_precision), 1)
+
+                            dk = math.floor(math.log2(z_to_xy_ratio))
+                            d_precision = round(2 ** (model_depth - 1 - dk))
+                            d_size = d_precision * max(round((hw_estimate / z_to_xy_ratio) / d_precision), 1)
+                            return hw_size, model_depth, d_size, dk
+                        question1.change(calculate_dhw_size, inputs=[question1, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
+                        z_to_xy_ratio.change(calculate_dhw_size, inputs=[question1, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
+
+                with gr.Tab("Validation Settings"):
+                    with gr.Row():
+                        val_dataset_path = gr.Textbox('Datasets/val', scale=2, label="Validation Dataset Path")
+                        folder_button = gr.Button(document_symbol, scale=0)
+                        folder_button.click(open_folder, outputs=val_dataset_path)
+
+                        def calculate_val_num_patch(val_dataset_path, hw_size, d_size):
+                            file_list = DataComponents.make_dataset_tv(val_dataset_path)
+                            counter = 0
+                            for file in file_list:
+                                file = file[0]
+                                depth, height, width = imageio.v3.imread(file).shape
+                                depth_multiplier = max(math.ceil(depth / d_size), 1)
+                                height_multiplier = max(math.ceil(height / hw_size), 1)
+                                width_multiplier = max(math.ceil(width / hw_size), 1)
+                                total = depth_multiplier * height_multiplier * width_multiplier
+                                counter += total
+                            return counter
+                        val_num_patch = gr.Number(999,
+                                                  label="Number of patchs in validation set",
+                                                  precision=0, minimum=0, interactive=False)
+                        hw_size.change(calculate_val_num_patch, inputs=[val_dataset_path, hw_size, d_size], outputs=val_num_patch)
+                        d_size.change(calculate_val_num_patch, inputs=[val_dataset_path, hw_size, d_size], outputs=val_num_patch)
+                    val_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
+                                                label="Dataset Mode")
                 with gr.Tab("Training Settings"):
                     with gr.Row():
                         train_dataset_path = gr.Textbox('Datasets/train', scale=2, label="Train Dataset Path")
                         folder_button = gr.Button(document_symbol, scale=0)
                         folder_button.click(open_folder, outputs=train_dataset_path)
                     with gr.Row():
-                        batch_size = gr.Number(1, label="Batch Size", precision=0, minimum=1)
+                        batch_size = gr.Number(1, label="Batch Size", precision=0, minimum=1,
+                                               info="Number of training patch to feed into the network at once.")
+                        pairing_samples = gr.Checkbox(label="Pairing positive and negative samples",
+                                                      info="Tick this if your training data contain large area without any foreground object.")
+                        question2 = gr.Number(1,
+                                              label="Question 2",
+                                              info="How many image files are in your training set?",
+                                              precision=0, minimum=1)
+                        def change_batch_size(choice):
+                            if choice:
+                                return gr.Number(2, label="Batch Size", precision=0, minimum=1,
+                                                 info="Number of training patch to feed into the network at once.")
+                            else:
+                                return gr.Number(1, label="Batch Size", precision=0, minimum=1,
+                                                 info="Number of training patch to feed into the network at once.")
+                        pairing_samples.change(change_batch_size, inputs=pairing_samples, outputs=batch_size)
                         #initial_lr = gr.Number(0.001, step=0.001, label="Initial Learning Rate")
                         #patience = gr.Number(5, label="Learning Rate Decay Patience", precision=0)
                         #min_lr = gr.Number(0.0001, step=0.0001, label="Minimum Learning Rate")
-                        max_epochs = gr.Number(40, label="Maximum Number of Epochs", precision=0, minimum=1)
-                        train_multiplier = gr.Number(8, label="Train Multiplier (Repeats)", precision=0, minimum=1)
+                    with gr.Accordion("When do you need to pair positive and negative sample", open=False):
+                        with gr.Row():
+                            gr.Image("GitHub_Res/require bs 2.png", image_mode="L", show_download_button=False,
+                                     interactive=False, label="Require the box to be ticked due to large area of empty space outside cell")
+                            gr.Image("GitHub_Res/do not require bs 2.png", image_mode="L", show_download_button=False,
+                                     interactive=False, label="Does not Require the box to be ticked")
+                    with gr.Row():
+                        train_multiplier = gr.Number(64, label="Train Multiplier (Repeats)",
+                                                     info="Automatically calculated to aim for 10% steps in validation, 90% in train. "
+                                                          "If validation workflow isn't enabled, will default to 64.",
+                                                     interactive=False)
+
+                        def calculate_train_multiplier(val_num_patch, question2, workflow_box):
+                            if 'Validation' in workflow_box:
+                                # Aiming to have 10% steps in val, 90% steps in train
+                                return round(9*(val_num_patch/question2))
+                            else:
+                                return math.ceil(64/question2)
+                        val_num_patch.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
+                        question2.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
+                        workflow_box.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
+                    with gr.Row():
+                        train_length = gr.Radio(["Short", "Medium", "Long", "Custom"], value="Short",
+                                                label="Training Duration")
+                        train_steps = gr.Number(1600, label="Training Steps", interactive=False)
+
+                        def length_to_steps(train_length):
+                            if train_length == "Short":
+                                return gr.Number(2000, label="Training Steps", interactive=False)
+                            if train_length == "Medium":
+                                return gr.Number(5000, label="Training Steps", interactive=False)
+                            if train_length == "Long":
+                                return gr.Number(15000, label="Training Steps", interactive=False)
+                            if train_length == "Custom":
+                                return gr.Number(1, label="Training Steps", interactive=True, precision=0, minimum=1)
+                        train_length.change(length_to_steps, inputs=train_length, outputs=train_steps)
+                        num_epochs = gr.Number(40, label="Maximum Number of Epochs", precision=0, minimum=1)
+
+                        def steps_to_epochs(train_steps, train_multiplier, question2):
+                            return math.ceil(train_steps/(train_multiplier*question2))
+                        train_multiplier.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2], outputs=num_epochs)
+                        train_steps.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2], outputs=num_epochs)
+                        question2.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2], outputs=num_epochs)
                     with gr.Row():
                         enable_tensorboard = gr.Checkbox(scale=0, label="Enable TensorBoard Logging")
                         tensorboard_path = gr.Textbox('lightning_logs', scale=2, label="Path to the folder which the log will be save to")
@@ -332,28 +429,68 @@ if __name__ == "__main__":
                     train_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
                                                   label="Dataset Mode")
                     with gr.Row():
-                        exclude_edge = gr.Checkbox(scale=0, label="Mark pictures at object borders as unlabelled, do not work in Instance Segmentation Mode", visible=True)
+                        exclude_edge = gr.Checkbox(scale=0, label="Mark pixels at object borders as unlabelled", visible=True)
                         exclude_edge_size_in = gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=True, minimum=0)
                         exclude_edge_size_out = gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=True, minimum=0)
                     with gr.Row():
                         contour_map_width = gr.Number(1, label="Width of contour (outward)", precision=0, visible=False, minimum=1)
-                    train_dataset_mode.change(fn=change_edge_exclude, inputs=train_dataset_mode, outputs=exclude_edge)
-                    train_dataset_mode.change(fn=change_edge_exclude_value_in, inputs=train_dataset_mode, outputs=exclude_edge_size_in)
-                    train_dataset_mode.change(fn=change_edge_exclude_value_out, inputs=train_dataset_mode, outputs=exclude_edge_size_out)
-                    mode_box.change(fn=change_contour_map_width_value, inputs=mode_box, outputs=contour_map_width)
-                with gr.Tab("Validation Settings"):
+
+                    def change_edge_exclude(mode_box, train_dataset_mode):
+                        show = (gr.Checkbox(scale=0,
+                                            label="Mark pixels at object borders as unlabelled",
+                                            visible=True),
+                                gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=True,
+                                          minimum=0),
+                                gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=True,
+                                          minimum=0))
+                        no_show = (gr.Checkbox(scale=0,
+                                               label="Mark pixels at object borders as unlabelled",
+                                               visible=False),
+                                   gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=False,
+                                             minimum=0),
+                                   gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=False,
+                                             minimum=0))
+                        if mode_box == "Semantic":
+                            if train_dataset_mode == "Fully Labelled":
+                                return show
+                            else:
+                                return no_show
+                        else:
+                            return no_show
+                    segmentation_mode.change(fn=change_edge_exclude, inputs=[segmentation_mode, train_dataset_mode],
+                                             outputs=[exclude_edge, exclude_edge_size_in, exclude_edge_size_out])
+                    train_dataset_mode.change(fn=change_edge_exclude, inputs=[segmentation_mode, train_dataset_mode],
+                                              outputs=[exclude_edge, exclude_edge_size_in, exclude_edge_size_out])
+
+                    def change_contour_map_width_value(choice):
+                        if choice == "Instance":
+                            return gr.Number(1, label="Width of contour (outward)", precision=0, visible=True,
+                                             minimum=1)
+                        else:
+                            return gr.Number(1, label="Width of contour (outward)", precision=0, visible=False,
+                                             minimum=1)
+                    segmentation_mode.change(fn=change_contour_map_width_value, inputs=segmentation_mode, outputs=contour_map_width)
                     with gr.Row():
-                        val_dataset_path = gr.Textbox('Datasets/val', scale=2, label="Validation Dataset Path")
-                        folder_button = gr.Button(document_symbol, scale=0)
-                        folder_button.click(open_folder, outputs=val_dataset_path)
-                    val_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
-                                                label="Dataset Mode")
+                        augmentation_csv_path = gr.Textbox('Augmentation Parameters.csv', scale=2,
+                                                           label="Csv File for Data Augmentation Settings")
+                        file_button = gr.Button(document_symbol, scale=0)
+                        file_button.click(open_file, outputs=augmentation_csv_path)
+                    with gr.Row():
+                        outputs = gr.Gallery(label="Output Images", format="png", preview=True, selected_index=0)
+                        slice_to_show = gr.Number(0, visible=False)
+                        number_copies = gr.Number(6, visible=False)
+                        start_button = gr.Button("Show some example patches from your training dataset, "
+                                                 "under the current patch size and augmentation settings", scale=0)
+                        start_button.click(visualise_augmentations,
+                                           inputs=[train_dataset_path, hw_size, d_size, augmentation_csv_path, slice_to_show,
+                                                   number_copies],
+                                           outputs=outputs)
                 with gr.Tab("Test Settings"):
-                    gr.Markdown("Due to the limitation of the built-in test function. The dice score obtained via the")
-                    gr.Markdown("test workflow may not represent the actual overall dice score. Especially if the image")
-                    gr.Markdown("contains large area without any foreground object.")
-                    gr.Markdown("If you want to obtain the actual dice score, it's recommended to process the image via")
-                    gr.Markdown("the Predict workflow. Then use the 'Extras' tab above to extract the overall dice score.")
+                    gr.Markdown("Due to the limitation of the built-in test function. The dice score obtained via the "
+                                "test workflow may not represent the actual overall dice score. Especially if the image "
+                                "contains large area without any foreground object.")
+                    gr.Markdown("If you want to obtain the actual dice score, it's recommended to process the image via "
+                                "the Predict workflow. Then use the 'Extras' tab above to extract the overall dice score.")
                     with gr.Row():
                         test_dataset_path = gr.Textbox('Datasets/test', scale=2, label="Test Dataset Path")
                         folder_button = gr.Button(document_symbol, scale=0)
@@ -366,40 +503,85 @@ if __name__ == "__main__":
                         folder_button = gr.Button(document_symbol, scale=0)
                         folder_button.click(open_folder, outputs=predict_dataset_path)
                     with gr.Row():
-                        predict_hw_size = gr.Number(128, label="Height and Width of each Patch (px)", precision=0, step=16, minimum=16)
-                        predict_depth_size = gr.Number(128, label="Depth of each Patch (px)", precision=0, step=8, minimum=8)
-                        predict_hw_overlap = gr.Number(8, label="Expansion in Height and Width for each Patch (px)", precision=0, step=8, minimum=0)
-                        predict_depth_overlap = gr.Number(8, label="Expansion in Depth for each Patch (px)", precision=0, step=4, minimum=0)
+                        predict_hw_overlap = gr.Number(2**(model_depth.value-1)/2,
+                                                       label="Expansion in Height and Width for each Patch (px)",
+                                                       precision=0, interactive=False)
+                        predict_depth_overlap = gr.Number(2**(model_depth.value-1-dk.value)/2,
+                                                          label="Expansion in Depth for each Patch (px)",
+                                                          precision=0, interactive=False)
+                        predict_hw_size = gr.Number(hw_size.value-2*predict_hw_overlap.value,
+                                                    label="Height and Width of each Patch (px)", precision=0, interactive=False)
+                        predict_depth_size = gr.Number(d_size.value-2*predict_depth_overlap.value,
+                                                       label="Depth of each Patch (px)", precision=0, interactive=False)
+
+                        def calculate_predict_parameters(model_depth, hw_size, d_size, dk):
+                            if hw_size <= 64:
+                                hw_overlap_multiplier = 1
+                            elif hw_size <= 192:
+                                hw_overlap_multiplier = 2
+                            else:
+                                hw_overlap_multiplier = 3
+                            if d_size <= 64:
+                                d_overlap_multiplier = 1
+                            else:
+                                d_overlap_multiplier = 2
+                            predict_hw_overlap = (2**(model_depth-1)/2) * hw_overlap_multiplier
+                            predict_depth_overlap = (2**(model_depth-1-dk)/2) * d_overlap_multiplier
+                            predict_hw_size = hw_size-2*predict_hw_overlap
+                            predict_depth_size = d_size-2*predict_depth_overlap
+                            options = (gr.Number(predict_hw_overlap, label="Expansion in Height and Width for each Patch (px)", interactive=False),
+                                       gr.Number(predict_depth_overlap, label="Expansion in Depth for each Patch (px)", interactive=False),
+                                       gr.Number(predict_hw_size, label="Height and Width of each Patch (px)", interactive=False),
+                                       gr.Number(predict_depth_size, label="Depth of each Patch (px)", interactive=False))
+                            return options
+                        model_depth.change(calculate_predict_parameters,
+                                           inputs=[model_depth, hw_size, d_size, dk],
+                                           outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
+                        hw_size.change(calculate_predict_parameters,
+                                       inputs=[model_depth, hw_size, d_size, dk],
+                                       outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
+                        d_size.change(calculate_predict_parameters,
+                                      inputs=[model_depth, hw_size, d_size, dk],
+                                      outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
+                        dk.change(calculate_predict_parameters,
+                                  inputs=[model_depth, hw_size, d_size, dk],
+                                  outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
                     with gr.Row():
                         result_folder_path = gr.Textbox('Datasets/result', scale=2, label="Result Folder Path")
                         folder_button = gr.Button(document_symbol, scale=0)
                         folder_button.click(open_folder, outputs=result_folder_path)
                     with gr.Row():
                         TTA_xy = gr.Checkbox(label="Enable Test-Time Augmentation for xy dimension",
-                                             info="Horizontal And Vertical flip the image; the augmented images are then passed into the model. The output probability maps are applied via the corresponding reverse transformation and combined.")
+                                             info="Horizontal And Vertical flip the image; the augmented images are then passed into the model."
+                                                  " Corresponding reverse transformation then applys to the output probability maps, and those maps get combined together."
+                                                  " Can improve segmentation accuracy, but will take longer and consume more CPU memory.")
                         #TTA_z = gr.Checkbox(label="Enable Test-Time Augmentation for z dimension", info="Depth Wise flip the image")
             with gr.Row():
                 model_architecture = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
-                mode_box.change(update_available_arch, inputs=mode_box, outputs=model_architecture)
+                segmentation_mode.change(update_available_arch, inputs=segmentation_mode, outputs=model_architecture)
                 model_channel_count = gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
                                                 info="Often means the number of output channels in the first encoder block. Determines the size of the network.")
-                model_depth = gr.Number(5, label="Model Depth", precision=0, minimum=3,
-                                        info="Minimal is 3. Means the number of different feature size exist. Including un-downsampled.")
-                model_z_to_xy_ratio = gr.Number(1.0, label="Z resolution to XY resolution ratio",
-                                                info="The ratio which the z resolution of the images in the dataset divided by their xy resolution. Determines some internal model layout. We assume xy has the same resolution.")
+                find_max_channel_count = gr.Checkbox(label="Automatically find the largest channel count",
+                                                     info="Finds the largest channel count that doesn't result in a "
+                                                          "Out-of-memory error through trials and errors. A slow process. "
+                                                          "Certain graphic cards can be very slow with the largest "
+                                                          "channel count (<0.1it/s), a lower channel count is recommended.")
+                def show_hide_model_channel_count(find_max_channel_count):
+                    if find_max_channel_count:
+                        return gr.Number(8, visible=False)
+                    else:
+                        return gr.Number(8, label="Base Channel Count", precision=0, minimum=1, visible=True,
+                                         info="Often means the number of output channels in the first encoder block. Determines the size of the network.")
+                find_max_channel_count.change(show_hide_model_channel_count, inputs=find_max_channel_count, outputs=model_channel_count)
 #                model_growth_rate = gr.Number(12, label="Model Growth Rate", precision=0,
 #                                              info="Only work for DenseNet, check out their paper for more detail.")
 #                model_dropout_p = gr.Number(0.2, label="Model Dropout Probability", step=0.1,
 #                                            info="Only work for DenseNet, check out their paper for more detail.")
-                model_se = gr.Checkbox(scale=0, label="Enable Squeeze-and-Excitation plug-in",
+                model_se = gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
                                        info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.")
-            with gr.Row():
-                augmentation_csv_path = gr.Textbox('Augmentation Parameters.csv', scale=2, label="Csv File for Data Augmentation Settings")
-                file_button = gr.Button(document_symbol, scale=0)
-                file_button.click(open_file, outputs=augmentation_csv_path)
             precision = gr.Dropdown(["32", "16-mixed", "bf16"], value="32", label="Precision",
                                     info="fp16 precision could significantly cut the VRAM usage. However if you are not using an Nvidia GPU, it could signficantly slow down the training as well."
-                                         "bf16 is for cpu-only training, which takes less RAM than fp32.")
+                                         "bf16 is recommended over fp16 if you are using a newer GPU (30 series or newer).")
             with gr.Row():
                 read_existing_model = gr.Checkbox(label="Read Existing Model Weight File", scale=0,
                                                   info="Else it will create a new model with randomised weight.")
@@ -424,15 +606,16 @@ if __name__ == "__main__":
                 folder_button.click(open_folder, outputs=save_model_path)
             input_dict = {
                 workflow_box,
-                mode_box,
+                segmentation_mode,
                 train_dataset_path,
                 augmentation_csv_path,
                 train_multiplier,
                 batch_size,
+                pairing_samples,
                 #initial_lr,
                 #patience,
                 #min_lr,
-                max_epochs,
+                num_epochs,
                 enable_tensorboard,
                 tensorboard_path,
                 val_dataset_path,
@@ -444,6 +627,8 @@ if __name__ == "__main__":
                 save_model,
                 save_model_name,
                 save_model_path,
+                hw_size,
+                d_size,
                 predict_hw_size,
                 predict_depth_size,
                 predict_hw_overlap,
@@ -453,8 +638,9 @@ if __name__ == "__main__":
                 mid_visualization_input,
                 model_architecture,
                 model_channel_count,
+                find_max_channel_count,
                 model_depth,
-                model_z_to_xy_ratio,
+                z_to_xy_ratio,
                 model_se,
                 train_dataset_mode,
                 exclude_edge,
@@ -487,7 +673,7 @@ if __name__ == "__main__":
             slice_to_show = gr.Number(0, label="Depth Slice to show", precision=0, minimum=0)
             with gr.Row():
                 model_architecture_v = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
-                mode_box.change(update_available_arch, inputs=mode_box, outputs=model_architecture_v)
+                segmentation_mode.change(update_available_arch, inputs=segmentation_mode, outputs=model_architecture_v)
                 model_channel_count_v = gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
                                                   info="Often means the number of output channels in the first encoder block. Determines the size of the network.")
                 model_depth_v = gr.Number(5, label="Model Depth", precision=0, minimum=3,
@@ -515,10 +701,13 @@ if __name__ == "__main__":
                 augmentation_csv_path_av = gr.Textbox('Augmentation Parameters.csv', scale=2, label="Csv File for Data Augmentation Settings")
                 file_button = gr.Button(document_symbol, scale=0)
                 file_button.click(open_file, outputs=augmentation_csv_path_av)
-            slice_to_show = gr.Number(0, label="Depth Slice to show", precision=0, minimum=0)
-            outputs = gr.Gallery(label="Output Images", preview=True, selected_index=0)
+            with gr.Row():
+                slice_to_show = gr.Number(0, label="Depth Slice to show", precision=0, minimum=0)
+                num_copies = gr.Number(6, label="Number of examples for each file", precision=0, minimum=6)
+            outputs = gr.Gallery(label="Output Images", format="png", preview=True, selected_index=0)
             start_button = gr.Button("Show Visualization")
-            start_button.click(visualisation_augmentations, inputs=[train_dataset_path_av, augmentation_csv_path_av, slice_to_show], outputs=outputs)
+            start_button.click(visualise_augmentations, inputs=[train_dataset_path_av, hw_size, d_size,
+                                                                augmentation_csv_path_av, slice_to_show, num_copies], outputs=outputs)
 
         with gr.Tab("Extras"):
             with gr.Accordion("Output TensorBoard log to Excel"):

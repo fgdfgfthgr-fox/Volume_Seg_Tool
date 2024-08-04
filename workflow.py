@@ -9,8 +9,7 @@ import lightning.pytorch as pl
 import torch
 from torch.utils.data import DataLoader
 
-from run_semantic import PLModuleSemantic
-from run_instance import PLModuleInstance
+from pl_module import PLModule
 from Components import DataComponents
 from Networks import *
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
@@ -18,6 +17,7 @@ from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 
 num_cpu_cores = os.cpu_count()
 desired_num_workers = max(num_cpu_cores-1, 1)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def create_logger(args):
@@ -64,56 +64,96 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
 
 def start_work_flow(args):
     torch.set_float32_matmul_precision('medium')
+    if 'Semantic' in args.segmentation_mode:
+        instance_mode = False
+    else:
+        instance_mode = True
     if 'Training' in args.workflow_box:
-        if 'Semantic' in args.mode_box:
-            train_dataset = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
-                                                        args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out)
+        if args.pairing_samples:
+            train_dataset_pos = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
+                                                            args.hw_size, args.d_size, instance_mode,
+                                                            args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
+                                                            args.contour_map_width, False)
+            train_dataset_neg = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
+                                                            args.hw_size, args.d_size, instance_mode,
+                                                            args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
+                                                            args.contour_map_width, True)
+            train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg)
         else:
-            train_dataset = DataComponents.TrainDatasetInstance(args.train_dataset_path, args.augmentation_csv_path,
-                                                                args.train_multiplier, args.contour_map_width)
+            train_dataset = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
+                                                        args.hw_size, args.d_size, instance_mode,
+                                                        args.exclude_edge, args.exclude_edge_size_in,
+                                                        args.exclude_edge_size_out, args.contour_map_width)
+        sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size)
         train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
-                                  shuffle=True,
+                                  collate_fn=DataComponents.custom_collate, sampler=sampler,
                                   #num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
                                   num_workers=0, pin_memory=True)
         del train_dataset
         if 'Validation' in args.workflow_box:
-            if 'Semantic' in args.mode_box:
-                val_dataset = DataComponents.ValDataset(args.val_dataset_path, args.augmentation_csv_path)
-            else:
-                val_dataset = DataComponents.ValDatasetInstance(args.val_dataset_path, args.augmentation_csv_path, args.contour_map_width)
+            val_dataset = DataComponents.ValDataset(args.val_dataset_path, args.hw_size, args.d_size, instance_mode,
+                                                    args.augmentation_csv_path, args.contour_map_width)
             val_loader = DataLoader(dataset=val_dataset, batch_size=args.batch_size,
                                     #num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
                                     num_workers=0, pin_memory=True)
-
             del val_dataset
         else:
             val_loader = None
         if 'Test' in args.workflow_box:
-            if 'Semantic' in args.mode_box:
-                test_dataset = DataComponents.ValDataset(args.test_dataset_path, args.augmentation_csv_path)
-            else:
-                test_dataset = DataComponents.ValDatasetInstance(args.test_dataset_path, args.augmentation_csv_path, args.contour_map_width)
+            test_dataset = DataComponents.ValDataset(args.test_dataset_path, args.hw_size, args.d_size, instance_mode,
+                                                     args.augmentation_csv_path, args.contour_map_width)
             test_loader = DataLoader(dataset=test_dataset, batch_size=args.batch_size)
             del test_dataset
-    arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.model_z_to_xy_ratio, args.model_se)
+    if args.find_max_channel_count:
+        print('Start searching for the maximum channel count...')
+        def check_fit_in_memory(channel_count):
+            try:
+                arch = pick_arch(args.model_architecture, channel_count, args.model_depth, args.z_to_xy_ratio,
+                                 args.model_se)
+                model = PLModule(arch, True, False, None, instance_mode,
+                                             False, False, False, False)
+                fake_trainer = pl.Trainer(max_steps=1, accelerator="gpu", enable_checkpointing=False, precision=args.precision, logger=None,
+                                          enable_progress_bar=False, num_sanity_val_steps=1, enable_model_summary=False)
+                fake_trainer.fit(model,
+                                 val_dataloaders=val_loader,
+                                 train_dataloaders=train_loader)
+                torch.cuda.empty_cache()
+                return True
+            except RuntimeError as e:
+                if 'out of memory' in str(e) and channel_count > 1:
+                    torch.cuda.empty_cache()
+                    return False
+                elif 'out of memory' in str(e) and channel_count == 1:
+                    print("WARNING: Cannot find a valid channel count that will fit into the memory! "
+                          "Consider reduce the 'Size to spot feature', or get a better graphic card")
+                    raise e
+                else:
+                    raise e
+        def find_max_channel(min_channel, max_channel):
+            while min_channel < max_channel:
+                mid_channel = (min_channel + max_channel + 1) // 2
+                print(f"Trying a channel count of {mid_channel}...")
+                if check_fit_in_memory(mid_channel):
+                    print(f"Channel count of {mid_channel} can fit in memory")
+                    min_channel = mid_channel
+                else:
+                    print(f"Channel count of {mid_channel} won't fit in memory")
+                    max_channel = mid_channel - 1
+            print(f"Channel count search result: {mid_channel}")
+            return min_channel
+        current_channel_count = find_max_channel(1, 128)
+        arch = pick_arch(args.model_architecture, current_channel_count, args.model_depth, args.z_to_xy_ratio, args.model_se)
+    else:
+        arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio, args.model_se)
     if ('Sparsely Labelled' in args.train_dataset_mode) or (args.exclude_edge):
         sparse_train = True
     else:
         sparse_train = False
-    if 'Semantic' in args.mode_box:
-        model = PLModuleSemantic(arch,
-                                 #args.initial_lr, args.patience, args.min_lr,
-                                 'Validation' in args.workflow_box, args.enable_mid_visualization,
-                                 args.mid_visualization_input,
-                                 sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
-                                 'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
-    else:
-        model = PLModuleInstance(arch,
-                                 #args.initial_lr, args.patience, args.min_lr,
-                                 'Validation' in args.workflow_box, args.enable_mid_visualization,
-                                 args.mid_visualization_input,
-                                 sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
-                                 'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
+    model = PLModule(arch,
+                     'Validation' in args.workflow_box, args.enable_mid_visualization,
+                     args.mid_visualization_input, instance_mode,
+                     sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
+                     'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
     del arch
     if args.read_existing_model:
         model.load_state_dict(torch.load(args.existing_model_path))
@@ -125,7 +165,7 @@ def start_work_flow(args):
     else:
         logger = False
     if 'Training' in args.workflow_box:
-        trainer = pl.Trainer(max_epochs=args.max_epochs, log_every_n_steps=1, logger=logger,
+        trainer = pl.Trainer(max_epochs=args.num_epochs, log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=False,
                              precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
                              #profiler='simple',
@@ -158,7 +198,7 @@ def start_work_flow(args):
         end_time = time.time()
         del predict_loader
         print(f"Prediction Taken: {end_time - start_time} seconds")
-        if 'Semantic' in args.mode_box:
+        if 'Semantic' in args.segmentation_mode:
             start_time = time.time()
             DataComponents.predictions_to_final_img(predictions, meta_info, direc=args.result_folder_path,
                                                     hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
@@ -180,14 +220,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Deep Learning Workflow")
     parser.add_argument("--workflow_box", nargs='+', choices=["Training", "Validation", "Test", "Predict"], default=[],
                         help="Workflows to enable")
-    parser.add_argument("--mode_box", choices=["Semantic", "Instance"], default="Semantic",
+    parser.add_argument("--segmentation_mode", choices=["Semantic", "Instance"], default="Semantic",
                         help="Segmentation Mode")
     parser.add_argument("--train_dataset_path", type=str, default="Datasets/train", help="Train Dataset Path")
     parser.add_argument("--augmentation_csv_path", type=str, default="Augmentation Parameters.csv",
                         help="Csv File for Data Augmentation Settings")
     parser.add_argument("--train_multiplier", type=int, default=8, help="Train Multiplier (Repeats)")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch Size")
-    parser.add_argument("--max_epochs", type=int, default=40, help="Maximum Number of Epochs")
+    parser.add_argument("--pairing_samples", action="store_true", help="Pairing positive and negative samples in a batch")
+    parser.add_argument("--num_epochs", type=int, default=40, help="Number of Epochs")
     parser.add_argument("--enable_tensorboard", action="store_true", help="Enable TensorBoard Logging")
     parser.add_argument("--tensorboard_path", type=str, default="lightning_logs",
                         help="Path to the folder which the log will be saved to")
@@ -201,11 +242,13 @@ if __name__ == "__main__":
     parser.add_argument("--save_model_name", type=str, default="example_name.pth",
                         help="File Name for Model Saved, including extension")
     parser.add_argument("--save_model_path", type=str, default=".", help="Path to Save the Model Weight")
-    parser.add_argument("--predict_hw_size", type=int, default=128, help="Height and Width of each Patch (px)")
-    parser.add_argument("--predict_depth_size", type=int, default=128, help="Depth of each Patch (px)")
+    parser.add_argument("--hw_size", type=int, default=64, help="Height and Width of each Patch (px)")
+    parser.add_argument("--d_size", type=int, default=64, help="Depth of each Patch (px)")
+    parser.add_argument("--predict_hw_size", type=int, default=128, help="Height and Width of each Patch (px) during prediction")
+    parser.add_argument("--predict_depth_size", type=int, default=128, help="Depth of each Patch (px) during prediction")
     parser.add_argument("--predict_hw_overlap", type=int, default=8,
-                        help="Expansion in Height and Width for each Patch (px)")
-    parser.add_argument("--predict_depth_overlap", type=int, default=8, help="Expansion in Depth for each Patch (px)")
+                        help="Expansion in Height and Width for each Patch (px) during prediction")
+    parser.add_argument("--predict_depth_overlap", type=int, default=8, help="Expansion in Depth for each Patch (px) during prediction")
     parser.add_argument("--result_folder_path", type=str, default="Datasets/result", help="Result Folder Path")
     parser.add_argument("--enable_mid_visualization", action="store_true", help="Enable Visualization")
     parser.add_argument("--mid_visualization_input", type=str, default="Datasets/mid_visualiser/image.tif",
@@ -213,9 +256,10 @@ if __name__ == "__main__":
     parser.add_argument("--model_architecture", type=str,
                         help="Model Architecture")
     parser.add_argument("--model_channel_count", type=int, default=8, help="Base Channel Count")
+    parser.add_argument("--find_max_channel_count", action="store_true", help="Automatically find the max channel count that won't result in an OOM error")
     parser.add_argument("--model_depth", type=int, default=5, help="Model Depth")
-    parser.add_argument("--model_z_to_xy_ratio", type=float, default=1.0, help="Enable Squeeze-and-Excitation plug-in")
-    parser.add_argument("--model_se", action="store_true")
+    parser.add_argument("--z_to_xy_ratio", type=float, default=1.0)
+    parser.add_argument("--model_se", action="store_true", help="Enable Squeeze-and-Excitation plug-in")
     parser.add_argument("--train_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],
                         default="Fully Labelled", help="Dataset Mode")
     parser.add_argument("--exclude_edge", action="store_true", help="Mark pictures at object borders as unlabelled")

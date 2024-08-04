@@ -167,7 +167,7 @@ def random_rotation_3d(tensors, angle_range, plane='xy', interpolations=('biline
 
 
 def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True,
-                     max_attempts=50, minimal_foreground=0.01, force_foreground=0.80):
+                     max_attempts=50, minimal_foreground=0.01):
     """
     Randomly crop a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least 1% foreground object.\n
     Whether it contains foreground object is determined by the second tensor in the list,
@@ -182,7 +182,6 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True,
         pad_if_needed (bool): If True, pad the input tensors when they're smaller than any desired dimension (default: True).
         max_attempts (int): Maximum number of attempts to find a crop with at least 1% foreground object (default: 50).
         minimal_foreground (float): Proportion of desired minimal foreground pixels (default: 0.01).
-        force_foreground (float): Desired proportion of crops that has a foreground object (default:0.67)
 
     Returns:
         List of cropped tensors.
@@ -194,7 +193,6 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True,
 
         return pixels_greater_than_zero >= (total_pixels * minimal_foreground)
 
-    attempts = 0
     # Suppose all the tensors in the list are the exact same shape.
     c, d, h, w = tensors[0].shape
 
@@ -226,23 +224,20 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True,
                                     w_offset:w_offset + width]
             cropped_tensors.append(cropped_tensor)
         return cropped_tensors
-    if random.random() <= force_foreground:
-        while attempts < max_attempts:
-            attempts += 1
+    attempts = 0
+    while attempts < max_attempts:
+        attempts += 1
 
-            cropped_tensors = cropping(padded_list)
+        cropped_tensors = cropping(padded_list)
 
-            # Check if the label tensor (2nd tensor) contains a foreground object
-            if contains_foreground(cropped_tensors[1]):
-                return cropped_tensors
-        # If no suitable crop is found after max_attempts, raise a warning
-        print(f"Random clop failed: No suitable crop with foreground object found after {max_attempts} attempts. Will "
-              f"return a random crop.")
-        cropped_tensors = cropping(padded_list)
-        return cropped_tensors
-    else:
-        cropped_tensors = cropping(padded_list)
-        return cropped_tensors
+        # Check if the label tensor (2nd tensor) contains a foreground object
+        if contains_foreground(cropped_tensors[1]):
+            return cropped_tensors
+    # If no suitable crop is found after max_attempts, raise a warning
+    print(f"Random clop failed: No suitable crop with foreground object found after {max_attempts} attempts. Will "
+          f"return a random crop.")
+    cropped_tensors = cropping(padded_list)
+    return cropped_tensors
 
 
 

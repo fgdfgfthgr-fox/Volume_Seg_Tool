@@ -83,7 +83,7 @@ class cSE(nn.Module):
         super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool3d(1)
         self.fc1 = nn.Linear(in_channels, in_channels // 2)
-        self.relu = nn.ReLU(inplace=True)
+        self.celu = nn.CELU(inplace=True)
         self.fc2 = nn.Linear(in_channels // 2, in_channels)
         self.sigmoid = nn.Sigmoid()
 
@@ -91,7 +91,7 @@ class cSE(nn.Module):
         batch_size, num_channels, D, H, W = x.size()
         x_avg = self.avg_pool(x).view(batch_size, num_channels)
         x_avg = self.fc1(x_avg)
-        x_avg = self.relu(x_avg)
+        x_avg = self.celu(x_avg)
         x_avg = self.fc2(x_avg)
         x_avg = self.sigmoid(x_avg)
         return x * (x_avg.view(batch_size, num_channels, 1, 1, 1))

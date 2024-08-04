@@ -51,7 +51,7 @@ class Original(nn.Module):
 
 
 class Auto(nn.Module):
-    def __init__(self, base_channels=64, depth=5, z_to_xy_ratio=1, se=False):
+    def __init__(self, base_channels=64, depth=5, z_to_xy_ratio=1, foo='Auto', se=False):
         super(Auto, self).__init__()
         if depth < 2:
             raise ValueError("The depth needs to be at least 2 (2 different feature map size exist).")
