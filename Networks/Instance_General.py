@@ -27,6 +27,7 @@ from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, Basic
 # https://link.springer.com/chapter/10.1007/978-3-030-00928-1_48
 # Could be considered as an attention mechanism which boost meaningful features, while suppressing weak ones.
 
+
 class UNet(nn.Module):
     def __init__(self, base_channels=64, depth=4, z_to_xy_ratio=1, type='Basic', se=False):
         super(UNet, self).__init__()

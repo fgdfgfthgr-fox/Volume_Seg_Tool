@@ -45,7 +45,9 @@ class V_N_PLModule(pl.LightningModule):
             if isinstance(module, nn.Sigmoid):
                 module.register_forward_hook(sigmoid_hook_fn)
             if isinstance(module, nn.GELU):
-                module.register_forward_hook(sigmoid_hook_fn)
+                module.register_forward_hook(activation_hook_fn)
+            if isinstance(module, nn.CELU):
+                module.register_forward_hook(activation_hook_fn)
 
     def forward(self, image):
         return self.model(image)

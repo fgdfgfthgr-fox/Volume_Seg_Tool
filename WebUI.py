@@ -88,6 +88,8 @@ def start_work_flow(inputs):
         cmd += "--model_se "
     if inputs[find_max_channel_count]:
         cmd += "--find_max_channel_count "
+    if inputs[pixel_reclaim]:
+        cmd += "--pixel_reclaim "
 
     command_executor.execute_command(cmd)
 
@@ -161,38 +163,48 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show,
     return figure_list
 
 
-def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_csv, slice_to_show=1, num_copies=6, size=(8, 4.5)):
-    dataset = DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size)
-    num_data = len(dataset.img_tensors)
+def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_csv,
+                            slice_to_show=1, num_copies=6, pairing_samples=False, size=(8, 4.5)):
+    if pairing_samples:
+        datasets = ((DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1,
+                                                  hw_size, d_size, negative_control='positive'), ' - positive'),
+                    (DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1,
+                                                hw_size, d_size, negative_control='negative'), ' - negative'))
+    else:
+        datasets = ((DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size), ''),)
     figure_list = []
-    for i in range(0, num_data):
-        # 800 x 450
-        plt.figure(figsize=size)
-        image_name = dataset.file_list[i][0]
-        plt.suptitle(f'{image_name}')
-        rows = math.floor(math.sqrt(num_copies * 2))
-        cols = math.ceil(num_copies / rows)
-        for k in range(0, num_copies):
-            pair = dataset.__getitem__(i)
-            image = pair[0][:, slice_to_show:slice_to_show+1, :, :].squeeze()
-            label = pair[1][:, slice_to_show:slice_to_show+1, :, :].squeeze()
+    for dataset in datasets:
+        type = dataset[1]
+        dataset = dataset[0]
+        num_data = len(dataset.img_tensors)
+        for i in range(0, num_data):
+            # 800 x 450
+            plt.figure(figsize=size)
+            image_name = dataset.file_list[i][0]
+            plt.suptitle(f'{image_name + type}')
+            rows = math.floor(math.sqrt(num_copies * 2))
+            cols = math.ceil(num_copies / rows)
+            for k in range(0, num_copies):
+                pair = dataset.__getitem__(i)
+                image = pair[0][:, slice_to_show:slice_to_show+1, :, :].squeeze()
+                label = pair[1][:, slice_to_show:slice_to_show+1, :, :].squeeze()
 
-            # Plot Image
-            plt.subplot(rows, 2 * cols, 2 * k + 1)
-            plt.imshow(image.cpu().numpy(), cmap='gist_gray')
-            plt.axis('off')
+                # Plot Image
+                plt.subplot(rows, 2 * cols, 2 * k + 1)
+                plt.imshow(image.cpu().numpy(), cmap='gist_gray')
+                plt.axis('off')
 
-            # Plot Label
-            plt.subplot(rows, 2 * cols, 2 * k + 2)
-            plt.imshow(label.cpu().numpy(), cmap='gist_gray')
-            plt.axis('off')
+                # Plot Label
+                plt.subplot(rows, 2 * cols, 2 * k + 2)
+                plt.imshow(label.cpu().numpy(), cmap='gist_gray')
+                plt.axis('off')
 
-        plt.subplots_adjust(wspace=0.1, hspace=0.1)  # Reduce spacing between subplots
-        canvas = plt.get_current_fig_manager().canvas
-        canvas.draw()
-        img_buffer = np.array(canvas.renderer.buffer_rgba())
-        plt.close()
-        figure_list.append(img_buffer)
+            plt.subplots_adjust(wspace=0.1, hspace=0.1)  # Reduce spacing between subplots
+            canvas = plt.get_current_fig_manager().canvas
+            canvas.draw()
+            img_buffer = np.array(canvas.renderer.buffer_rgba())
+            plt.close()
+            figure_list.append(img_buffer)
     return figure_list
 
 
@@ -252,7 +264,7 @@ def get_stats_between_maps(predicted_path, groundtruth_path):
     ground_truth = DataComponents.path_to_tensor(groundtruth_path, label=True)
     predicted = DataComponents.path_to_tensor(predicted_path, label=True)
     ground_truth, predicted = torch.clamp(ground_truth, 0, 1), torch.clamp(predicted, 0, 1)
-    Loss_Fn = Metrics.BinaryMetrics(use_log_cosh=False, sparse_label=False)
+    Loss_Fn = Metrics.BinaryMetrics(loss_mode='dice')
     loss, dice, sensitivity, specificity = Loss_Fn(predicted, ground_truth)
     return dice.item(), sensitivity.item(), specificity.item()
 
@@ -395,7 +407,7 @@ if __name__ == "__main__":
                                 # Aiming to have 10% steps in val, 90% steps in train
                                 return round(9*(val_num_patch/question2))
                             else:
-                                return math.ceil(64/question2)
+                                return math.ceil(32/question2)
                         val_num_patch.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
                         question2.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
                         workflow_box.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
@@ -410,7 +422,7 @@ if __name__ == "__main__":
                             if train_length == "Medium":
                                 return gr.Number(5000, label="Training Steps", interactive=False)
                             if train_length == "Long":
-                                return gr.Number(15000, label="Training Steps", interactive=False)
+                                return gr.Number(12000, label="Training Steps", interactive=False)
                             if train_length == "Custom":
                                 return gr.Number(1, label="Training Steps", interactive=True, precision=0, minimum=1)
                         train_length.change(length_to_steps, inputs=train_length, outputs=train_steps)
@@ -483,7 +495,7 @@ if __name__ == "__main__":
                                                  "under the current patch size and augmentation settings", scale=0)
                         start_button.click(visualise_augmentations,
                                            inputs=[train_dataset_path, hw_size, d_size, augmentation_csv_path, slice_to_show,
-                                                   number_copies],
+                                                   number_copies, pairing_samples],
                                            outputs=outputs)
                 with gr.Tab("Test Settings"):
                     gr.Markdown("Due to the limitation of the built-in test function. The dice score obtained via the "
@@ -555,6 +567,9 @@ if __name__ == "__main__":
                                              info="Horizontal And Vertical flip the image; the augmented images are then passed into the model."
                                                   " Corresponding reverse transformation then applys to the output probability maps, and those maps get combined together."
                                                   " Can improve segmentation accuracy, but will take longer and consume more CPU memory.")
+                        pixel_reclaim = gr.Checkbox(label="Enable Pixel reclaim operation for instance segmentation",
+                                                    info="Due to how instance segmentation works, some pixels will be lost when seperating touching objects, "
+                                                         "this settings will try to reclaim those lost pixels, but can take quite some time.")
                         #TTA_z = gr.Checkbox(label="Enable Test-Time Augmentation for z dimension", info="Depth Wise flip the image")
             with gr.Row():
                 model_architecture = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
@@ -650,6 +665,7 @@ if __name__ == "__main__":
                 val_dataset_mode,
                 test_dataset_mode,
                 TTA_xy,
+                pixel_reclaim,
 #                TTA_z,
                 }
             with gr.Row():
@@ -677,7 +693,7 @@ if __name__ == "__main__":
                 model_channel_count_v = gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
                                                   info="Often means the number of output channels in the first encoder block. Determines the size of the network.")
                 model_depth_v = gr.Number(5, label="Model Depth", precision=0, minimum=3,
-                                          info="Only work for HalfUNet and UNet, minimal is 3. Means the number of different downsampled sizes. Including un-downsampled.")
+                                          info="Means the number of different downsampled sizes. Including un-downsampled.")
 #                model_growth_rate_v = gr.Number(12, label="Model Growth Rate", precision=0,
 #                                              info="Only work for DenseNet, check out their paper for more detail.")
 #                model_dropout_p_v = gr.Number(0.2, label="Model Dropout Probability", step=0.1,

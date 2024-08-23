@@ -13,6 +13,7 @@ from pl_module import PLModule
 from Components import DataComponents
 from Networks import *
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
+from lightning.pytorch.callbacks import LearningRateMonitor
 
 
 num_cpu_cores = os.cpu_count()
@@ -73,20 +74,23 @@ def start_work_flow(args):
             train_dataset_pos = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
                                                             args.hw_size, args.d_size, instance_mode,
                                                             args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
-                                                            args.contour_map_width, False)
+                                                            args.contour_map_width, 'positive')
             train_dataset_neg = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
                                                             args.hw_size, args.d_size, instance_mode,
                                                             args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
-                                                            args.contour_map_width, True)
+                                                            args.contour_map_width, 'negative')
             train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg)
+            sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size)
+            collate_fn = DataComponents.custom_collate
         else:
             train_dataset = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
                                                         args.hw_size, args.d_size, instance_mode,
                                                         args.exclude_edge, args.exclude_edge_size_in,
-                                                        args.exclude_edge_size_out, args.contour_map_width)
-        sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size)
+                                                        args.exclude_edge_size_out, args.contour_map_width, None)
+            sampler = None
+            collate_fn = None
         train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
-                                  collate_fn=DataComponents.custom_collate, sampler=sampler,
+                                  collate_fn=collate_fn, sampler=sampler,
                                   #num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
                                   num_workers=0, pin_memory=True)
         del train_dataset
@@ -112,7 +116,7 @@ def start_work_flow(args):
                                  args.model_se)
                 model = PLModule(arch, True, False, None, instance_mode,
                                              False, False, False, False)
-                fake_trainer = pl.Trainer(max_steps=1, accelerator="gpu", enable_checkpointing=False, precision=args.precision, logger=None,
+                fake_trainer = pl.Trainer(max_epochs=1, accelerator="gpu", enable_checkpointing=False, precision=args.precision, logger=None,
                                           enable_progress_bar=False, num_sanity_val_steps=1, enable_model_summary=False)
                 fake_trainer.fit(model,
                                  val_dataloaders=val_loader,
@@ -165,9 +169,14 @@ def start_work_flow(args):
     else:
         logger = False
     if 'Training' in args.workflow_box:
+        if logger:
+            lr_monitor = LearningRateMonitor(logging_interval='epoch')
+        else:
+            lr_monitor = None
         trainer = pl.Trainer(max_epochs=args.num_epochs, log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=False,
-                             precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
+                             precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=2,
+                             callbacks=[lr_monitor],
                              #profiler='simple',
                              )
         start_time = time.time()
@@ -185,7 +194,7 @@ def start_work_flow(args):
         full = os.path.join(args.save_model_path, args.save_model_name)
         torch.save(model.state_dict(), full)
     if 'Predict' in args.workflow_box:
-        trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=False, accelerator="gpu")
+        trainer = pl.Trainer(precision="16-mixed", enable_progress_bar=True, logger=False, accelerator="gpu")
         predict_dataset = DataComponents.Predict_Dataset(args.predict_dataset_path,
                                                          hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                          hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
@@ -211,7 +220,7 @@ def start_work_flow(args):
             DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=args.result_folder_path,
                                                              hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                              hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                                                             TTA_hw=args.TTA_xy)
+                                                             TTA_hw=args.TTA_xy, pixel_reclaim=args.pixel_reclaim)
             end_time = time.time()
             print(f"Converting and saving taken: {end_time - start_time} seconds")
 
@@ -271,6 +280,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],
                         default="Fully Labelled", help="Dataset Mode")
     parser.add_argument("--TTA_xy", action="store_true", help="Enable Test-Time Augmentation for xy dimension")
+    parser.add_argument("--pixel_reclaim", action="store_true", help="Enable reclaim of lost pixel during the instance segmentation.")
 
     args = parser.parse_args()
     start_work_flow(args)

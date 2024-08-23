@@ -7,11 +7,11 @@ Adjust Contrast,0.75,0.5,1.5,
 Adjust Gamma,0.75,0.5,1.5,
 Adjust Brightness,0.75,0.75,1.4,
 Simulate Low Resolution,0.33,1.05,2,
-Rotate xy,0.5,90,270,
-Rotate xz,0.0,90,270,
-Rotate yz,0.0,90,270,
+Rotate xy,0.25,0,360,
+Rotate xz,0.0,0,360,
+Rotate yz,0.0,0,360,
 Gradient Gamma,0.25,0.75,1.5,
 Gradient Contrast,0.25,0.75,1.5,
 Salt And Pepper,0.25,0.005,0.01,
-Label Blur,1,1,1,3
-Contour Blur,1,0.5,0.5,3
+Label Blur,1,1,1,5
+Contour Blur,0,0.5,0.5,7

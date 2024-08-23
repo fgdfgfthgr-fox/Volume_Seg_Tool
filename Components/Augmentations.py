@@ -51,8 +51,7 @@ def adj_gamma(tensor, gamma, gain=1):
     Returns:
         torch.Tensor: Gamma-adjusted 3D tensor with the same shape as the input.
     """
-    tensor = (tensor ** gamma) * gain
-    return tensor
+    return (tensor ** gamma) * gain
 
 
 def adj_contrast(tensor, contrast):
@@ -66,9 +65,7 @@ def adj_contrast(tensor, contrast):
     Returns:
         torch.Tensor: Contrast-adjusted 3D tensor with the same shape as the input.
     """
-    mean = torch.mean(tensor)
-    tensor = (contrast * tensor + (1.0 - contrast) * mean).clamp(0, 1)
-    return tensor
+    return (contrast * tensor + (1.0 - contrast) * torch.mean(tensor)).clamp(0, 1)
 
 
 def adj_brightness(tensor, brightness):
@@ -82,8 +79,7 @@ def adj_brightness(tensor, brightness):
     Returns:
         torch.Tensor: Brightness-adjusted 3D tensor with the same shape as the input.
     """
-    tensor = (brightness * tensor).clamp(0, 1)
-    return tensor
+    return (brightness * tensor).clamp(0, 1)
 
 #    The sigma is automatically calculated in the way same as torchvision.transforms.functional.gaussian_blur(),
 #    which is sigma = 0.3 * ((kernel_size - 1) * 0.5 - 1) + 0.8\n
@@ -136,38 +132,34 @@ def random_rotation_3d(tensors, angle_range, plane='xy', interpolations=('biline
         List of rotated tensors with the same rotation.
     """
     # Check if the number of tensors, interpolations, and fill_values are the same
-    num_tensors = len(tensors)
-    if len(interpolations) != num_tensors or len(fill_values) != num_tensors:
-        raise ValueError("Number of tensors, interpolations, and fill_values should be the same.")
+    if not (len(tensors) == len(interpolations) == len(fill_values)):
+        raise ValueError("The lengths of tensors, interpolations, and fill_values must match.")
 
     # Generate random angles within the specified range
-    angle = random.randrange(angle_range[0], angle_range[1], 30)
+    angle = random.uniform(*angle_range)
 
-    rotated_tensors = []
-    for i in range(num_tensors):
-        tensor = tensors[i]
+    def apply_rotation(tensor, interp, fill, plane):
+        if plane == 'xz':
+            tensor = tensor.transpose(1, 3)
+        elif plane == 'yz':
+            tensor = tensor.transpose(2, 3)
 
-        if plane == "xz":
-            tensor = tensor.transpose(1, 3)  # Transpose to (C, Width, Height, Depth)
-        elif plane == "yz":
-            tensor = tensor.transpose(2, 3)  # Transpose to (C, Depth, Width, Height)
+        rotated = T_F.rotate(
+            tensor, angle,
+            interpolation=transforms.InterpolationMode.BILINEAR if interp == 'bilinear' else transforms.InterpolationMode.NEAREST,
+            expand=expand_output, fill=[fill]
+        )
 
-        rotated_tensor = T_F.rotate(tensor, angle,
-                                    interpolation=transforms.InterpolationMode.BILINEAR if interpolations[i] == 'bilinear' else transforms.InterpolationMode.NEAREST,
-                                    expand=expand_output, fill=[fill_values[i]])
+        if plane in ['xz', 'yz']:
+            rotated = rotated.transpose(1, 3) if plane == 'xz' else rotated.transpose(2, 3)
 
-        if plane == "xz":
-            rotated_tensor = rotated_tensor.transpose(1, 3)  # Transpose back to (C, Depth, Height, Width)
-        elif plane == "yz":
-            rotated_tensor = rotated_tensor.transpose(2, 3)  # Transpose back to (C, Depth, Height, Width)
+        return rotated
 
-        rotated_tensors.append(rotated_tensor)
-
-    return rotated_tensors
+    return [apply_rotation(t, interp, fill, plane) for t, interp, fill in zip(tensors, interpolations, fill_values)]
 
 
 def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True,
-                     max_attempts=50, minimal_foreground=0.01):
+                     max_attempts=50, minimal_foreground=0.01, minimal_background=0.02):
     """
     Randomly crop a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least 1% foreground object.\n
     Whether it contains foreground object is determined by the second tensor in the list,
@@ -182,16 +174,17 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True,
         pad_if_needed (bool): If True, pad the input tensors when they're smaller than any desired dimension (default: True).
         max_attempts (int): Maximum number of attempts to find a crop with at least 1% foreground object (default: 50).
         minimal_foreground (float): Proportion of desired minimal foreground pixels (default: 0.01).
+        minimal_background (float): Proportion of desired minimal background pixels (default: 0.01).
 
     Returns:
         List of cropped tensors.
     """
 
-    def contains_foreground(tensor):
+    def contains_bothground(tensor):
         total_pixels = tensor.numel()
         pixels_greater_than_zero = (tensor > 0).sum().detach()
 
-        return pixels_greater_than_zero >= (total_pixels * minimal_foreground)
+        return (total_pixels * minimal_foreground) <= pixels_greater_than_zero <= (total_pixels * (1 - minimal_background))
 
     # Suppose all the tensors in the list are the exact same shape.
     c, d, h, w = tensors[0].shape
@@ -231,10 +224,10 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True,
         cropped_tensors = cropping(padded_list)
 
         # Check if the label tensor (2nd tensor) contains a foreground object
-        if contains_foreground(cropped_tensors[1]):
+        if contains_bothground(cropped_tensors[1]):
             return cropped_tensors
     # If no suitable crop is found after max_attempts, raise a warning
-    print(f"Random clop failed: No suitable crop with foreground object found after {max_attempts} attempts. Will "
+    print(f"Random clop failed: No suitable crop with desired threshold found after {max_attempts} attempts. Will "
           f"return a random crop.")
     cropped_tensors = cropping(padded_list)
     return cropped_tensors
@@ -255,7 +248,7 @@ def random_gradient(tensor, range=(0.5, 1.5), gamma=True):
     """
 
     # Check if the input tensor has the correct shape
-    if len(tensor.shape) != 4:
+    if tensor.ndim != 4:
         raise ValueError("Input tensor must have shape [channel, depth, height, width]")
 
     # Generate a random side (left, right, top, bottom, front, back) for the gradient effect
@@ -285,13 +278,10 @@ def random_gradient(tensor, range=(0.5, 1.5), gamma=True):
         gradient = gradient.flip(dims=(1,))
 
     if gamma:
-        adjusted_tensor = tensor ** gradient
+        return tensor ** gradient
     else:
-        mean = torch.mean(tensor)
-        adjusted_tensor = (gradient * tensor + (1.0 - gradient) * mean).clamp(0, 1)
-        # adjusted_tensor = image_tensor * gradient
-
-    return adjusted_tensor
+        mean = tensor.mean()
+        return (gradient * tensor + (1.0 - gradient) * mean).clamp(0, 1)
 
 
 def salt_and_pepper_noise(tensor, prob=0.01):

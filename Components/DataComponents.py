@@ -24,16 +24,13 @@ def get_label_fname(fname):
 
 
 # 输入图像或者标签的路径，得到已标准化的图像张量或者标签的张量
-def path_to_tensor(path, label=False, auto_normalise=True):
+def path_to_tensor(path, label=False):
     """
     Transform a path to an image file into a Pytorch tensor.
 
     Args:
         path (str): Path to the image file.
         label (bool): If false, the output will be a float32 tensor range from 0 to 1. Default: False.
-        auto_normalise (bool): If true and label is false, the output will be normalised to ensure the maximal and minimal value in the tensor are 1 and 0.
-                               Else it would just be divided by the maximum value allowed for its datatype, to ensure the new maximum value won't surpass 1.
-                               Default: True.
 
     Returns:
         torch.Tensor: transformed Tensor.
@@ -44,24 +41,14 @@ def path_to_tensor(path, label=False, auto_normalise=True):
         if img.dtype == np.uint16 or img.dtype == np.uint32:
             img = img.astype(np.int32)
     else:
-        if auto_normalise:
-            # Calculate the low and high threshold values
-            zero_point_one_percent_low = np.percentile(img, 0.1)
-            zero_point_one_percent_high = np.percentile(img, 99.9)
-
-            # Clip the values to be within the specified range
-            img = np.clip(img, zero_point_one_percent_low, zero_point_one_percent_high)
-
-            # Normalize to the range [0, 1]
-            img = (img - zero_point_one_percent_low) / (zero_point_one_percent_high - zero_point_one_percent_low)
-            img = img.astype(np.float32)
-        else:
-            max_value = np.iinfo(img.dtype).max if img.dtype.kind == 'u' else np.finfo(img.dtype).max
-            img = (img / max_value).astype(np.float32)
+        max_value = np.iinfo(img.dtype).max if img.dtype.kind == 'u' else np.finfo(img.dtype).max
+        img = img.astype(np.float32, copy=False)
+        img = np.divide(img, max_value, out=img, dtype=np.float32)
     return torch.from_numpy(img)
 
 
-def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params, hw_size, d_size, foreground_threshold):
+def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
+              hw_size, d_size, foreground_threshold, background_threshold):
     """
     Apply Image Augmentations to an image tensor and its label tensor using the augmentation parameters from a DataFrame.
     Can have an optional contour tensor processed as well.
@@ -74,6 +61,7 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params, hw_si
         hw_size (int): The height and width of each generated patch.
         d_size (int): The depth of each generated patch.
         foreground_threshold (float): Proportion of desired minimal foreground pixels in the produced label tensor.
+        background_threshold (float): Proportion of desired minimal background pixels in the produced label tensor.
 
     Returns:
         Transformed Image and Label Tensor.
@@ -89,7 +77,8 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params, hw_si
                         int(scale * d_size),
                         int(scale * hw_size),
                         int(scale * hw_size),
-                        minimal_foreground=foreground_threshold)
+                        minimal_foreground=foreground_threshold,
+                        minimal_background=background_threshold)
                     contour_tensor = contour_tensor[None, :]
                     contour_tensor = F.interpolate(contour_tensor, size=(d_size, hw_size, hw_size),
                                                    mode="nearest-exact")
@@ -99,7 +88,8 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params, hw_si
                                                                   int(scale * d_size),
                                                                   int(scale * hw_size),
                                                                   int(scale * hw_size),
-                                                                  minimal_foreground=foreground_threshold)
+                                                                  minimal_foreground=foreground_threshold,
+                                                                  minimal_background=background_threshold)
                 img_tensor = img_tensor[None, :]
                 img_tensor = F.interpolate(img_tensor, size=(d_size, hw_size, hw_size), mode="trilinear",
                                            align_corners=True)
@@ -115,16 +105,16 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params, hw_si
                     img_tensor, lab_tensor, contour_tensor = Aug.custom_rand_crop(
                         [img_tensor, lab_tensor, contour_tensor],
                         d_size, hw_size, hw_size,
-                        minimal_foreground=foreground_threshold)
+                        minimal_foreground=foreground_threshold, minimal_background=background_threshold)
                 else:
                     img_tensor, lab_tensor = Aug.custom_rand_crop(
                         [img_tensor, lab_tensor],
                         d_size, hw_size, hw_size,
-                        minimal_foreground=foreground_threshold)
+                        minimal_foreground=foreground_threshold, minimal_background=background_threshold)
         elif augmentation_method == 'Rotate xy' and random.random() < prob:
             if contour_tensor is not None:
                 img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor, contour_tensor],
-                                                                                interpolations=('bilinear', 'nearest', 'nearest'),
+                                                                                interpolations=('bilinear', 'nearest', 'bilinear'),
                                                                                 fill_values=(0, 0, 0),
                                                                                 plane='xy', angle_range=(row['Low Bound'], row['High Bound']))
             else:
@@ -256,11 +246,13 @@ class TrainDataset(torch.utils.data.Dataset):
         exclude_edge_size_in (int): The thickness of the border in pixels, toward the inside of each object.
         exclude_edge_size_out (int): The thickness of the border in pixels, toward the outside of each object.
         contour_map_width (int): Width of the contour map. Default: 1.
-        allow_negative (bool): If true, allow the returned lab_tensor to be fully negative (no foreground object). Default: false
+        negative_control (str or None): If 'negative', allow the returned lab_tensor to be fully negative (no foreground object).
+                                        If 'positive', allow the returned lab_tensor to be fully positive. If None, will try to generate lab_tensor
+                                        that contain both positive and negative pixels. Default: None
     """
 
     def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64, instance_mode=False,
-                 exclude_edge=False, exclude_edge_size_in=1, exclude_edge_size_out=1, contour_map_width=1, allow_negative=False):
+                 exclude_edge=False, exclude_edge_size_in=1, exclude_edge_size_out=1, contour_map_width=1, negative_control=None):
         # Get a list of file paths for images and labels
         self.file_list = make_dataset_tv(images_dir)
         self.num_files = len(self.file_list)
@@ -280,7 +272,16 @@ class TrainDataset(torch.utils.data.Dataset):
         self.train_multiplier = train_multiplier
         self.hw_size = hw_size
         self.d_size = d_size
-        self.foreground_threshold = 0 if allow_negative else 0.001
+        if negative_control:
+            if negative_control == 'positive':
+                self.foreground_threshold = 0.02
+                self.background_threshold = 0
+            elif negative_control == 'negative':
+                self.background_threshold = 0.02
+                self.foreground_threshold = 0
+        else:
+            self.background_threshold = 0.02
+            self.foreground_threshold = 0.02
 
         super().__init__()
 
@@ -296,13 +297,13 @@ class TrainDataset(torch.utils.data.Dataset):
             contour_tensor = self.contour_tensors[idx][None, :]
             img_tensor, lab_tensor, contour_tensor = apply_aug(img_tensor, lab_tensor, contour_tensor,
                                                                self.augmentation_params, self.hw_size, self.d_size,
-                                                               self.foreground_threshold)
-            return img_tensor, lab_tensor, contour_tensor
+                                                               self.foreground_threshold, self.background_threshold)
+            return img_tensor, lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
         else:
             img_tensor, lab_tensor = apply_aug(img_tensor, lab_tensor, None,
                                                self.augmentation_params, self.hw_size, self.d_size,
-                                               self.foreground_threshold)
-            return img_tensor, lab_tensor
+                                               self.foreground_threshold, self.background_threshold)
+            return img_tensor, lab_tensor.to(torch.float32)
 
 
 class ValDataset(torch.utils.data.Dataset):
@@ -418,16 +419,18 @@ class Predict_Dataset(torch.utils.data.Dataset):
             self.file_list = [file]
         for file in self.file_list:
             image = path_to_tensor(file, label=False)[None, :]
+            shape = image.shape
+            depth = shape[1]
+            height = shape[2]
+            width = shape[3]
             image_list = [image]
             if TTA_hw:
                 image_list.append(T_F.hflip(image))
                 image_list.append(T_F.vflip(image))
                 image_list.append(T_F.vflip(T_F.hflip(image)))
+            del image
             file_name = os.path.basename(file)
 
-            depth = image.shape[1]
-            height = image.shape[2]
-            width = image.shape[3]
             # Calculate the multipliers for padding and cropping
             depth_multiplier = math.ceil(depth / depth_size)
             height_multiplier = math.ceil(height / hw_size)
@@ -437,12 +440,8 @@ class Predict_Dataset(torch.utils.data.Dataset):
             paddings = (hw_overlap, hw_overlap,
                         hw_overlap, hw_overlap,
                         depth_overlap, depth_overlap)
-            # Experiments show replicate works best compare to constant or reflect
-            padded_image_list = []
-            for item in image_list:
-                item = F.pad(item, paddings, mode="replicate")
-                padded_image_list.append(item)
-            del image_list, item
+            for i in range(len(image_list)):
+                image_list[i] = F.pad(image_list[i], paddings, mode="replicate")
             # Loop through each depth, height, and width index
             for i in range(TTA_multiplier):
                 for depth_idx in range(depth_multiplier):
@@ -469,12 +468,12 @@ class Predict_Dataset(torch.utils.data.Dataset):
                             else:
                                 width_start = 0
                             width_end = width_start + hw_size + (2 * hw_overlap)
-                            patch = padded_image_list[i][:,
-                                                         depth_start:depth_end,
-                                                         height_start:height_end,
-                                                         width_start:width_end]
+                            patch = image_list[i][:,
+                                                  depth_start:depth_end,
+                                                  height_start:height_end,
+                                                  width_start:width_end]
                             self.patches_list.append(patch)
-            self.meta_list.append((file_name, image.shape))
+            self.meta_list.append((file_name, shape))
         super().__init__()
 
     def __len__(self):
@@ -519,9 +518,12 @@ class CollectedSampler(torch.utils.data.Sampler):
             return iter(np.random.permutation(len(self.data_source)))
         else:
             original_array = np.arange(len(self.data_source))
-            pairs = [(original_array[i], original_array[i + 1]) for i in range(0, len(self.data_source), 2)]
-            np.random.shuffle(pairs)
-            shuffled_array = np.array([elem for pair in pairs for elem in pair])
+            positive_array, negative_array = np.split(original_array, 2)
+            np.random.shuffle(positive_array)
+            np.random.shuffle(negative_array)
+            shuffled_array = np.empty_like(original_array)
+            shuffled_array[0::2] = positive_array
+            shuffled_array[1::2] = negative_array
             return iter(shuffled_array)
 
     def __len__(self):
@@ -647,88 +649,73 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
         depth_size (int): The depth of the patches. In pixels.
         hw_overlap (int): The additional gain in height and width of the patches. In pixels.
         depth_overlap (int): The additional gain in depth of the patches. In pixels.
+        TTA_hw (bool): Whether to apply test-time augmentation.
 
     Returns:
         list: stitched tensors with shape (C, D, H, W).
     """
     output_list = []
-    seperator = 0
-    TTA_multiplier = 1
-    if TTA_hw:
-        TTA_multiplier *= 4
+    TTA_multiplier = 4 if TTA_hw else 1
 
     for meta_info in meta_list:
-        depth = meta_info[1][1]
-        height = meta_info[1][2]
-        width = meta_info[1][3]
+        depth, height, width = meta_info[1][1:]
         file_name = "Mask_" + meta_info[0]
+
         depth_multiplier = math.ceil(depth / depth_size)
         height_multiplier = math.ceil(height / hw_size)
         width_multiplier = math.ceil(width / hw_size)
         total_multiplier = depth_multiplier * height_multiplier * width_multiplier * TTA_multiplier
+
         TTA_list = []
         for TTA_idx in range(TTA_multiplier):
-            result_volume = torch.zeros((depth_multiplier * depth_size,
-                                         height_multiplier * hw_size,
-                                         width_multiplier * hw_size), dtype=torch.float32)
-            for i in range(seperator + TTA_idx * (total_multiplier // TTA_multiplier),
-                           seperator + (TTA_idx + 1) * (total_multiplier // TTA_multiplier)):
-                if hw_overlap != 0 and depth_overlap != 0:
-                    tensor_work_with = tensor_list[i][depth_overlap:-depth_overlap,
-                                       hw_overlap:-hw_overlap,
-                                       hw_overlap:-hw_overlap]
-                elif hw_overlap != 0 and depth_overlap == 0:
-                    tensor_work_with = tensor_list[i][:,
-                                       hw_overlap:-hw_overlap,
-                                       hw_overlap:-hw_overlap]
-                elif hw_overlap == 0 and depth_overlap != 0:
-                    tensor_work_with = tensor_list[i][depth_overlap:-depth_overlap,
-                                       :,
-                                       :]
-                else:
-                    tensor_work_with = tensor_list[i]
+            # f32 would be a waste here
+            result_volume = torch.zeros((depth,
+                                         height,
+                                         width), dtype=torch.float16)
 
-                depth_idx = math.floor(i / (height_multiplier * width_multiplier)) % depth_multiplier
-                height_idx = math.floor(i / (width_multiplier)) % height_multiplier
-                width_idx = (i) % width_multiplier
+            for i in range(TTA_idx * (total_multiplier // TTA_multiplier),
+                           (TTA_idx + 1) * (total_multiplier // TTA_multiplier)):
+                tensor_work_with = tensor_list[i]
+                if hw_overlap or depth_overlap:
+                    tensor_work_with = tensor_work_with[
+                                       (depth_overlap if depth_overlap else slice(None)):
+                                       -(depth_overlap if depth_overlap else slice(None)),
+                                       (hw_overlap if hw_overlap else slice(None)):
+                                       -(hw_overlap if hw_overlap else slice(None)),
+                                       (hw_overlap if hw_overlap else slice(None)):
+                                       -(hw_overlap if hw_overlap else slice(None))
+                                       ]
 
-                if depth_multiplier > 1:
-                    depth_start = (depth_size - (
-                            (depth_size * depth_multiplier - depth) / (depth_multiplier - 1))) * depth_idx
-                    depth_start = math.floor(depth_start)
-                else:
-                    depth_start = 0
-                depth_end = depth_start + depth_size
-                if height_multiplier > 1:
-                    height_start = (hw_size - (
-                            (hw_size * height_multiplier - height) / (height_multiplier - 1))) * height_idx
-                    height_start = math.floor(height_start)
-                else:
-                    height_start = 0
-                height_end = height_start + hw_size
-                if width_multiplier > 1:
-                    width_start = (hw_size - (
-                                (hw_size * width_multiplier - width) / (width_multiplier - 1))) * width_idx
-                    width_start = math.floor(width_start)
-                else:
-                    width_start = 0
-                width_end = width_start + hw_size
-                result_volume[depth_start:depth_end, height_start:height_end, width_start:width_end] = tensor_work_with
-            result_volume = result_volume[0:depth, 0:height, 0:width]
-            if TTA_idx == 1:
-                result_volume = T_F.hflip(result_volume)
-            elif TTA_idx == 2:
-                result_volume = T_F.vflip(result_volume)
-            elif TTA_idx == 3:
-                result_volume = T_F.vflip(T_F.hflip(result_volume))
-            TTA_list.append(result_volume)
-            # array = np.asarray(result_volume)
-            # imageio.v3.imwrite(uri=f'debug_output/{TTA_idx}.tiff', image=np.float32(array))
-        result_volume = torch.mean(torch.stack(TTA_list, dim=0), dim=0)
-        seperator += total_multiplier
-        # array = np.asarray(result_volume)
-        # imageio.v3.imwrite(uri=f'TTA Output.tiff', image=np.float32(array))
+                depth_idx, height_idx, width_idx = (i // (height_multiplier * width_multiplier)) % depth_multiplier, \
+                                                   (i // width_multiplier) % height_multiplier, \
+                                                   i % width_multiplier
+
+                depth_start = math.floor((depth_size - (depth_size * depth_multiplier - depth) / (
+                            depth_multiplier - 1)) * depth_idx) if depth_multiplier > 1 else 0
+                height_start = math.floor((hw_size - (hw_size * height_multiplier - height) / (
+                            height_multiplier - 1)) * height_idx) if height_multiplier > 1 else 0
+                width_start = math.floor((hw_size - (hw_size * width_multiplier - width) / (
+                            width_multiplier - 1)) * width_idx) if width_multiplier > 1 else 0
+
+                result_volume[depth_start:depth_start + tensor_work_with.shape[0],
+                height_start:height_start + tensor_work_with.shape[1],
+                width_start:width_start + tensor_work_with.shape[2]] = tensor_work_with
+
+            #result_volume = result_volume[:depth, :height, :width]
+            if TTA_hw:
+                return [result_volume,]
+            else:
+                if TTA_idx == 1:
+                    result_volume = T_F.hflip(result_volume)
+                elif TTA_idx == 2:
+                    result_volume = T_F.vflip(result_volume)
+                elif TTA_idx == 3:
+                    result_volume = T_F.vflip(T_F.hflip(result_volume))
+                TTA_list.append(result_volume)
+
+        result_volume = torch.mean(torch.stack(TTA_list), dim=0)
         output_list.append((result_volume, file_name))
+
     return output_list
 
 
@@ -747,15 +734,8 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
         hw_overlap (int): The additional gain in height and width of the patches. In pixels.
         depth_overlap (int): The additional gain in depth of the patches. In pixels.
     """
-    tensor_list = []
-    for prediction in predictions:  # 将这些输出张量项目从predictions里拿出来
-        # 分割prediction，形成包含了多个元素（图片张量）的元组，每个元素的Batch维度都是1
-        splitted = torch.split(prediction, split_size_or_sections=1, dim=0)
-        for single_tensor in splitted:  # 将这个元组里每个单独元素（图片张量）拆分出来
-            # It appears that if the final output is a volume, I will need to squeeze the first dimension(Batch)
-            single_tensor = torch.squeeze(single_tensor, (0, 1))
-            tensor_list.append(single_tensor)
-    del splitted, single_tensor
+    tensor_list = [torch.squeeze(tensor, (0, 1)) for prediction in predictions for tensor in prediction.split(1, dim=0)]
+
     stitched_volumes = stitch_output_volumes(tensor_list, meta_list, hw_size, depth_size, hw_overlap, depth_overlap,
                                              TTA_hw)
     del tensor_list
@@ -766,7 +746,7 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
 
 
 def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16,
-                                      depth_overlap=16, TTA_hw=False):
+                                      depth_overlap=16, TTA_hw=False, pixel_reclaim=True):
     """
     Stitch the patches of prediction output from network and save it in the selected directory.\n
     This one is for instance segmentation.
@@ -779,20 +759,21 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         depth_size (int): The depth of the patches. In pixels.
         hw_overlap (int): The additional gain in height and width of the patches. In pixels.
         depth_overlap (int): The additional gain in depth of the patches. In pixels.
+        TTA_hw (bool): Whether to enable test time augmentation for improved segmentation accuracy. Default: False
+        pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
     """
-    tensor_list_p = []
-    tensor_list_c = []
-    for prediction in predictions:
-        splitted_p = torch.split(prediction[0], split_size_or_sections=1, dim=0)
-        splitted_c = torch.split(prediction[1], split_size_or_sections=1, dim=0)
-        for single_tensor in splitted_p:
-            single_tensor = torch.squeeze(single_tensor, (0, 1))
-            tensor_list_p.append(single_tensor)
-        del splitted_p
-        for single_tensor in splitted_c:
-            single_tensor = torch.squeeze(single_tensor, (0, 1))
-            tensor_list_c.append(single_tensor)
-        del splitted_c
+    tensor_list_p = [
+        torch.squeeze(tensor, (0, 1))
+        for prediction in predictions
+        for tensor in torch.split(prediction[0], 1, dim=0)
+    ]
+
+    tensor_list_c = [
+        torch.squeeze(tensor, (0, 1))
+        for prediction in predictions
+        for tensor in torch.split(prediction[1], 1, dim=0)
+    ]
+
     del predictions
     stitched_volumes_p = stitch_output_volumes(tensor_list_p, meta_list, hw_size, depth_size, hw_overlap, depth_overlap,
                                                TTA_hw)
@@ -807,15 +788,10 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
     #        array = np.asarray(volume[0])
     #        imageio.v3.imwrite(uri=f'{direc}/Contour_{volume[1]}', image=np.float32(array))
     for semantic, contour in zip(stitched_volumes_p, stitched_volumes_c):
-        semantic_array = np.asarray(semantic[0])
-        semantic_array = np.where(semantic_array >= 0.5, 1, 0)
-        contour_array = np.asarray(contour[0])
-        imageio.v3.imwrite(uri=f'{direc}/Pixels_{semantic[1]}', image=np.uint8(semantic_array))
-        imageio.v3.imwrite(uri=f'{direc}/Contour_{contour[1]}', image=np.float32(contour_array))
-        print(
-            f'Computing instance segmentation using contour data for {contour[1]}... Can take a while if the image is big.')
-        instance_result = instance_segmentation_simple(semantic[0], contour[0])
-        instance_array = np.asarray(instance_result)
+        imageio.v3.imwrite(uri=f'{direc}/Pixels_{semantic[1]}', image=np.float16(semantic[0].numpy()))
+        imageio.v3.imwrite(uri=f'{direc}/Contour_{contour[1]}', image=np.float16(contour[0].numpy()))
+        print(f'Computing instance segmentation using contour data for {contour[1]}... Can take a while if the image is big.')
+        instance_array = np.asarray(instance_segmentation_simple(semantic[0], contour[0], pixel_reclaim=pixel_reclaim))
         imageio.v3.imwrite(uri=f'{direc}/Instance_{contour[1]}', image=np.uint16(instance_array))
 
 
@@ -869,7 +845,7 @@ def hovernet_map_transform(input_tensor):
 '''
 
 
-def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, distance_threshold=2):
+def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, pixel_reclaim=True, distance_threshold=2):
     """
     Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.
     Pixels in touching areas are assigned to the closest object based on the largest proportion of pixels within 5 pixel distance to the pixel.
@@ -878,6 +854,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, d
         semantic_map (np.Array): The input semantic segmented map.
         contour_map (np.Array): The input contour segmented map.
         size_threshold (int): The minimal size in pixel of each object. Object smaller than this will be removed.
+        pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
         distance_threshold (int): The radius in pixels to search for nearby pixels when allocating. Default: 2.
 
     Returns:
@@ -885,7 +862,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, d
     """
     semantic_map = torch.where(semantic_map >= 0.5, True, False)
     # Treat contour map with lower threshold to ensure separation
-    contour_map = torch.where(contour_map >= 0.35, True, False)
+    contour_map = torch.where(contour_map >= 0.1, True, False)
 
     # Find boundary that lies within foreground objects
     touching_map = torch.logical_and(contour_map, semantic_map)
@@ -905,50 +882,51 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, d
          [0, 0, 0]]
     ])
     # Connected Component Labelling
-    segmentation, _ = label(new_map.numpy(), structure=structure.numpy())
+    segmentation, _ = label(new_map.numpy(), structure=structure.numpy(), output=np.int32)
     del structure, new_map
     # Remove small segments
-    segmentation = morphology.remove_small_objects(segmentation, min_size=size_threshold, connectivity=2)
-    segmentation = torch.tensor(segmentation, dtype=torch.int16)
+    segmentation = morphology.remove_small_objects(segmentation, min_size=size_threshold, connectivity=2, out=segmentation)
 
-    # Pre-compute all local segments
-    touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.int32)
-    del touching_map
-    num_touching_pixels = len(touching_pixels)
-    minlength = segmentation.max().item()
-    map_size = segmentation.shape
-    new_segmentation = segmentation.clone()
+    if pixel_reclaim:
+        segmentation = torch.from_numpy(segmentation)
+        # Pre-compute all local segments
+        touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.int32)
+        del touching_map
+        num_touching_pixels = len(touching_pixels)
+        minlength = segmentation.max().item()
+        map_size = segmentation.shape
+        new_segmentation = segmentation.clone()
+        # Allocates the lost pixels to the object that has the largest proportion of pixels within the threshold distance
+        def allocate_pixels(pixel_idx):
+            z, y, x = touching_pixels[pixel_idx, 0], touching_pixels[pixel_idx, 1], touching_pixels[pixel_idx, 2]
+            local_segment = segmentation[
+                            max(z - distance_threshold, 0):min(z + distance_threshold, map_size[0] - 1),
+                            max(y - distance_threshold, 0):min(y + distance_threshold, map_size[1] - 1),
+                            max(x - distance_threshold, 0):min(x + distance_threshold, map_size[2] - 1)
+                            ]
+            # Compute object counts with background count included
+            object_counts = torch.bincount(local_segment.flatten(), minlength=minlength)
+            # Exclude background count
+            object_counts = object_counts[1:]
+            if object_counts.numel() > 0:
+                closest_objects = torch.argmax(object_counts, dim=0).to(torch.int16) + 1
+                new_segmentation[touching_pixels[pixel_idx, 0],
+                                 touching_pixels[pixel_idx, 1],
+                                 touching_pixels[pixel_idx, 2]] = closest_objects
 
-    # Allocates the lost pixels to the object that has the largest proportion of pixels within the threshold distance
-    def allocate_pixels(pixel_idx):
-        z, y, x = touching_pixels[pixel_idx, 0], touching_pixels[pixel_idx, 1], touching_pixels[pixel_idx, 2]
-        local_segment = segmentation[
-                        max(z - distance_threshold, 0):min(z + distance_threshold, map_size[0] - 1),
-                        max(y - distance_threshold, 0):min(y + distance_threshold, map_size[1] - 1),
-                        max(x - distance_threshold, 0):min(x + distance_threshold, map_size[2] - 1)
-                        ]
-        # Compute object counts with background count included
-        object_counts = torch.bincount(local_segment.flatten(), minlength=minlength)
-        # Exclude background count
-        object_counts = object_counts[1:]
-        if object_counts.numel() > 0:
-            closest_objects = torch.argmax(object_counts, dim=0).to(torch.int16) + 1
-            new_segmentation[touching_pixels[pixel_idx, 0],
-                             touching_pixels[pixel_idx, 1],
-                             touching_pixels[pixel_idx, 2]] = closest_objects
-
-    data_loader = torch.utils.data.DataLoader(range(num_touching_pixels), batch_size=1, num_workers=0, pin_memory=True)
-    start_time = time.time()
-    current_proportion = 0.0
-    for batch in data_loader:
-        allocate_pixels(batch)
-        if (batch[0] + 1) / len(touching_pixels) >= current_proportion + 0.001:
-            elapsed_time = time.time() - start_time
-            print(
-                f"Processed {batch[0] + 1}/{len(touching_pixels)} voxels at {((batch[0] + 1) / elapsed_time):.2f} voxels/sec")
-            current_proportion += 0.001
-
-    return new_segmentation
+        data_loader = torch.utils.data.DataLoader(range(num_touching_pixels), batch_size=1, num_workers=0, pin_memory=True)
+        start_time = time.time()
+        current_proportion = 0.0
+        for batch in data_loader:
+            allocate_pixels(batch)
+            if (batch[0] + 1) / len(touching_pixels) >= current_proportion + 0.001:
+                elapsed_time = time.time() - start_time
+                print(
+                    f"Processed {batch[0] + 1}/{len(touching_pixels)} voxels at {((batch[0] + 1) / elapsed_time):.2f} voxels/sec")
+                current_proportion += 0.001
+        return new_segmentation
+    else:
+        return segmentation
 
 
 # 这里的函数用于测试各个组件是否能正常运作
