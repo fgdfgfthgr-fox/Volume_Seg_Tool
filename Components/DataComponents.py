@@ -183,6 +183,80 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
         return img_tensor, lab_tensor
 
 
+def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
+    """
+        Apply Image Augmentations to an image tensor using the augmentation parameters from a DataFrame.
+
+        Args:
+            img_tensor (torch.Tensor): Image tensor. Should be float32.
+            augmentation_params (DataFrame): The DataFrame which the augmentation parameters will be used from.
+            hw_size (int): The height and width of each generated patch.
+            d_size (int): The depth of each generated patch.
+
+        Returns:
+            Transformed Image Tensor.
+        """
+    for _, row in augmentation_params.iterrows():
+        augmentation_method, prob = row['Augmentation'], row['Probability']
+        if augmentation_method == 'Rescaling':
+            if random.random() < prob:
+                scale = random.uniform(row['Low Bound'], row['High Bound'])
+                img_tensor = Aug.custom_rand_crop(
+                    [img_tensor],
+                    int(scale * d_size),
+                    int(scale * hw_size),
+                    int(scale * hw_size),
+                    ensure_bothground=False)
+                img_tensor = img_tensor[0]
+                img_tensor = img_tensor[None, :]
+                img_tensor = F.interpolate(img_tensor, size=(d_size, hw_size, hw_size), mode="trilinear",
+                                           align_corners=True)
+                img_tensor = torch.squeeze(img_tensor, 0)
+            else:
+                img_tensor = Aug.custom_rand_crop(
+                    [img_tensor],
+                    d_size, hw_size, hw_size,
+                    ensure_bothground=False)
+                img_tensor = img_tensor[0]
+        elif augmentation_method == 'Rotate xy' and random.random() < prob:
+            img_tensor = Aug.random_rotation_3d(img_tensor,
+                                                interpolations='bilinear',
+                                                plane='xy', fill_values=0,
+                                                angle_range=(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate xz' and random.random() < prob:
+            img_tensor = Aug.random_rotation_3d(img_tensor,
+                                                interpolations='bilinear',
+                                                plane='xz', fill_values=0,
+                                                angle_range=(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate yz' and random.random() < prob:
+            img_tensor = Aug.random_rotation_3d(img_tensor,
+                                                interpolations='bilinear',
+                                                plane='yz', fill_values=0,
+                                                angle_range=(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Vertical Flip' and random.random() < prob:
+            img_tensor = T_F.vflip(img_tensor)
+        elif augmentation_method == 'Horizontal Flip' and random.random() < prob:
+            img_tensor = T_F.hflip(img_tensor)
+        elif augmentation_method == 'Simulate Low Resolution' and random.random() < prob:
+            img_tensor = Aug.sim_low_res(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gaussian Blur' and random.random() < prob:
+            img_tensor = Aug.gaussian_blur_3d(img_tensor, int(row['Value']),
+                                              random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gradient Gamma' and random.random() < prob:
+            img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), True)
+        elif augmentation_method == 'Gradient Contrast' and random.random() < prob:
+            img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), False)
+        elif augmentation_method == 'Adjust Contrast' and random.random() < prob:
+            img_tensor = Aug.adj_contrast(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Adjust Gamma' and random.random() < prob:
+            img_tensor = Aug.adj_gamma(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Adjust Brightness' and random.random() < prob:
+            img_tensor = Aug.adj_brightness(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Salt And Pepper' and random.random() < prob:
+            img_tensor = Aug.salt_and_pepper_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+    return img_tensor
+
+
 def make_dataset_tv(image_dir, extensions=IMG_EXTENSIONS):
     """
     Generate a list containing pairs of file paths to training images and their labels.
@@ -260,9 +334,7 @@ class TrainDataset(torch.utils.data.Dataset):
         if instance_mode:
             self.contour_tensors = [get_contour_maps(item, 'generated_contour_maps', contour_map_width) for item in
                                     self.file_list]
-            self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], label=True)) for item in self.file_list]
-        else:
-            self.lab_tensors = [path_to_tensor(item[1], label=True) for item in self.file_list]
+        self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], label=True)) for item in self.file_list]
         self.img_tensors = [path_to_tensor(item[0], label=False) for item in self.file_list]
         if exclude_edge and not instance_mode:
             self.lab_tensors = [
@@ -298,12 +370,48 @@ class TrainDataset(torch.utils.data.Dataset):
             img_tensor, lab_tensor, contour_tensor = apply_aug(img_tensor, lab_tensor, contour_tensor,
                                                                self.augmentation_params, self.hw_size, self.d_size,
                                                                self.foreground_threshold, self.background_threshold)
-            return img_tensor, lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
+            return img_tensor, lab_tensor.to(torch.float32), torch.tensor(0, dtype=torch.float32), contour_tensor.to(torch.float32)
         else:
             img_tensor, lab_tensor = apply_aug(img_tensor, lab_tensor, None,
                                                self.augmentation_params, self.hw_size, self.d_size,
                                                self.foreground_threshold, self.background_threshold)
-            return img_tensor, lab_tensor.to(torch.float32)
+            return img_tensor, lab_tensor.to(torch.float32), torch.tensor(0, dtype=torch.float32)
+
+    def get_label_mean(self):
+        return torch.cat(self.lab_tensors).to(torch.float32).mean()
+
+    def get_contour_mean(self):
+        return torch.cat(self.contour_tensors).to(torch.float32).mean()
+
+
+class UnsupervisedDataset(torch.utils.data.Dataset):
+    """
+    A torch.utils.data.Dataset class that handles the unsupervised training dataset.
+
+    Args:
+        images_dir (str): Path to the directory where images are stored.
+        augmentation_csv (str): Path to the .csv file that contains the image augmentations parameters.
+        train_multiplier (int): A.k.a repeat, the number of training images in each epoch are multiplied by this number. Default: 1
+        hw_size (int): The height and width of each generated patch. Default: 64
+        d_size (int): The depth of each generated patch. Default: 64
+    """
+    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64):
+        self.file_list = make_dataset_predict(images_dir)
+        self.num_files = len(self.file_list)
+        self.img_tensors = [path_to_tensor(item, label=False) for item in self.file_list]
+        self.augmentation_params = pd.read_csv(augmentation_csv)
+        self.train_multiplier = train_multiplier
+        self.hw_size = hw_size
+        self.d_size = d_size
+
+    def __len__(self):
+        return self.num_files * self.train_multiplier
+
+    def __getitem__(self, idx):
+        idx = math.floor(idx / self.train_multiplier)
+        img_tensor = self.img_tensors[idx][None, :]
+        img_tensor = apply_aug_unsupervised(img_tensor, self.augmentation_params, self.hw_size, self.d_size)
+        return img_tensor, img_tensor, torch.tensor(1, dtype=torch.float32)
 
 
 class ValDataset(torch.utils.data.Dataset):
@@ -331,8 +439,8 @@ class ValDataset(torch.utils.data.Dataset):
                               Aug.binarisation(path_to_tensor(item[1], label=True)),
                               get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in file_list]
         else:
-            tensors_pairs = [(path_to_tensor(item[0], label=False), path_to_tensor(item[1], label=True)) for item in
-                             file_list]
+            tensors_pairs = [(path_to_tensor(item[0], label=False),
+                              Aug.binarisation(path_to_tensor(item[1], label=True))) for item in file_list]
         self.chopped_tensor_pairs = []
         # augmentation_params = pd.read_csv(augmentation_csv)
         # Crop the tensors, so they are the standard shape specified in the augmentation csv.
@@ -372,7 +480,7 @@ class ValDataset(torch.utils.data.Dataset):
                         cropped_img = pairs[0][depth_start:depth_end, height_start:height_end,
                                       width_start:width_end]
                         cropped_lab = pairs[1][depth_start:depth_end, height_start:height_end,
-                                      width_start:width_end]
+                                      width_start:width_end].to(torch.float32)
                         if instance_mode:
                             cropped_contour = pairs[2][depth_start:depth_end,
                                               height_start:height_end,
@@ -389,9 +497,9 @@ class ValDataset(torch.utils.data.Dataset):
         img_tensor, lab_tensor = self.chopped_tensor_pairs[idx][0][None, :], self.chopped_tensor_pairs[idx][1][None, :]
         if self.instance_mode:
             contour_tensor = self.chopped_tensor_pairs[idx][2][None, :]
-            return img_tensor, lab_tensor, contour_tensor
+            return img_tensor, lab_tensor, torch.tensor(0, dtype=torch.float32), contour_tensor
         else:
-            return img_tensor, lab_tensor
+            return img_tensor, lab_tensor, torch.tensor(0, dtype=torch.float32)
 
 
 class Predict_Dataset(torch.utils.data.Dataset):
@@ -480,7 +588,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
         return len(self.patches_list)
 
     def __getitem__(self, idx):
-        return self.patches_list[idx]
+        return self.patches_list[idx], torch.tensor(0, dtype=torch.float32)
 
     def __getmetainfo__(self):
         return self.meta_list
@@ -490,41 +598,121 @@ class CollectedDataset(torch.utils.data.Dataset):
     """
     For handling dataset pairing.
     """
-    def __init__(self, dataset_positive, dataset_negative):
+    def __init__(self, dataset_positive, dataset_negative, dataset_unsupervised=None):
         self.dataset_positive = dataset_positive
         self.dataset_negative = dataset_negative
+        self.dataset_unsupervised = dataset_unsupervised
+        if self.dataset_unsupervised is not None:
+            self.rectified_unsupervised_size = math.floor(len(self.dataset_unsupervised) / 2) * 2
 
     def __len__(self):
-        return len(self.dataset_positive) + len(self.dataset_negative)
+        if self.dataset_unsupervised:
+            return len(self.dataset_positive) + len(self.dataset_negative) + self.rectified_unsupervised_size
+        else:
+            return len(self.dataset_positive) + len(self.dataset_negative)
 
     def __getitem__(self, idx):
-        if idx < len(self.dataset_positive):
-            pos = self.dataset_positive[idx]
-            return pos
+        if self.dataset_unsupervised:
+            if idx < self.rectified_unsupervised_size:
+                return self.dataset_unsupervised[idx]
+            else:
+                idx -= self.rectified_unsupervised_size
+                if idx < len(self.dataset_positive):
+                    return self.dataset_positive[idx]
+                else:
+                    idx -= len(self.dataset_positive)
+                    return self.dataset_negative[idx]
         else:
-            idx = idx - len(self.dataset_positive)
-            return self.dataset_negative[idx]
+            if idx < len(self.dataset_positive):
+                return self.dataset_positive[idx]
+            else:
+                idx -= len(self.dataset_positive)
+                return self.dataset_negative[idx]
+
+
+class CollectedDatasetAlt(torch.utils.data.Dataset):
+    """
+    For handling unsupervised learning without dataset pairing.
+    """
+    def __init__(self, dataset, dataset_unsupervised):
+        self.dataset = dataset
+        self.dataset_unsupervised = dataset_unsupervised
+        self.rectified_unsupervised_size = math.floor(len(self.dataset_unsupervised)/2) * 2
+
+    def __len__(self):
+        return self.rectified_unsupervised_size + len(self.dataset)
+
+    def __getitem__(self, idx):
+        if idx < self.rectified_unsupervised_size:
+            return self.dataset_unsupervised[idx]
+        else:
+            idx -= self.rectified_unsupervised_size
+            return self.dataset[idx]
+
+
+class CollectedSamplerAlt(torch.utils.data.Sampler):
+    def __init__(self, data_source):
+        super(CollectedSamplerAlt, self).__init__(data_source)
+        self.data_source = data_source
+
+    def __iter__(self):
+        return iter(np.random.permutation(len(self.data_source)))
+
+    def __len__(self):
+        return len(self.data_source)
 
 
 class CollectedSampler(torch.utils.data.Sampler):
-    def __init__(self, data_source, batch_size):
+    def __init__(self, data_source, batch_size, dataset_unsupervised=None):
         super(CollectedSampler, self).__init__(data_source)
         self.data_source = data_source
         self.batch_size = batch_size
-        self.indices = np.arange(len(data_source))
+        if dataset_unsupervised:
+            self.dataset_unsupervised_size = math.floor(len(dataset_unsupervised) / 2) * 2
+        else:
+            self.dataset_unsupervised_size = 0
+        #self.indices = np.arange(len(data_source))
 
     def __iter__(self):
         if self.batch_size == 1:
             return iter(np.random.permutation(len(self.data_source)))
+        elif self.batch_size == 2:
+            if self.dataset_unsupervised_size == 0:
+                original_array = np.arange(len(self.data_source))
+                positive_array, negative_array = np.split(original_array, 2)
+                np.random.shuffle(positive_array)
+                np.random.shuffle(negative_array)
+                shuffled_array = np.empty_like(original_array)
+                shuffled_array[0::2] = positive_array
+                shuffled_array[1::2] = negative_array
+                return iter(shuffled_array)
+            else:
+                unsupervised_array = np.arange(self.dataset_unsupervised_size)
+                np.random.shuffle(unsupervised_array)
+                supervised_array = np.arange(self.dataset_unsupervised_size, len(self.data_source))
+                np.random.shuffle(supervised_array)
+
+                min_size = min(self.dataset_unsupervised_size, len(supervised_array))
+
+                shuffled_array = np.empty(len(self.data_source), dtype=int)
+
+                # Interleave the pairs as much as possible
+                shuffled_array[0:2 * min_size:4] = unsupervised_array[:min_size // 2]
+                shuffled_array[1:2 * min_size:4] = unsupervised_array[min_size // 2:min_size]
+                shuffled_array[2:2 * min_size:4] = supervised_array[:min_size // 2]
+                shuffled_array[3:2 * min_size:4] = supervised_array[min_size // 2:min_size]
+
+                # Append the remaining pairs from the larger dataset
+                if len(supervised_array) > min_size:
+                    remaining_supervised = supervised_array[min_size:]
+                    shuffled_array[2 * min_size:] = remaining_supervised
+                elif self.dataset_unsupervised_size > min_size:
+                    remaining_unsupervised = unsupervised_array[min_size:]
+                    shuffled_array[2 * min_size:] = remaining_unsupervised
+
+                return iter(shuffled_array)
         else:
-            original_array = np.arange(len(self.data_source))
-            positive_array, negative_array = np.split(original_array, 2)
-            np.random.shuffle(positive_array)
-            np.random.shuffle(negative_array)
-            shuffled_array = np.empty_like(original_array)
-            shuffled_array[0::2] = positive_array
-            shuffled_array[1::2] = negative_array
-            return iter(shuffled_array)
+            raise ValueError("Invalid batch size. We only support 1 or 2.")
 
     def __len__(self):
         return len(self.data_source)
@@ -532,7 +720,7 @@ class CollectedSampler(torch.utils.data.Sampler):
 
 def custom_collate(batch):
     if len(batch) == 1:
-        return batch[0]
+        return batch[0].unsqueeze(0)
     positive_samples = batch[0]
     negative_samples = batch[1]
     batch = [torch.stack((a_i, b_i), dim=0) for a_i, b_i in zip(positive_samples, negative_samples)]
@@ -702,16 +890,13 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
                 width_start:width_start + tensor_work_with.shape[2]] = tensor_work_with
 
             #result_volume = result_volume[:depth, :height, :width]
-            if TTA_hw:
-                return [result_volume,]
-            else:
-                if TTA_idx == 1:
-                    result_volume = T_F.hflip(result_volume)
-                elif TTA_idx == 2:
-                    result_volume = T_F.vflip(result_volume)
-                elif TTA_idx == 3:
-                    result_volume = T_F.vflip(T_F.hflip(result_volume))
-                TTA_list.append(result_volume)
+            if TTA_idx == 1:
+                result_volume = T_F.hflip(result_volume)
+            elif TTA_idx == 2:
+                result_volume = T_F.vflip(result_volume)
+            elif TTA_idx == 3:
+                result_volume = T_F.vflip(T_F.hflip(result_volume))
+            TTA_list.append(result_volume)
 
         result_volume = torch.mean(torch.stack(TTA_list), dim=0)
         output_list.append((result_volume, file_name))
@@ -734,7 +919,9 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
         hw_overlap (int): The additional gain in height and width of the patches. In pixels.
         depth_overlap (int): The additional gain in depth of the patches. In pixels.
     """
-    tensor_list = [torch.squeeze(tensor, (0, 1)) for prediction in predictions for tensor in prediction.split(1, dim=0)]
+    tensor_list = [torch.squeeze(tensor, (0, 1))
+                   for prediction in predictions
+                   for tensor in torch.split(prediction[0], 1, dim=0)]
 
     stitched_volumes = stitch_output_volumes(tensor_list, meta_list, hw_size, depth_size, hw_overlap, depth_overlap,
                                              TTA_hw)

@@ -48,11 +48,18 @@ def start_work_flow(inputs):
     val_dataset_mode_n = f'"{inputs[val_dataset_mode]}"'
     test_dataset_mode_n = f'"{inputs[test_dataset_mode]}"'
     augmentation_csv_path_n = f'"{inputs[augmentation_csv_path]}"'
-    cmd = (f"python workflow.py "
+    cmd = (f"PYTORCH_TUNABLEOP_ENABLED=1 "
+           f"PYTORCH_TUNABLEOP_VERBOSE=1 "
+           f"PYTORCH_TUNABLEOP_FILENAME=tuneresult.csv "
+           f"TORCH_BLAS_PREFER_HIPBLASLT=0 "
+           f"PYTORCH_TUNABLEOP_HIPBLASLT_ENABLED=0 "
+           f"python workflow.py "
            f"--workflow_box {workflow_box_n} --segmentation_mode {inputs[segmentation_mode]} "
            f"--train_dataset_path {inputs[train_dataset_path]} "
            f"--augmentation_csv_path {augmentation_csv_path_n} --train_multiplier {inputs[train_multiplier]} "
            f"--batch_size {inputs[batch_size]} --num_epochs {inputs[num_epochs]} "
+           f"--unsupervised_train_dataset_path {inputs[unsupervised_train_dataset_path]} "
+           f"--unsupervised_train_multiplier {inputs[unsupervised_train_multiplier]} "
            f"--tensorboard_path {inputs[tensorboard_path]} "
            f"--val_dataset_path {inputs[val_dataset_path]} --test_dataset_path {inputs[test_dataset_path]} "
            f"--predict_dataset_path {inputs[predict_dataset_path]} "
@@ -74,6 +81,8 @@ def start_work_flow(inputs):
         cmd += " --pairing_samples "
     if inputs[enable_tensorboard]:
         cmd += "--enable_tensorboard "
+    if inputs[enable_unsupervised]:
+        cmd += "--enable_unsupervised "
     if inputs[save_model]:
         cmd += "--save_model "
     if inputs[read_existing_model]:
@@ -95,9 +104,10 @@ def start_work_flow(inputs):
 
 
 def visualisation_activations(existing_model_path, example_image, slice_to_show,
-                              model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio, model_se):
-    arch = pick_arch(model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio, model_se)
-    model = V_N_PLModule(arch)
+                              model_architecture, model_channel_count, model_depth,
+                              model_z_to_xy_ratio, model_se, model_unsupervised_v):
+    arch = pick_arch(model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio, model_se, model_unsupervised_v)
+    model = V_N_PLModule(arch, model_unsupervised_v)
     del arch
     model.load_state_dict(torch.load(existing_model_path))
     figure_list = []
@@ -150,9 +160,21 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show,
                 figure_list.append(img_buffer)
 
     plt.figure(figsize=(16, 9))
-    plt.suptitle(f'Sigmoid Layer')
-    sigmoid = model.sigmoids[-1][:, :, slice_to_show:slice_to_show+1, :, :].squeeze()
+    plt.suptitle(f'Semantic Output Layer')
+    sigmoid = model.s_outs[-1][:, :, slice_to_show:slice_to_show+1, :, :].squeeze()
     plt.imshow(sigmoid.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
+    plt.colorbar()
+    plt.axis('off')
+    canvas = plt.get_current_fig_manager().canvas
+    canvas.draw()
+    img_buffer = np.array(canvas.renderer.buffer_rgba())
+    plt.close()
+    figure_list.append(img_buffer)
+
+    plt.figure(figsize=(16, 9))
+    plt.suptitle(f'Unsupervised Output Layer')
+    output = model.u_outs[-1][:, :, slice_to_show:slice_to_show + 1, :, :].squeeze()
+    plt.imshow(output.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
     plt.colorbar()
     plt.axis('off')
     canvas = plt.get_current_fig_manager().canvas
@@ -241,7 +263,7 @@ def update_available_arch(radio_value):
         return gr.Dropdown(available_architectures_instance, label="Model Architecture")
 
 
-def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
+def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised):
     model_classes = {
         "HalfUNetBasic": (Semantic_HalfUNets.HalfUNet, 'Basic'),
         "HalfUNetGhost": (Semantic_HalfUNets.HalfUNet, 'Ghost'),
@@ -257,7 +279,7 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
     }
 
     model_class, model_type = model_classes[arch]
-    return model_class(base_channels, depth, z_to_xy_ratio, model_type, se)
+    return model_class(base_channels, depth, z_to_xy_ratio, model_type, se, unsupervised)
 
 
 def get_stats_between_maps(predicted_path, groundtruth_path):
@@ -339,6 +361,33 @@ if __name__ == "__main__":
                             return hw_size, model_depth, d_size, dk
                         question1.change(calculate_dhw_size, inputs=[question1, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
                         z_to_xy_ratio.change(calculate_dhw_size, inputs=[question1, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
+                    with gr.Row():
+
+                        enable_unsupervised = gr.Checkbox(scale=0, label="Enable Unsupervised Learning",
+                                                          info="Allow using unlabelled data to enhance performance.")
+                        unsupervised_train_dataset_path = gr.Textbox('Datasets/unsupervised_train', scale=2,
+                                                                     label="Unsupervised Train Dataset Path", visible=False)
+                        question2_u = gr.Number(1,
+                                                label="How many image files are in your unsupervised training set?",
+                                                precision=0, minimum=1, visible=False)
+                        unsupervised_train_multiplier = gr.Number(64, label="Unsupervised Train Multiplier (Repeats)",
+                                                                  interactive=False, visible=False)
+                        folder_button = gr.Button(document_symbol, scale=0)
+                        folder_button.click(open_folder, outputs=unsupervised_train_dataset_path)
+
+                        def show_hide_unsupervised_folder(enable_unsupervised):
+                            visible = True if enable_unsupervised else False
+                            options = (gr.Textbox('Datasets/unsupervised_train', scale=2,
+                                       label="Unsupervised Train Dataset Path", visible=visible),
+                                       gr.Number(1,
+                                       info="How many image files are in your unsupervised training set?",
+                                       precision=0, minimum=1, visible=visible),
+                                       gr.Number(64, label="Unsupervised Train Multiplier (Repeats)",
+                                                 interactive=False, visible=visible))
+                            return options
+                        enable_unsupervised.change(show_hide_unsupervised_folder,
+                                                   inputs=enable_unsupervised,
+                                                   outputs=[unsupervised_train_dataset_path, question2_u, unsupervised_train_multiplier])
 
                 with gr.Tab("Validation Settings"):
                     with gr.Row():
@@ -379,6 +428,7 @@ if __name__ == "__main__":
                                               label="Question 2",
                                               info="How many image files are in your training set?",
                                               precision=0, minimum=1)
+
                         def change_batch_size(choice):
                             if choice:
                                 return gr.Number(2, label="Batch Size", precision=0, minimum=1,
@@ -387,9 +437,6 @@ if __name__ == "__main__":
                                 return gr.Number(1, label="Batch Size", precision=0, minimum=1,
                                                  info="Number of training patch to feed into the network at once.")
                         pairing_samples.change(change_batch_size, inputs=pairing_samples, outputs=batch_size)
-                        #initial_lr = gr.Number(0.001, step=0.001, label="Initial Learning Rate")
-                        #patience = gr.Number(5, label="Learning Rate Decay Patience", precision=0)
-                        #min_lr = gr.Number(0.0001, step=0.0001, label="Minimum Learning Rate")
                     with gr.Accordion("When do you need to pair positive and negative sample", open=False):
                         with gr.Row():
                             gr.Image("GitHub_Res/require bs 2.png", image_mode="L", show_download_button=False,
@@ -400,21 +447,26 @@ if __name__ == "__main__":
                         train_multiplier = gr.Number(64, label="Train Multiplier (Repeats)",
                                                      info="Automatically calculated to aim for 10% steps in validation, 90% in train. "
                                                           "If validation workflow isn't enabled, will default to 64.",
-                                                     interactive=False)
+                                                     interactive=False, maximum=64)
 
-                        def calculate_train_multiplier(val_num_patch, question2, workflow_box):
+                        def calculate_train_multiplier(val_num_patch, question2, workflow_box, double=False):
+                            d = 2 if double else 1
                             if 'Validation' in workflow_box:
                                 # Aiming to have 10% steps in val, 90% steps in train
-                                return round(9*(val_num_patch/question2))
+                                return min(round(9*(val_num_patch/question2)), 64)*d
                             else:
-                                return math.ceil(32/question2)
+                                return math.ceil(64/question2)*d
+                        place_holder_true = gr.Checkbox(True, "There is a bug if you see this", visible=False)
                         val_num_patch.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
                         question2.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
                         workflow_box.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
+                        val_num_patch.change(calculate_train_multiplier, inputs=[val_num_patch, question2_u, workflow_box, place_holder_true], outputs=unsupervised_train_multiplier)
+                        question2_u.change(calculate_train_multiplier, inputs=[val_num_patch, question2_u, workflow_box, place_holder_true], outputs=unsupervised_train_multiplier)
+                        workflow_box.change(calculate_train_multiplier, inputs=[val_num_patch, question2_u, workflow_box, place_holder_true], outputs=unsupervised_train_multiplier)
                     with gr.Row():
                         train_length = gr.Radio(["Short", "Medium", "Long", "Custom"], value="Short",
                                                 label="Training Duration")
-                        train_steps = gr.Number(1600, label="Training Steps", interactive=False)
+                        train_steps = gr.Number(2000, label="Training Steps", interactive=False)
 
                         def length_to_steps(train_length):
                             if train_length == "Short":
@@ -428,11 +480,20 @@ if __name__ == "__main__":
                         train_length.change(length_to_steps, inputs=train_length, outputs=train_steps)
                         num_epochs = gr.Number(40, label="Maximum Number of Epochs", precision=0, minimum=1)
 
-                        def steps_to_epochs(train_steps, train_multiplier, question2):
-                            return math.ceil(train_steps/(train_multiplier*question2))
-                        train_multiplier.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2], outputs=num_epochs)
-                        train_steps.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2], outputs=num_epochs)
-                        question2.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2], outputs=num_epochs)
+                        def steps_to_epochs(train_steps, train_multiplier, question2, enable_unsupervised):
+                            another_multiplier = 2 if enable_unsupervised else 1
+                            return math.ceil(train_steps/(train_multiplier*question2*another_multiplier))
+                        train_multiplier.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2, enable_unsupervised], outputs=num_epochs)
+                        train_steps.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2, enable_unsupervised], outputs=num_epochs)
+                        question2.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2, enable_unsupervised], outputs=num_epochs)
+                        enable_unsupervised.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2, enable_unsupervised], outputs=num_epochs)
+
+                        question2_u.change(calculate_train_multiplier,
+                                           inputs=[val_num_patch, question2_u, workflow_box],
+                                           outputs=unsupervised_train_multiplier)
+                        enable_unsupervised.change(calculate_train_multiplier,
+                                                   inputs=[val_num_patch, question2_u, workflow_box],
+                                                   outputs=unsupervised_train_multiplier)
                     with gr.Row():
                         enable_tensorboard = gr.Checkbox(scale=0, label="Enable TensorBoard Logging")
                         tensorboard_path = gr.Textbox('lightning_logs', scale=2, label="Path to the folder which the log will be save to")
@@ -631,6 +692,9 @@ if __name__ == "__main__":
                 #patience,
                 #min_lr,
                 num_epochs,
+                enable_unsupervised,
+                unsupervised_train_dataset_path,
+                unsupervised_train_multiplier,
                 enable_tensorboard,
                 tensorboard_path,
                 val_dataset_path,
@@ -701,11 +765,12 @@ if __name__ == "__main__":
                 model_z_to_xy_ratio_v = gr.Number(1.0, label="Z resolution to XY resolution ratio",
                                                   info="The ratio which the z resolution of the images in the dataset divided by their xy resolution. Determines some internal model layout. We assume xy has the same resolution.")
                 model_se_v = gr.Checkbox(scale=0, label="Enable Squeeze-and-Excitation plug-in")
+                model_unsupervised_v = gr.Checkbox(scale=0, label="The model was trained with unsupervised training")
             outputs = gr.Gallery(label="Output Images", preview=True, selected_index=0)
             start_button = gr.Button("Show Visualization")
             start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show,
                                                                   model_architecture_v, model_channel_count_v, model_depth_v,
-                                                                  model_z_to_xy_ratio_v, model_se_v], outputs=outputs)
+                                                                  model_z_to_xy_ratio_v, model_se_v, model_unsupervised_v], outputs=outputs)
 
         with gr.Tab("Augmentations Visualisation"):
             gr.Markdown("Given your Training Dataset and Augmentation CSV, show some examples of augmented images that will be fed into the network.")

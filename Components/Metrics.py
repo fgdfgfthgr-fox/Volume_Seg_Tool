@@ -66,6 +66,79 @@ class DiceLoss(nn.Module):
         dice_loss = 1 - dice_coefficient
         return dice_loss
 
+def compute_sdf(img_gt, out_shape):
+    """
+    compute the signed distance map of binary mask
+    img_gt: segmentation, shape = (batch_size, x, y, z)
+    out_shape: the Signed Distance Map (SDM)
+    sdf(x) = 0; x in segmentation boundary
+             -inf|x-y|; x in segmentation
+             +inf|x-y|; x out of segmentation
+    """
+
+    from scipy.ndimage import distance_transform_edt
+    from skimage import segmentation as skimage_seg
+
+    img_gt = img_gt.astype(np.uint8)
+
+    gt_sdf = np.zeros(out_shape)
+
+    for b in range(out_shape[0]): # batch size
+        for c in range(1, out_shape[1]): # channel
+            posmask = img_gt[b][c].astype(np.bool)
+            if posmask.any():
+                negmask = ~posmask
+                posdis = distance_transform_edt(posmask)
+                negdis = distance_transform_edt(negmask)
+                boundary = skimage_seg.find_boundaries(posmask, mode='inner').astype(np.uint8)
+                sdf = negdis - posdis
+                sdf[boundary==1] = 0
+                gt_sdf[b][c] = sdf
+
+    return gt_sdf
+
+class BDLoss(nn.Module):
+    def __init__(self, **_):
+        """
+        compute boundary loss
+        only compute the loss of foreground
+        ref: https://github.com/LIVIAETS/surface-loss/blob/108bd9892adca476e6cdf424124bc6268707498e/losses.py#L74
+        """
+        super(BDLoss, self).__init__()
+        # self.do_bg = do_bg
+
+    def forward(self, inputs, labels, **_):
+        """
+        net_output: (batch_size, class, x,y,z)
+        target: ground truth, shape: (batch_size, 1, x,y,z)
+        bound: precomputed distance map, shape (batch_size, class, x,y,z)
+        """
+        with torch.no_grad():
+            if len(inputs.shape) != len(labels.shape):
+                labels = labels.view((labels.shape[0], 1, *labels.shape[1:]))
+
+            if all([i == j for i, j in zip(inputs.shape, labels.shape)]):
+                # if this is the case then gt is probably already a one hot encoding
+                y_onehot = labels
+            else:
+                labels = labels.long()
+                y_onehot = torch.zeros(inputs.shape)
+                if inputs.device.type == "cuda":
+                    y_onehot = y_onehot.cuda(inputs.device.index)
+                y_onehot.scatter_(1, labels, 1)
+            gt_sdf = compute_sdf(y_onehot.cpu().numpy(), inputs.shape)
+
+        phi = torch.from_numpy(gt_sdf)
+        if phi.device != inputs.device:
+            phi = phi.to(inputs.device).type(torch.float32)
+        # pred = net_output[:, 1:, ...].type(torch.float32)
+        # phi = phi[:,1:, ...].type(torch.float32)
+
+        multipled = torch.einsum("bcxyz,bcxyz->bcxyz", inputs[:, 1:, ...], phi[:, 1:, ...])
+        bd_loss = multipled.mean()
+
+        return bd_loss
+
 
 class BinaryMetrics(nn.Module):
     def __init__(self, loss_mode: str, smooth=1e-8):
@@ -74,7 +147,8 @@ class BinaryMetrics(nn.Module):
         or Focal Loss (for contour map).
 
         Args:
-            loss_mode (str): A string indicating whether to use boundary loss ("boundary") or focal loss ("focal") or dice loss ("dice")
+            loss_mode (str): A string indicating whether to use boundary loss ("boundary") or focal loss ("focal")
+                             or dice loss ("dice") or dice+bce ("dice+bce") or bce loss without dice calculation ("bce_no_dice")
             smooth (float): A smoothing factor for numerical stability (default is 1e-8)
         """
         super(BinaryMetrics, self).__init__()
@@ -172,10 +246,18 @@ class BinaryMetrics(nn.Module):
             F_loss = (1-pt) ** 1.333 * BCE_loss
             dice_score, tpr, tnr = self.calculate_dice_and_metrics(inputs, targets)
             return F_loss.mean(), dice_score, tpr, tnr
+        elif self.loss_mode == "bce_no_dice":
+            BCE_loss = F.binary_cross_entropy(inputs, targets, reduction='none')
+            return BCE_loss.mean(), torch.nan, torch.nan, torch.nan
         elif self.loss_mode == "dice":
             return self.dice_loss(inputs, targets)
+        elif self.loss_mode == "dice+bce":
+            dice_loss, dice_score, tpr, tnr = self.dice_loss(inputs, targets)
+            bce_loss = F.binary_cross_entropy(inputs, targets, reduction='none').mean()
+            total_loss = (dice_loss*0.1+bce_loss*1.9)/2
+            return total_loss, dice_score, tpr, tnr
         else:
-            raise ValueError("Invalid loss. Use 'boundary' or 'focal' or 'dice'.")
+            raise ValueError("Invalid loss. Use 'boundary' or 'focal' or 'dice' or 'dice+bce'.")
 
 
 def get_bounding_boxes(tensor):

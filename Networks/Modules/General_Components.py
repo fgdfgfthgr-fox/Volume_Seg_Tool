@@ -11,7 +11,7 @@ class ResBasicBlock(nn.Module):
                                 padding=padding, padding_mode='zeros', bias=False)
         self.conv_2 = nn.Conv3d(out_channels, out_channels, kernel_size=kernel_size,
                                 padding=padding, padding_mode='zeros')
-        self.bn = nn.BatchNorm3d(out_channels, track_running_stats=False)
+        self.bn = nn.InstanceNorm3d(out_channels, track_running_stats=False)
         self.silu = nn.SiLU(inplace=True)
 
     def forward(self, x):
@@ -33,8 +33,8 @@ class ResBottleneckBlock(nn.Module):
         self.conv_2 = nn.Conv3d(middle_channel, middle_channel, kernel_size=kernel_size,
                                 padding=padding, padding_mode='zeros', bias=False)
         self.conv_3 = nn.Conv3d(middle_channel, out_channels, kernel_size=1)
-        self.bn1 = nn.BatchNorm3d(middle_channel, track_running_stats=False)
-        self.bn2 = nn.BatchNorm3d(out_channels, track_running_stats=False)
+        self.bn1 = nn.InstanceNorm3d(middle_channel, track_running_stats=False)
+        self.bn2 = nn.InstanceNorm3d(out_channels, track_running_stats=False)
         self.silu = nn.SiLU(inplace=True)
 
     def forward(self, x):
@@ -55,7 +55,7 @@ class BasicBlock(nn.Module):
                                 kernel_size=kernel_size, padding=padding, padding_mode='zeros', bias=False)
         self.conv_2 = nn.Conv3d(out_channels, out_channels,
                                 kernel_size=kernel_size, padding=padding, padding_mode='zeros', bias=False)
-        self.bn = nn.BatchNorm3d(out_channels, track_running_stats=False)
+        self.bn = nn.InstanceNorm3d(out_channels, track_running_stats=False)
         self.silu = nn.SiLU(inplace=True)
 
     def forward(self, x):
@@ -70,7 +70,7 @@ class BasicBlockSingle(nn.Module):
         padding = tuple((k - 1) // 2 for k in kernel_size)
         self.conv_1 = nn.Conv3d(in_channels, out_channels,
                                 kernel_size=kernel_size, padding=padding, padding_mode='zeros', bias=False)
-        self.bn = nn.BatchNorm3d(out_channels, track_running_stats=False)
+        self.bn = nn.InstanceNorm3d(out_channels, track_running_stats=False)
         self.silu = nn.SiLU(inplace=True)
 
     def forward(self, x):
@@ -115,3 +115,49 @@ class scSE(nn.Module):
 
     def forward(self, x):
         return self.cse(x) + self.sse(x)
+
+
+# https://www-sciencedirect-com.ezproxy.otago.ac.nz/science/article/pii/S095741742401594X
+class FeatureFusionModule(nn.Module):
+    def __init__(self, num_features, ini_channels):
+        super().__init__()
+        feature_channels = [ini_channels * (2 ** i) for i in range(num_features)]
+        for i in range(num_features):
+            for j in range(num_features):
+                if j > i:
+                    # Downsamplings
+                    difference = 2 ** (j - i)
+                    setattr(self, f'{i}_to_{j}_down',
+                            nn.Sequential(nn.Conv3d(feature_channels[i], feature_channels[i], difference, difference, bias=False),
+                                          nn.InstanceNorm3d(feature_channels[i]),
+                                          nn.Conv3d(feature_channels[i], feature_channels[j], 1, bias=False),
+                                          nn.InstanceNorm3d(feature_channels[j])))
+                elif i > j:
+                    # Upsamplings
+                    difference = 2 ** (i - j)
+                    setattr(self, f'{i}_to_{j}_up',
+                            nn.Sequential(nn.Upsample(scale_factor=difference, mode='trilinear', align_corners=True),
+                                          nn.Conv3d(feature_channels[i], feature_channels[j], 1, bias=False),
+                                          nn.InstanceNorm3d(feature_channels[j])))
+        self.activation = nn.SiLU(inplace=True)
+
+    def forward(self, feature_maps):
+        # feature_maps is a list of features from different resolution branches
+        num_features = len(feature_maps)
+        fused_features = [feature_maps[i] for i in range(num_features)]  # Start with the original feature maps
+
+        for i in range(num_features):
+            for j in range(num_features):
+                if i > j:
+                    # Upsample i to match the resolution of j
+                    upsample = getattr(self, f'{i}_to_{j}_up')
+                    fused_features[j] = fused_features[j] + upsample(feature_maps[i])
+                elif j > i:
+                    # Downsample i to match the resolution of j
+                    downsample = getattr(self, f'{i}_to_{j}_down')
+                    fused_features[j] = fused_features[j] + downsample(feature_maps[i])
+
+        # Apply activation after fusion
+        fused_features = [self.activation(f) for f in fused_features]
+
+        return fused_features

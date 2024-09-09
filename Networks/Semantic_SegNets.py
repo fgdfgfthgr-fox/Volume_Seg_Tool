@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from .Modules.SegNets_Components import SegEncodeBlock_2, SegEncodeBlock_3, SegDecodeBlock_2, SegDecodeBlock_3
 from .Modules.General_Components import scSE
@@ -51,7 +52,7 @@ class Original(nn.Module):
 
 
 class Auto(nn.Module):
-    def __init__(self, base_channels=64, depth=5, z_to_xy_ratio=1, foo='Auto', se=False):
+    def __init__(self, base_channels=64, depth=5, z_to_xy_ratio=1, type='Auto', se=False, unsupervised=False, label_mean=torch.tensor(0.5)):
         super(Auto, self).__init__()
         if depth < 2:
             raise ValueError("The depth needs to be at least 2 (2 different feature map size exist).")
@@ -61,39 +62,64 @@ class Auto(nn.Module):
         self.se = se
         if abs(self.special_layers) + 1 >= depth:
             raise ValueError("Current Z to XY ratio require deeper depth to make network effective.")
-        kernel_sizes_conv = []
         kernel_sizes_pool = []
+        kernel_sizes_conv = (3, 3, 3)
         for i in range(depth):
             if self.special_layers > 0 and i < self.special_layers:
-                kernel_sizes_conv.append((3, 3, 3))
                 kernel_sizes_pool.append((1, 2, 2))
             elif self.special_layers < 0 and i < -self.special_layers:
-                kernel_sizes_conv.append((3, 3, 3))
                 kernel_sizes_pool.append((2, 1, 1))
             else:
-                kernel_sizes_conv.append((3, 3, 3))
                 kernel_sizes_pool.append((2, 2, 2))
         for i in range(depth):
             if i == 0:
                 setattr(self, f'encode0',
-                        SegEncodeBlock_2(1, base_channels, kernel_sizes_conv[0], kernel_sizes_pool[0]))
+                        SegEncodeBlock_2(1, base_channels, kernel_sizes_conv, kernel_sizes_pool[0]))
                 if se: setattr(self, f'encode_se0', scSE(base_channels))
                 setattr(self, f'decode0',
-                        SegDecodeBlock_2(base_channels, 2, kernel_sizes_conv[0], kernel_sizes_pool[0]))
+                        SegDecodeBlock_2(base_channels, 2, kernel_sizes_conv, kernel_sizes_pool[0]))
                 if se: setattr(self, f'decode_se0', scSE(2))
+                if unsupervised:
+                    setattr(self, f'u_decode0',
+                            SegDecodeBlock_2(base_channels, 2, kernel_sizes_conv))
+                    if se: setattr(self, f'u_decode_se0', scSE(base_channels))
             else:
                 setattr(self, f'encode{i}',
                         SegEncodeBlock_3(base_channels * (2 ** (i-1)), (base_channels * (2 ** i)),
-                                         kernel_sizes_conv[i], kernel_sizes_pool[i]))
+                                         kernel_sizes_conv, kernel_sizes_pool[i]))
                 if se: setattr(self, f'encode_se{i}', scSE(base_channels * (2 ** i)))
                 setattr(self, f'decode{i}',
                         SegDecodeBlock_3(base_channels * (2 ** i), (base_channels * (2 ** (i-1))),
-                                         kernel_sizes_conv[i], kernel_sizes_pool[i]))
+                                         kernel_sizes_conv, kernel_sizes_pool[i]))
                 if se: setattr(self, f'decode_se{i}', scSE(base_channels * (2 ** (i-1))))
-        self.final = nn.Sequential(nn.Conv3d(2, 1, kernel_size=1),
+                if unsupervised:
+                    setattr(self, f'u_decode{i}',
+                            SegDecodeBlock_3(base_channels * (2 ** i), (base_channels * (2 ** i)), kernel_sizes_conv))
+                    if se: setattr(self, f'u_decode_se{i}', scSE(base_channels * (2 ** i)))
+        logit_label_mean = torch.log(label_mean / (1 - label_mean)) * 0.5
+        self.s_out = nn.Sequential(nn.Conv3d(2, 1, kernel_size=1),
                                    nn.Sigmoid())
+        with torch.no_grad():
+            self.s_out[0].bias.fill_(logit_label_mean)
+        if unsupervised:
+            self.u_out = nn.Sequential(nn.Conv3d(2, 1, kernel_size=1),
+                                       nn.Sigmoid())
 
-    def forward(self, input):
+    def semantic_decode(self, x, encode_indices):
+        for i in reversed(range(self.depth)):
+            x = getattr(self, f"decode{i}")(x, encode_indices[i])
+            if self.se: x = getattr(self, f"decode_se{i}")(x)
+        output = self.s_out(x)
+        return output
+
+    def unsupervised_decode(self, x, encode_indices):
+        for i in reversed(range(self.depth)):
+            x = getattr(self, f"u_decode{i}")(x, encode_indices[i])
+            if self.se: x = getattr(self, f"u_decode_se{i}")(x)
+        output = self.u_out(x)
+        return output
+
+    def forward(self, input, type=(1,)):
         encode_indices = []
         x = input
 
@@ -102,10 +128,9 @@ class Auto(nn.Module):
             if self.se: x = getattr(self, f"encode_se{i}")(x)
             encode_indices.append(indices)
 
-        for i in reversed(range(self.depth)):
-            x = getattr(self, f"decode{i}")(x, encode_indices[i])
-            if self.se: x = getattr(self, f"decode_se{i}")(x)
-
-        output = self.final(x)
-
-        return output
+        if type[0] == 0:
+            return self.semantic_decode(x, encode_indices)
+        elif type[0] == 1:
+            return self.unsupervised_decode(x, encode_indices)
+        elif type[0] == 2:
+            return self.semantic_decode(x, encode_indices), self.unsupervised_decode(x, encode_indices)

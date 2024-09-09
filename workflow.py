@@ -34,33 +34,33 @@ def start_tensorboard(args):
     webbrowser.open(tensorboard_url)
 
 
-def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se):
+def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised, label_mean, contour_mean):
     if arch == "HalfUNetBasic":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, unsupervised, label_mean)
     elif arch == "HalfUNetGhost":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Ghost', se)
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Ghost', se, unsupervised, label_mean)
     elif arch == "HalfUNetResidual":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, unsupervised, label_mean)
     elif arch == "HalfUNetResidualBottleneck":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
+        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, unsupervised, label_mean)
     elif arch == "UNetBasic":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, unsupervised, label_mean)
     elif arch == "UNetResidual":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, unsupervised, label_mean)
     elif arch == "UNetResidualBottleneck":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, unsupervised, label_mean)
     elif arch == "SegNet":
-        return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio, se)
+        return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio, se, unsupervised, label_mean)
     #elif arch == "Tiniest":
     #    return Testing_Models.Tiniest(base_channels, depth, z_to_xy_ratio)
     #elif arch == "SingleTopLayer":
     #    return Testing_Models.SingleTopLayer(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "InstanceBasic":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se)
+        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, unsupervised, label_mean, contour_mean)
     elif arch == "InstanceResidual":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se)
+        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, unsupervised, label_mean, contour_mean)
     elif arch == "InstanceResidualBottleneck":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se)
+        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, unsupervised, label_mean, contour_mean)
 
 
 def start_work_flow(args):
@@ -69,6 +69,8 @@ def start_work_flow(args):
         instance_mode = False
     else:
         instance_mode = True
+    # Placeholder means
+    label_mean, contour_mean = torch.tensor(0.5)
     if 'Training' in args.workflow_box:
         if args.pairing_samples:
             train_dataset_pos = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
@@ -79,16 +81,35 @@ def start_work_flow(args):
                                                             args.hw_size, args.d_size, instance_mode,
                                                             args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
                                                             args.contour_map_width, 'negative')
-            train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg)
-            sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size)
+            label_mean = train_dataset_pos.get_label_mean()
+            if instance_mode: contour_mean = train_dataset_pos.get_contour_mean()
+            if args.enable_unsupervised:
+                unsupervised_train_dataset = DataComponents.UnsupervisedDataset(args.unsupervised_train_dataset_path,
+                                                                                args.augmentation_csv_path, args.unsupervised_train_multiplier,
+                                                                                args.hw_size, args.d_size)
+            else:
+                unsupervised_train_dataset = None
+            train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg, unsupervised_train_dataset)
+            sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size, unsupervised_train_dataset)
             collate_fn = DataComponents.custom_collate
         else:
             train_dataset = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
                                                         args.hw_size, args.d_size, instance_mode,
                                                         args.exclude_edge, args.exclude_edge_size_in,
                                                         args.exclude_edge_size_out, args.contour_map_width, None)
-            sampler = None
-            collate_fn = None
+            label_mean = train_dataset.get_label_mean()
+            if instance_mode: contour_mean = train_dataset.get_contour_mean()
+            if args.enable_unsupervised:
+                unsupervised_train_dataset = DataComponents.UnsupervisedDataset(args.unsupervised_train_dataset_path,
+                                                                                args.augmentation_csv_path,
+                                                                                args.unsupervised_train_multiplier,
+                                                                                args.hw_size, args.d_size)
+                train_dataset = DataComponents.CollectedDatasetAlt(train_dataset, unsupervised_train_dataset)
+                sampler = DataComponents.CollectedSamplerAlt(train_dataset)
+                collate_fn = DataComponents.custom_collate
+            else:
+                sampler = None
+                collate_fn = None
         train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
                                   collate_fn=collate_fn, sampler=sampler,
                                   #num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
@@ -113,7 +134,7 @@ def start_work_flow(args):
         def check_fit_in_memory(channel_count):
             try:
                 arch = pick_arch(args.model_architecture, channel_count, args.model_depth, args.z_to_xy_ratio,
-                                 args.model_se)
+                                 args.model_se, args.enable_unsupervised, label_mean, contour_mean)
                 model = PLModule(arch, True, False, None, instance_mode,
                                              False, False, False, False)
                 fake_trainer = pl.Trainer(max_epochs=1, accelerator="gpu", enable_checkpointing=False, precision=args.precision, logger=None,
@@ -146,9 +167,11 @@ def start_work_flow(args):
             print(f"Channel count search result: {mid_channel}")
             return min_channel
         current_channel_count = find_max_channel(1, 128)
-        arch = pick_arch(args.model_architecture, current_channel_count, args.model_depth, args.z_to_xy_ratio, args.model_se)
+        arch = pick_arch(args.model_architecture, current_channel_count, args.model_depth, args.z_to_xy_ratio,
+                         args.model_se, args.enable_unsupervised, label_mean)
     else:
-        arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio, args.model_se)
+        arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio,
+                         args.model_se, args.enable_unsupervised, label_mean)
     if ('Sparsely Labelled' in args.train_dataset_mode) or (args.exclude_edge):
         sparse_train = True
     else:
@@ -175,7 +198,7 @@ def start_work_flow(args):
             lr_monitor = None
         trainer = pl.Trainer(max_epochs=args.num_epochs, log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=False,
-                             precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=2,
+                             precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
                              callbacks=[lr_monitor],
                              #profiler='simple',
                              )
@@ -207,22 +230,19 @@ def start_work_flow(args):
         end_time = time.time()
         del predict_loader
         print(f"Prediction Taken: {end_time - start_time} seconds")
+        start_time = time.time()
         if 'Semantic' in args.segmentation_mode:
-            start_time = time.time()
             DataComponents.predictions_to_final_img(predictions, meta_info, direc=args.result_folder_path,
                                                     hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                     hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
                                                     TTA_hw=args.TTA_xy)
-            end_time = time.time()
-            print(f"Converting and saving taken: {end_time - start_time} seconds")
         else:
-            start_time = time.time()
             DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=args.result_folder_path,
                                                              hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                              hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
                                                              TTA_hw=args.TTA_xy, pixel_reclaim=args.pixel_reclaim)
-            end_time = time.time()
-            print(f"Converting and saving taken: {end_time - start_time} seconds")
+        end_time = time.time()
+        print(f"Converting and saving taken: {end_time - start_time} seconds")
 
 
 if __name__ == "__main__":
@@ -239,6 +259,9 @@ if __name__ == "__main__":
     parser.add_argument("--pairing_samples", action="store_true", help="Pairing positive and negative samples in a batch")
     parser.add_argument("--num_epochs", type=int, default=40, help="Number of Epochs")
     parser.add_argument("--enable_tensorboard", action="store_true", help="Enable TensorBoard Logging")
+    parser.add_argument("--enable_unsupervised", action="store_true", help="Enable Unsupervised Pretraining")
+    parser.add_argument("--unsupervised_train_dataset_path", type=str, default="Datasets/unsupervised_train", help="Unsupervised Dataset Path")
+    parser.add_argument("--unsupervised_train_multiplier", type=int, default=64, help="Unsupervised Train Multiplier (Repeats)")
     parser.add_argument("--tensorboard_path", type=str, default="lightning_logs",
                         help="Path to the folder which the log will be saved to")
     parser.add_argument("--val_dataset_path", type=str, default="Datasets/val", help="Validation Dataset Path")

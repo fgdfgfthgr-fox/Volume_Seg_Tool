@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import math
 from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, BasicBlockSingle, scSE
@@ -29,7 +30,8 @@ from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, Basic
 
 
 class UNet(nn.Module):
-    def __init__(self, base_channels=64, depth=4, z_to_xy_ratio=1, type='Basic', se=False):
+    def __init__(self, base_channels=64, depth=4, z_to_xy_ratio=1, type='Basic',
+                 se=False, unsupervised=False, label_mean=torch.tensor(0.5), contour_mean=torch.tensor(0.5)):
         super(UNet, self).__init__()
         self.max_pool = nn.MaxPool3d(2)
         self.max_pool_flat = nn.MaxPool3d((1, 2, 2))
@@ -38,12 +40,10 @@ class UNet(nn.Module):
         self.special_layers = math.floor(math.log2(z_to_xy_ratio))
         self.se = se
         if abs(self.special_layers) + 1 >= depth:
-            raise ValueError("Current Z to XY ratio require deeper depth to make network effective.")
+            raise ValueError("Current Z to XY ratio requires a deeper network.")
         if depth < 2:
             raise ValueError("The depth needs to be at least 2 (2 different feature map size exist).")
-        kernel_sizes_conv = [(3, 3, 3) if self.special_layers > 0 and i < self.special_layers else
-                             (3, 3, 3) if self.special_layers < 0 and i < -self.special_layers else
-                             (3, 3, 3) for i in range(depth)]
+        kernel_sizes_conv = (3, 3, 3)
 
         kernel_sizes_transpose = [(1, 2, 2) if self.special_layers > 0 and i < self.special_layers else
                                   (2, 1, 1) if self.special_layers < 0 and i < -self.special_layers else
@@ -53,32 +53,39 @@ class UNet(nn.Module):
         for i in range(depth):
             if i == 0:
                 setattr(self, f'encode0',
-                        block_top(1, base_channels, kernel_sizes_conv[0]))
+                        block_top(1, base_channels, kernel_sizes_conv))
                 if se: setattr(self, f'encode_se0', scSE(base_channels))
                 setattr(self, f'p_decode0',
-                        block_top(base_channels, base_channels, kernel_sizes_conv[0]))
+                        block_top(base_channels, base_channels, kernel_sizes_conv))
                 if se: setattr(self, f'p_decode_se0', scSE(base_channels))
                 setattr(self, f'c_decode0',
-                        block_top(base_channels, base_channels, kernel_sizes_conv[0]))
+                        block_top(base_channels, base_channels, kernel_sizes_conv))
                 if se: setattr(self, f'c_decode_se0', scSE(base_channels))
                 setattr(self, f'p_up0',
                         nn.ConvTranspose3d(2*base_channels, base_channels, kernel_sizes_transpose[0], kernel_sizes_transpose[0]))
                 setattr(self, f'c_up0',
                         nn.ConvTranspose3d(2*base_channels, base_channels, kernel_sizes_transpose[0], kernel_sizes_transpose[0]))
+                if unsupervised:
+                    setattr(self, f'u_decode0',
+                            block_top(base_channels, base_channels, kernel_sizes_conv))
+                    if se: setattr(self, f'u_decode_se0', scSE(base_channels))
+                    setattr(self, f'u_up0',
+                            nn.ConvTranspose3d(2 * base_channels, base_channels, kernel_sizes_transpose[0],
+                                               kernel_sizes_transpose[0]))
             elif i == depth-1:
                 setattr(self, 'bottleneck',
                         block(base_channels * (2 ** (i-1)), (base_channels * (2 ** i)),
-                              kernel_sizes_conv[i]))
+                              kernel_sizes_conv))
                 if se: setattr(self, f'bottleneck_se', scSE(base_channels * (2 ** i)))
             else:
                 setattr(self, f'encode{i}',
-                        block(base_channels * (2 ** (i-1)), (base_channels * (2 ** i)), kernel_sizes_conv[i]))
+                        block(base_channels * (2 ** (i-1)), (base_channels * (2 ** i)), kernel_sizes_conv))
                 if se: setattr(self, f'encode_se{i}', scSE(base_channels * (2 ** i)))
                 setattr(self, f'p_decode{i}',
-                        block(base_channels * (2 ** i), (base_channels * (2 ** (i))), kernel_sizes_conv[i]))
+                        block(base_channels * (2 ** i), (base_channels * (2 ** (i))), kernel_sizes_conv))
                 if se: setattr(self, f'p_decode_se{i}', scSE(base_channels * (2 ** i)))
                 setattr(self, f'c_decode{i}',
-                        block(base_channels * (2 ** i), (base_channels * (2 ** (i))), kernel_sizes_conv[i]))
+                        block(base_channels * (2 ** i), (base_channels * (2 ** (i))), kernel_sizes_conv))
                 if se: setattr(self, f'c_decode_se{i}', scSE(base_channels * (2 ** i)))
                 setattr(self, f'p_up{i}',
                         nn.ConvTranspose3d((base_channels * (2 ** (i+1))), (base_channels * (2 ** i)),
@@ -86,29 +93,30 @@ class UNet(nn.Module):
                 setattr(self, f'c_up{i}',
                         nn.ConvTranspose3d((base_channels * (2 ** (i+1))), (base_channels * (2 ** i)),
                                            kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
+                if unsupervised:
+                    setattr(self, f'u_decode{i}',
+                            block(base_channels * (2 ** i), (base_channels * (2 ** i)), kernel_sizes_conv))
+                    if se: setattr(self, f'u_decode_se{i}', scSE(base_channels * (2 ** i)))
+                    setattr(self, f'u_up{i}',
+                            nn.ConvTranspose3d((base_channels * (2 ** (i + 1))), (base_channels * (2 ** i)),
+                                               kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
 
+        logit_label_mean = torch.log(label_mean / (1 - label_mean)) * 0.5
+        logit_contour_mean = torch.log(contour_mean / (1 - contour_mean)) * 0.5
         self.p_out = nn.Sequential(nn.Conv3d(base_channels, 1, kernel_size=1),
                                    nn.Sigmoid())
         self.c_out = nn.Sequential(nn.Conv3d(base_channels, 1, kernel_size=1),
                                    nn.Sigmoid())
+        with torch.no_grad():
+            self.p_out[0].bias.fill_(logit_label_mean)
+            self.c_out[0].bias.fill_(logit_contour_mean)
+        if unsupervised:
+            self.u_out = nn.Sequential(nn.Conv3d(base_channels, 1, kernel_size=1),
+                                       nn.Sigmoid())
 
-    def forward(self, input):
-        encode_features = []
-        x = input
-
-        for i in range(self.depth - 1):
-            x = getattr(self, f"encode{i}")(x)
-            if self.se: x = getattr(self, f"encode_se{i}")(x)
-            encode_features.append(x)
-            x = self.max_pool_flat(x) if self.special_layers > 0 and i < self.special_layers else \
-                self.max_pool_shrink(x) if self.special_layers < 0 and i < -self.special_layers else \
-                self.max_pool(x)
-
-        bottleneck = getattr(self, "bottleneck")(x)
-        if self.se: bottleneck = getattr(self, f"bottleneck_se")(bottleneck)
-
+    def instance_decode(self, bottleneck, encode_features):
         for i in reversed(range(self.depth - 1)):
-            if i == self.depth-2:
+            if i == self.depth - 2:
                 p_x = getattr(self, f"p_up{i}")(bottleneck)
                 c_x = getattr(self, f"c_up{i}")(bottleneck)
             else:
@@ -124,3 +132,39 @@ class UNet(nn.Module):
         p_output, c_output = self.p_out(p_x), self.c_out(c_x)
 
         return p_output, c_output
+
+    def unsupervised_decode(self, bottleneck):
+        for i in reversed(range(self.depth - 1)):
+            if i == self.depth - 2:
+                u_x = getattr(self, f"u_up{i}")(bottleneck)
+            else:
+                u_x = getattr(self, f"u_up{i}")(u_x)
+            u_x = getattr(self, f"u_decode{i}")(u_x)
+            if self.se: u_x = getattr(self, f"u_decode_se{i}")(u_x)
+
+        u_output = self.u_out(u_x)
+        return u_output
+
+    def forward(self, input, type=(1,)):
+        encode_features = []
+        x = input
+
+        for i in range(self.depth - 1):
+            x = getattr(self, f"encode{i}")(x)
+            if self.se: x = getattr(self, f"encode_se{i}")(x)
+            encode_features.append(x)
+            x = self.max_pool_flat(x) if self.special_layers > 0 and i < self.special_layers else \
+                self.max_pool_shrink(x) if self.special_layers < 0 and i < -self.special_layers else \
+                self.max_pool(x)
+
+        bottleneck = getattr(self, "bottleneck")(x)
+        if self.se: bottleneck = getattr(self, f"bottleneck_se")(bottleneck)
+
+        if type[0] == 0:
+            return self.instance_decode(bottleneck, encode_features)
+        elif type[0] == 1:
+            return self.unsupervised_decode(bottleneck)
+        elif type[0] == 2:
+            return self.instance_decode(bottleneck, encode_features), self.unsupervised_decode(bottleneck)
+        else:
+            raise ValueError("Invalid data type. Should be either '0'(normal) or '1'(unsupervised).")

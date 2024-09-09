@@ -10,51 +10,65 @@ from Networks.Modules.EMNets_Components import TLU
 import time
 
 # The filename for the existing network to read.
-EXISTING_NETWORK_NAME = "placeholder.pth"
+EXISTING_NETWORK_NAME = "t4_4c_unsupervised.pth"
 
 # The architecture of the network
-NETWORK_ARCH = Iterations_New.Initial(base_channels=8)
+NETWORK_ARCH = Semantic_General.UNet(8, 4, 1, 'Basic', True, True)
 
 # The image file you are going to exam the network with.
-INPUT = 'MockDatasets/train/testimg_2.tif'
+INPUT = 'Datasets/mid_visualiser/Ts-4c_ref_patch.tif'
 
 
 class V_N_PLModule(pl.LightningModule):
 
-    def __init__(self, network_arch):
+    def __init__(self, network_arch, unsupervised=False):
         super(V_N_PLModule, self).__init__()
         self.model = network_arch
+        self.unsupervised = unsupervised
         self.activations = []
-        self.sigmoids = []
+        self.s_outs = []
+        self.u_outs = []
 
         # Register a hook for activations layers
         def activation_hook_fn(module, input, output):
             self.activations.append(output)
 
-        def sigmoid_hook_fn(module, input, output):
-            self.sigmoids.append(output)
+        def s_outs_hook_fn(module, input, output):
+            self.s_outs.append(output)
 
-        # Register the hook for all (P)ReLU layers in the model
-        for module in self.model.modules():
+        def u_outs_hook_fn(module, input, output):
+            self.u_outs.append(output)
+
+        # Register the hook for all relevant layers in the model
+        for name, module in self.model.named_modules():
             if isinstance(module, nn.ReLU):
                 module.register_forward_hook(activation_hook_fn)
             if isinstance(module, nn.PReLU):
                 module.register_forward_hook(activation_hook_fn)
             if isinstance(module, TLU):
                 module.register_forward_hook(activation_hook_fn)
-            if isinstance(module, nn.Sigmoid):
-                module.register_forward_hook(sigmoid_hook_fn)
             if isinstance(module, nn.GELU):
                 module.register_forward_hook(activation_hook_fn)
             if isinstance(module, nn.CELU):
                 module.register_forward_hook(activation_hook_fn)
+            if isinstance(module, nn.SiLU):
+                module.register_forward_hook(activation_hook_fn)
+            if name == "u_out.1":
+                module.register_forward_hook(u_outs_hook_fn)
+            if name == "s_out.1":
+                module.register_forward_hook(s_outs_hook_fn)
+            if name == "p_out.1":
+                module.register_forward_hook(s_outs_hook_fn)
 
     def forward(self, image):
-        return self.model(image)
+        if self.unsupervised:
+            return self.model(image, [2,])
+        else:
+            return self.model(image, [0,])
 
 
 if __name__ == "__main__":
-    model = V_N_PLModule(NETWORK_ARCH)
+    model = V_N_PLModule(NETWORK_ARCH, True)
     model.load_state_dict(torch.load(EXISTING_NETWORK_NAME))
     test_tensor = path_to_tensor(INPUT).unsqueeze(0).unsqueeze(0)  # Shape of (1, 1, 128, 256, 256)
     # Set the model to evaluation mode
@@ -73,7 +87,7 @@ if __name__ == "__main__":
 
     # Now, self.activations contains the intermediate activations from (P)ReLU layers
     for i, activation in enumerate(model.activations):
-        if i <= 60:
+        if i <= 50:
             pass
         else:
             plt.figure(figsize=(16,9))
@@ -102,24 +116,16 @@ if __name__ == "__main__":
 
     plt.figure()
     plt.suptitle(f'Sigmoid Layer')
-    sigmoid = model.sigmoids[-1][:, :, 0:1, :, :]
-    channels = torch.split(sigmoid, 1, dim=1)
-    num_channels = len(channels)
-
-    rows = math.floor(math.sqrt(num_channels))
-    cols = math.ceil(num_channels/rows)
-
-    for j, channel in enumerate(channels):
-        channel = channel.squeeze()
-        plt.subplot(rows, cols, j + 1)
-        plt.imshow(channel.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
-        plt.colorbar()
-        plt.axis('off')
+    sigmoid = model.s_outs[-1][:, :, 0:1, :, :].squeeze()
+    plt.imshow(sigmoid.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
+    plt.colorbar()
+    plt.axis('off')
     plt.show()
 
     plt.figure()
-    plt.suptitle(f'Output')
-    output = torch.where(sigmoid >= 0.5, 1, 0).to(torch.int16)
-    plt.imshow(output.squeeze().cpu().numpy(), cmap='gist_gray', interpolation='nearest')
+    plt.suptitle(f'Unsupervised Output Layer')
+    output = model.u_outs[-1][:, :, 0:1, :, :].squeeze()
+    plt.imshow(output.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
+    plt.colorbar()
     plt.axis('off')
     plt.show()

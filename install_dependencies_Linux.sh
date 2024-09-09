@@ -28,7 +28,7 @@ if ! echo "$gpu_info" | grep -q "NVIDIA";
 then
     if echo "$gpu_info" | grep -q "AMD" && [[ -z "${TORCH_COMMAND}" ]]
     then
-        export TORCH_COMMAND="pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm5.6"
+        export TORCH_COMMAND="pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.1"
     fi
 fi
 
