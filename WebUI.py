@@ -7,6 +7,7 @@ import gradio as gr
 import tkinter as tk
 import matplotlib.pyplot as plt
 import numpy as np
+from skimage.draw import ellipsoid_stats
 
 from Components import DataComponents
 from Components import Metrics
@@ -14,6 +15,7 @@ from tkinter import filedialog
 from Networks import *
 from Visualise_Network import V_N_PLModule
 from read_tensorboard import read_all_tensorboard_event_files, write_to_excel
+from torchvision.datasets.folder import has_file_allowed_extension, IMG_EXTENSIONS
 from command_executor import CommandExecutor
 
 document_symbol = '\U0001F4C4'
@@ -41,6 +43,17 @@ def open_file():
     return str(file_path)
 
 
+def count_num_image_files(dataset_path, exclude_labels=True):
+    count = 0
+    files = os.listdir(dataset_path)
+    for fname in sorted(files):
+        if has_file_allowed_extension(fname, IMG_EXTENSIONS):
+            count += 1
+            if exclude_labels and "Labels_" in fname:
+                count -= 1
+    return count
+
+
 def start_work_flow(inputs):
     workflow_box_n = " ".join(inputs[workflow_box])
     existing_model_path_n = f'"{inputs[existing_model_path]}"' if inputs[existing_model_path] else ""
@@ -48,11 +61,7 @@ def start_work_flow(inputs):
     val_dataset_mode_n = f'"{inputs[val_dataset_mode]}"'
     test_dataset_mode_n = f'"{inputs[test_dataset_mode]}"'
     augmentation_csv_path_n = f'"{inputs[augmentation_csv_path]}"'
-    cmd = (f"PYTORCH_TUNABLEOP_ENABLED=1 "
-           f"PYTORCH_TUNABLEOP_VERBOSE=1 "
-           f"PYTORCH_TUNABLEOP_FILENAME=tuneresult.csv "
-           f"TORCH_BLAS_PREFER_HIPBLASLT=0 "
-           f"PYTORCH_TUNABLEOP_HIPBLASLT_ENABLED=0 "
+    cmd = (
            f"python workflow.py "
            f"--workflow_box {workflow_box_n} --segmentation_mode {inputs[segmentation_mode]} "
            f"--train_dataset_path {inputs[train_dataset_path]} "
@@ -83,6 +92,8 @@ def start_work_flow(inputs):
         cmd += "--enable_tensorboard "
     if inputs[enable_unsupervised]:
         cmd += "--enable_unsupervised "
+    if inputs[memory_saving_mode]:
+        cmd += "--memory_saving_mode "
     if inputs[read_existing_model]:
         cmd += "--read_existing_model "
     if inputs[exclude_edge]:
@@ -239,7 +250,7 @@ available_architectures_semantic = ['HalfUNetBasic',
                                     'HalfUNetResidual',
                                     'HalfUNetResidualBottleneck',
                                     'UNetBasic',
-                                    'UNetResidual (Recommended)',
+                                    'UNetResidual_(Recommended)',
                                     'UNetResidualBottleneck',
                                     'SegNet',
                                     #'Tiniest'
@@ -264,7 +275,7 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised):
         "HalfUNetResidual": (Semantic_HalfUNets.HalfUNet, 'Residual'),
         "HalfUNetResidualBottleneck": (Semantic_HalfUNets.HalfUNet, 'ResidualBottleneck'),
         "UNetBasic": (Semantic_General.UNet, 'Basic'),
-        "UNetResidual (Recommended)": (Semantic_General.UNet, 'Residual'),
+        "UNetResidual_(Recommended)": (Semantic_General.UNet, 'Residual'),
         "UNetResidualBottleneck": (Semantic_General.UNet, 'ResidualBottleneck'),
         "SegNet": (Semantic_SegNets.Auto, 'Auto'),
         "InstanceBasic": (Instance_General.UNet, 'Basic'),
@@ -280,8 +291,12 @@ def get_stats_between_maps(predicted_path, groundtruth_path):
     ground_truth = DataComponents.path_to_tensor(groundtruth_path, label=True)
     predicted = DataComponents.path_to_tensor(predicted_path, label=True)
     ground_truth, predicted = torch.clamp(ground_truth, 0, 1), torch.clamp(predicted, 0, 1)
-    Loss_Fn = Metrics.BinaryMetrics(loss_mode='dice')
-    loss, intersection, union, tp, fn, tn, fp = Loss_Fn(predicted, ground_truth)
+    intersection = 2 * torch.sum(ground_truth * predicted) + 0.001
+    union = torch.sum(predicted) + torch.sum(ground_truth) + 0.001
+    tp = (predicted*ground_truth).sum()
+    fn = ((1-predicted)*ground_truth).sum()
+    tn = ((1-predicted)*(1-ground_truth)).sum()
+    fp = (predicted*(1-ground_truth)).sum()
     dice = intersection/union
     sensitivity = tp/(tp+fn)
     specificity = tn/(tn+fp)
@@ -328,22 +343,17 @@ if __name__ == "__main__":
                                      interactive=False, label="Field of view too big, unnecessary computation and memory use")
                     with gr.Accordion("Automatically computed hyperparameters", open=False):
                         with gr.Row():
-                            hw_size = gr.Number(48, label="Patch Height and Width (px)", interactive=False)
-                            model_depth = gr.Number(4, label="Model Depth", interactive=False)
-                            d_size = gr.Number(48, label="Patch Depth (px)", interactive=False)
-                            dk = gr.Number(0, label="floor(log2([Z to XY ratio]))", interactive=False)
+                            hw_size = gr.Number(48, label="Patch Height and Width (px)", interactive=False, precision=0)
+                            model_depth = gr.Number(4, label="Model Depth", interactive=False, precision=0)
+                            d_size = gr.Number(48, label="Patch Depth (px)", interactive=False, precision=0)
+                            dk = gr.Number(0, label="floor(log2([Z to XY ratio]))", interactive=False, precision=0)
                         
                         def change_dataset_info_mode(choice):
-                            if choice:
-                                options = (gr.Number(48, label="Patch Height and Width (px)", interactive=True, precision=0),
-                                           gr.Number(4, label="Model Depth", interactive=True, precision=0),
-                                           gr.Number(48, label="Patch Depth (px)", interactive=True, precision=0))
-                                return options
-                            else:
-                                options = (gr.Number(48, label="Patch Height and Width (px)", interactive=False),
-                                           gr.Number(4, label="Model Depth", interactive=False),
-                                           gr.Number(48, label="Patch Depth (px)", interactive=False))
-                                return options
+                            interactive = True if choice else False
+                            options = (gr.Number(48, label="Patch Height and Width (px)", interactive=interactive, precision=0),
+                                       gr.Number(4, label="Model Depth", interactive=interactive, precision=0),
+                                       gr.Number(48, label="Patch Depth (px)", interactive=interactive, precision=0))
+                            return options
                         manual_mode.change(fn=change_dataset_info_mode, inputs=segmentation_mode, outputs=[hw_size, model_depth, d_size])
 
                         def calculate_dhw_size(question1, z_to_xy_ratio):
@@ -359,32 +369,28 @@ if __name__ == "__main__":
                         question1.change(calculate_dhw_size, inputs=[question1, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
                         z_to_xy_ratio.change(calculate_dhw_size, inputs=[question1, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
                     with gr.Row():
-
                         enable_unsupervised = gr.Checkbox(scale=0, label="Enable Unsupervised Learning",
                                                           info="Allow using unlabelled data to enhance performance.")
                         unsupervised_train_dataset_path = gr.Textbox('Datasets/unsupervised_train', scale=2,
                                                                      label="Unsupervised Train Dataset Path", visible=False)
-                        question2_u = gr.Number(1,
-                                                label="How many image files are in your unsupervised training set?",
-                                                precision=0, minimum=1, visible=False)
-                        unsupervised_train_multiplier = gr.Number(64, label="Unsupervised Train Multiplier (Repeats)",
-                                                                  interactive=False, visible=False)
                         folder_button = gr.Button(document_symbol, scale=0)
                         folder_button.click(open_folder, outputs=unsupervised_train_dataset_path)
+                        num_u_files = gr.Number(None,
+                                                label="Number of image files in the unsupervised training set.",
+                                                interactive=False, visible=False)
+                        unsupervised_train_multiplier = gr.Number(None, label="Unsupervised Train Multiplier (Repeats)",
+                                                                  interactive=False, visible=False)
 
                         def show_hide_unsupervised_folder(enable_unsupervised):
                             visible = True if enable_unsupervised else False
                             options = (gr.Textbox('Datasets/unsupervised_train', scale=2,
                                        label="Unsupervised Train Dataset Path", visible=visible),
-                                       gr.Number(1,
-                                       info="How many image files are in your unsupervised training set?",
-                                       precision=0, minimum=1, visible=visible),
-                                       gr.Number(64, label="Unsupervised Train Multiplier (Repeats)",
+                                       gr.Number(None, label="Unsupervised Train Multiplier (Repeats)",
                                                  interactive=False, visible=visible))
                             return options
                         enable_unsupervised.change(show_hide_unsupervised_folder,
                                                    inputs=enable_unsupervised,
-                                                   outputs=[unsupervised_train_dataset_path, question2_u, unsupervised_train_multiplier])
+                                                   outputs=[unsupervised_train_dataset_path, unsupervised_train_multiplier])
 
                 with gr.Tab("Validation Settings"):
                     with gr.Row():
@@ -404,11 +410,9 @@ if __name__ == "__main__":
                                 total = depth_multiplier * height_multiplier * width_multiplier
                                 counter += total
                             return counter
-                        val_num_patch = gr.Number(999,
-                                                  label="Number of patchs in validation set",
+                        val_num_patch = gr.Number(None,
+                                                  label="Number of patches in validation set, automatically computed",
                                                   precision=0, minimum=0, interactive=False)
-                        hw_size.change(calculate_val_num_patch, inputs=[val_dataset_path, hw_size, d_size], outputs=val_num_patch)
-                        d_size.change(calculate_val_num_patch, inputs=[val_dataset_path, hw_size, d_size], outputs=val_num_patch)
                     val_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
                                                 label="Dataset Mode")
                 with gr.Tab("Training Settings"):
@@ -417,23 +421,19 @@ if __name__ == "__main__":
                         folder_button = gr.Button(document_symbol, scale=0)
                         folder_button.click(open_folder, outputs=train_dataset_path)
                     with gr.Row():
-                        batch_size = gr.Number(1, label="Batch Size", precision=0, minimum=1,
+                        batch_size = gr.Number(1, label="Batch Size", precision=0, minimum=1, interactive=False,
                                                info="Number of training patch to feed into the network at once.")
                         pairing_samples = gr.Checkbox(label="Pairing positive and negative samples",
                                                       info="Tick this if your training data contain large area without any foreground object.")
-                        question2 = gr.Number(1,
-                                              label="Question 2",
-                                              info="How many image files are in your training set?",
-                                              precision=0, minimum=1)
-
                         def change_batch_size(choice):
-                            if choice:
-                                return gr.Number(2, label="Batch Size", precision=0, minimum=1,
-                                                 info="Number of training patch to feed into the network at once.")
-                            else:
-                                return gr.Number(1, label="Batch Size", precision=0, minimum=1,
-                                                 info="Number of training patch to feed into the network at once.")
+                            if choice: bs = 2
+                            else: bs = 1
+                            return gr.Number(bs, label="Batch Size", precision=0, minimum=1, interactive=False,
+                                             info="Number of training patch to feed into the network at once.")
                         pairing_samples.change(change_batch_size, inputs=pairing_samples, outputs=batch_size)
+                        num_t_files = gr.Number(None,
+                                                label="Number of image files in the training set.",
+                                                interactive=False, visible=False)
                     with gr.Accordion("When do you need to pair positive and negative sample", open=False):
                         with gr.Row():
                             gr.Image("GitHub_Res/require bs 2.png", image_mode="L", show_download_button=False,
@@ -441,25 +441,10 @@ if __name__ == "__main__":
                             gr.Image("GitHub_Res/do not require bs 2.png", image_mode="L", show_download_button=False,
                                      interactive=False, label="Does not Require the box to be ticked")
                     with gr.Row():
-                        train_multiplier = gr.Number(64, label="Train Multiplier (Repeats)",
+                        train_multiplier = gr.Number(None, label="Train Multiplier (Repeats)",
                                                      info="Automatically calculated to aim for 10% steps in validation, 90% in train. "
-                                                          "If validation workflow isn't enabled, will default to 64.",
-                                                     interactive=False, maximum=64)
-
-                        def calculate_train_multiplier(val_num_patch, question2, workflow_box, double=False):
-                            d = 2 if double else 1
-                            if 'Validation' in workflow_box:
-                                # Aiming to have 10% steps in val, 90% steps in train
-                                return min(round(9*(val_num_patch/question2)), 64)*d
-                            else:
-                                return math.ceil(64/question2)*d
-                        place_holder_true = gr.Checkbox(True, "There is a bug if you see this", visible=False)
-                        val_num_patch.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
-                        question2.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
-                        workflow_box.change(calculate_train_multiplier, inputs=[val_num_patch, question2, workflow_box], outputs=train_multiplier)
-                        val_num_patch.change(calculate_train_multiplier, inputs=[val_num_patch, question2_u, workflow_box, place_holder_true], outputs=unsupervised_train_multiplier)
-                        question2_u.change(calculate_train_multiplier, inputs=[val_num_patch, question2_u, workflow_box, place_holder_true], outputs=unsupervised_train_multiplier)
-                        workflow_box.change(calculate_train_multiplier, inputs=[val_num_patch, question2_u, workflow_box, place_holder_true], outputs=unsupervised_train_multiplier)
+                                                          "Limit to a max of 64.",
+                                                     interactive=False)
                     with gr.Row():
                         train_length = gr.Radio(["Short", "Medium", "Long", "Custom"], value="Short",
                                                 label="Training Duration")
@@ -475,22 +460,12 @@ if __name__ == "__main__":
                             if train_length == "Custom":
                                 return gr.Number(1, label="Training Steps", interactive=True, precision=0, minimum=1)
                         train_length.change(length_to_steps, inputs=train_length, outputs=train_steps)
-                        num_epochs = gr.Number(40, label="Maximum Number of Epochs", precision=0, minimum=1)
+                        num_epochs = gr.Number(None, label="Maximum Number of Epochs, automatically calculated", precision=0, minimum=1)
 
-                        def steps_to_epochs(train_steps, train_multiplier, question2, enable_unsupervised):
+                        def steps_to_epochs(train_steps, train_multiplier, num_t_files, enable_unsupervised):
                             another_multiplier = 2 if enable_unsupervised else 1
-                            return math.ceil(train_steps/(train_multiplier*question2*another_multiplier))
-                        train_multiplier.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2, enable_unsupervised], outputs=num_epochs)
-                        train_steps.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2, enable_unsupervised], outputs=num_epochs)
-                        question2.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2, enable_unsupervised], outputs=num_epochs)
-                        enable_unsupervised.change(steps_to_epochs, inputs=[train_steps, train_multiplier, question2, enable_unsupervised], outputs=num_epochs)
+                            return math.ceil(train_steps/(train_multiplier*num_t_files*another_multiplier))
 
-                        question2_u.change(calculate_train_multiplier,
-                                           inputs=[val_num_patch, question2_u, workflow_box],
-                                           outputs=unsupervised_train_multiplier)
-                        enable_unsupervised.change(calculate_train_multiplier,
-                                                   inputs=[val_num_patch, question2_u, workflow_box],
-                                                   outputs=unsupervised_train_multiplier)
                     with gr.Row():
                         enable_tensorboard = gr.Checkbox(scale=0, label="Enable TensorBoard Logging")
                         tensorboard_path = gr.Textbox('lightning_logs', scale=2, label="Path to the folder which the log will be save to")
@@ -630,11 +605,42 @@ if __name__ == "__main__":
                                                          "this settings will try to reclaim those lost pixels, but can take quite some time.")
                         #TTA_z = gr.Checkbox(label="Enable Test-Time Augmentation for z dimension", info="Depth Wise flip the image")
             with gr.Row():
+                calculate_repeats = gr.Button(value="Calculate Training Repeats and Epoches!")
+                def calculate_train_multiplier(val_num_patch, num_t_files, workflow_box):
+                    if 'Validation' in workflow_box:
+                        # Aiming to have 10% steps in val, 90% steps in train
+                        return min(round(9 * (val_num_patch / num_t_files)), 64)
+                    else:
+                        return math.ceil(64 / num_t_files)
+
+                def get_auto_parameters(workflow_box, train_dataset_path, val_dataset_path, hw_size, d_size, batch_size, train_steps, enable_unsupervised, unsupervised_train_dataset_path):
+                    if 'Validation' in workflow_box:
+                        val_num_patch = calculate_val_num_patch(val_dataset_path, hw_size, d_size)
+                    else:
+                        val_num_patch = None
+                    num_t_files = count_num_image_files(train_dataset_path)
+                    if enable_unsupervised:
+                        num_u_files = count_num_image_files(unsupervised_train_dataset_path)
+                    else:
+                        num_u_files = 1
+                    train_multiplier = calculate_train_multiplier(val_num_patch, num_t_files, workflow_box)
+                    unsupervised_train_multiplier = (train_multiplier // num_u_files) * batch_size
+                    num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files, enable_unsupervised)
+                    return val_num_patch, num_t_files, num_u_files, train_multiplier, unsupervised_train_multiplier, num_epochs
+                calculate_repeats.click(get_auto_parameters,
+                                        [workflow_box, train_dataset_path, val_dataset_path, hw_size, d_size, batch_size, train_steps, enable_unsupervised, unsupervised_train_dataset_path],
+                                        [val_num_patch, num_t_files, num_u_files, train_multiplier, unsupervised_train_multiplier, num_epochs])
+            with gr.Row():
                 read_existing_model = gr.Checkbox(label="Read Existing Model Weight File", scale=0,
                                                   info="Else it will create a new model with randomised weight.")
                 existing_model_path = gr.Textbox('example_name.ckpt', label="Path to Existing Model Weight File, it should be a file with 'ckpt' at the end.")
                 file_button = gr.Button(document_symbol, scale=0)
                 file_button.click(open_file, outputs=existing_model_path)
+            with gr.Row():
+                memory_saving_mode = gr.Checkbox(label="Memory Saving Mode",
+                                                 info="If you are experiencing running out of system memory (Not CUDA memory!) during training, "
+                                                      "This option could help by using only 1 thread to do data loading. "
+                                                      "Can significantly slow down training if your system have low single core performance.")
             with gr.Row():
                 model_architecture = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
                 segmentation_mode.change(update_available_arch, inputs=segmentation_mode, outputs=model_architecture)
@@ -644,14 +650,14 @@ if __name__ == "__main__":
                                                      info="Finds the largest channel count that doesn't result in a "
                                                           "Out-of-memory error through trials and errors. A slow process. "
                                                           "Certain graphic cards can be very slow with the largest "
-                                                          "channel count (<0.1it/s), a lower channel count is recommended.")
+                                                          "channel count (<0.1it/s), a lower channel count is recommended.", visible=False) # Very buggy currently...
                 def show_hide_model_channel_count(find_max_channel_count):
                     if find_max_channel_count:
                         return gr.Number(8, visible=False)
                     else:
                         return gr.Number(8, label="Base Channel Count", precision=0, minimum=1, visible=True,
                                          info="Often means the number of output channels in the first encoder block. Determines the size of the network.")
-                find_max_channel_count.change(show_hide_model_channel_count, inputs=find_max_channel_count, outputs=model_channel_count)
+                #find_max_channel_count.change(show_hide_model_channel_count, inputs=find_max_channel_count, outputs=model_channel_count)
                 model_se = gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
                                        info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.")
                 def show_hide_model_tab(read_existing_model):
@@ -666,13 +672,13 @@ if __name__ == "__main__":
                                            info="Finds the largest channel count that doesn't result in a "
                                                 "Out-of-memory error through trials and errors. A slow process. "
                                                 "Certain graphic cards can be very slow with the largest "
-                                                "channel count (<0.1it/s), a lower channel count is recommended.", visible=visible),
+                                                "channel count (<0.1it/s), a lower channel count is recommended.", visible=False),
                                gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
                                info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.", visible=visible))
                     return options
 
                 read_existing_model.change(show_hide_model_tab, inputs=read_existing_model, outputs=[model_architecture, model_channel_count, find_max_channel_count, model_se])
-            precision = gr.Dropdown(["32", "16-mixed", "bf16"], value="32", label="Precision",
+            precision = gr.Dropdown(["32", "16-mixed", "bf16-mixed"], value="32", label="Precision",
                                     info="fp16 precision could significantly cut the VRAM usage. However if you are not using an Nvidia GPU, it could signficantly slow down the training as well."
                                          "bf16 is recommended over fp16 if you are using a newer GPU (30 series or newer).")
             with gr.Accordion("Visualising training progress on the fly"):
@@ -684,8 +690,7 @@ if __name__ == "__main__":
                     file_button = gr.Button(document_symbol, scale=0)
                     file_button.click(open_file, outputs=mid_visualization_input)
             with gr.Row():
-                save_model_name = gr.Textbox('example_name.pth', label="File Name for Model Saved, including extension",
-                                             info="Recommend extension: .pth")
+                save_model_name = gr.Textbox('example_name', label="File Name for Model Saved, do not include extension")
                 save_model_path = gr.Textbox("'enter where you want the model to be saved'", scale=2, label="Path to Save the Model Weight",
                                              info="For path with space in it, put '' on both sides")
                 folder_button = gr.Button(document_symbol, scale=0)
@@ -727,6 +732,7 @@ if __name__ == "__main__":
                 model_architecture,
                 model_channel_count,
                 find_max_channel_count,
+                memory_saving_mode,
                 model_depth,
                 z_to_xy_ratio,
                 model_se,

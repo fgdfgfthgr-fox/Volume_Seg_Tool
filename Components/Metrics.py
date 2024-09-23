@@ -226,8 +226,8 @@ class BinaryMetrics(nn.Module):
                 tp, fn, tn, fp = self.calculate_other_metrices(inputs, targets)
             return F_loss.mean(), intersection, union, tp, fn, tn, fp
         elif self.loss_mode == "bce_no_dice":
-            # Scale down to 10% since it's used for unsupervised learning and is often much higher than supervised
-            BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none') * 0.1
+            # Scale down to 20% since it's used for unsupervised learning and is often much higher than supervised
+            BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none') * 0.2
             return BCE_loss.mean(), torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan
         elif self.loss_mode == "dice":
             inputs = torch.sigmoid(inputs)

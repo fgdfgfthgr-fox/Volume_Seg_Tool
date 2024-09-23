@@ -15,10 +15,9 @@ from Networks import *
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks import LearningRateFinder
+from lightning.pytorch.tuner import Tuner
 
 
-num_cpu_cores = os.cpu_count()
-desired_num_workers = max(num_cpu_cores-1, 1)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -59,7 +58,7 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised, label
         return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, unsupervised, label_mean)
     elif arch == "UNetBasic":
         return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, unsupervised, label_mean)
-    elif arch == "UNetResidual":
+    elif arch == "UNetResidual_(Recommended)":
         return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, unsupervised, label_mean)
     elif arch == "UNetResidualBottleneck":
         return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, unsupervised, label_mean)
@@ -84,7 +83,14 @@ def start_work_flow(args):
     else:
         instance_mode = True
     # Placeholder means
-    label_mean, contour_mean = torch.tensor(0.5)
+    label_mean = torch.tensor(0.5)
+    contour_mean = torch.tensor(0.5)
+    if not args.memory_saving_mode:
+        desired_num_workers = min(os.cpu_count()//2, 6)
+        persistent_workers = True
+    else:
+        desired_num_workers = 0
+        persistent_workers = False
     if 'Training' in args.workflow_box:
         if args.pairing_samples:
             train_dataset_pos = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
@@ -126,14 +132,13 @@ def start_work_flow(args):
                 collate_fn = None
         train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
                                   collate_fn=collate_fn, sampler=sampler,
-                                  #num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
-                                  num_workers=0, pin_memory=True)
+                                  num_workers=desired_num_workers, persistent_workers=persistent_workers, pin_memory=True)
         del train_dataset
         if 'Validation' in args.workflow_box:
             val_dataset = DataComponents.ValDataset(args.val_dataset_path, args.hw_size, args.d_size, instance_mode,
                                                     args.augmentation_csv_path, args.contour_map_width)
             val_loader = DataLoader(dataset=val_dataset, batch_size=args.batch_size,
-                                    #num_workers=desired_num_workers, persistent_workers=True, pin_memory=True)
+                                    #num_workers=12, persistent_workers=True, pin_memory=True)
                                     num_workers=0, pin_memory=True)
             del val_dataset
         else:
@@ -149,12 +154,12 @@ def start_work_flow(args):
             try:
                 arch = pick_arch(args.model_architecture, channel_count, args.model_depth, args.z_to_xy_ratio,
                                  args.model_se, args.enable_unsupervised, label_mean, contour_mean)
-                model = PLModule(arch, True, False, None, instance_mode,
+                model = PLModule(arch, False, False, None, instance_mode,
                                              False, False, False, False)
-                fake_trainer = pl.Trainer(max_epochs=1, accelerator="gpu", enable_checkpointing=False, precision=args.precision, logger=None,
-                                          enable_progress_bar=False, num_sanity_val_steps=1, enable_model_summary=False)
+                fake_trainer = pl.Trainer(max_epochs=5, accelerator="gpu", enable_checkpointing=False, precision=args.precision, logger=None,
+                                          enable_progress_bar=False, num_sanity_val_steps=1, enable_model_summary=False, limit_train_batches=5)
                 fake_trainer.fit(model,
-                                 val_dataloaders=val_loader,
+                                 #val_dataloaders=val_loader,
                                  train_dataloaders=train_loader)
                 torch.cuda.empty_cache()
                 return True
@@ -178,9 +183,9 @@ def start_work_flow(args):
                 else:
                     print(f"Channel count of {mid_channel} won't fit in memory")
                     max_channel = mid_channel - 1
-            print(f"Channel count search result: {mid_channel}")
-            return min_channel
-        current_channel_count = find_max_channel(1, 128)
+            print(f"Channel count search result: {max_channel}")
+            return max_channel
+        current_channel_count = find_max_channel(1, 64)
         arch = pick_arch(args.model_architecture, current_channel_count, args.model_depth, args.z_to_xy_ratio,
                          args.model_se, args.enable_unsupervised, label_mean, contour_mean)
     else:
@@ -217,14 +222,19 @@ def start_work_flow(args):
         model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
                                                         filename=f"{args.save_model_name}",
                                                         mode="max", monitor=to_monitor,
-                                                        save_weights_only=True)
+                                                        save_weights_only=True, enable_version_counter=False)
         trainer = pl.Trainer(max_epochs=args.num_epochs, log_every_n_steps=1, logger=logger,
-                             accelerator="gpu", enable_checkpointing=False,
+                             accelerator="gpu", enable_checkpointing=True,
                              precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
-                             callbacks=[lr_monitor, model_checkpoint, FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')],
+                             callbacks=[lr_monitor, model_checkpoint],
                              #profiler='simple',
                              )
         start_time = time.time()
+        tuner = Tuner(trainer)
+        lr_finder = tuner.lr_find(model, train_loader, min_lr=1e-6, max_lr=0.1)
+        new_lr = lr_finder.suggestion()
+        print(f'Learning Rate set to: {new_lr}.')
+        model.hparams.lr = new_lr
         trainer.fit(model,
                     val_dataloaders=val_loader,
                     train_dataloaders=train_loader)
@@ -279,6 +289,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_epochs", type=int, default=40, help="Number of Epochs")
     parser.add_argument("--enable_tensorboard", action="store_true", help="Enable TensorBoard Logging")
     parser.add_argument("--enable_unsupervised", action="store_true", help="Enable Unsupervised Pretraining")
+    parser.add_argument("--memory_saving_mode", action="store_true", help="Try save some system memory by dataloading on just single core")
     parser.add_argument("--unsupervised_train_dataset_path", type=str, default="Datasets/unsupervised_train", help="Unsupervised Dataset Path")
     parser.add_argument("--unsupervised_train_multiplier", type=int, default=64, help="Unsupervised Train Multiplier (Repeats)")
     parser.add_argument("--tensorboard_path", type=str, default="lightning_logs",
@@ -288,7 +299,7 @@ if __name__ == "__main__":
     parser.add_argument("--predict_dataset_path", type=str, default="Datasets/predict", help="Predict Dataset Path")
     parser.add_argument("--read_existing_model", action="store_true", help="Read Existing Model Weight File")
     parser.add_argument("--existing_model_path", type=str, default="", help="Path to Existing Model Weight File")
-    parser.add_argument("--precision", choices=["32", "16-mixed", "bf16"], default="32", help="Precision")
+    parser.add_argument("--precision", choices=["32", "16-mixed", "bf16-mixed"], default="32", help="Precision")
     parser.add_argument("--save_model_name", type=str, default="example_name.pth",
                         help="File Name for Model Saved, including extension")
     parser.add_argument("--save_model_path", type=str, default=".", help="Path to Save the Model Weight")

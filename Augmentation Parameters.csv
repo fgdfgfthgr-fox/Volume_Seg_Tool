@@ -1,9 +1,9 @@
 Augmentation,Probability,Low Bound,High Bound,Value
 Rotate xy,0.25,0,360,
-Rotate xz,0.0,0,360,
-Rotate yz,0.0,0,360,
+Rotate xz,0,0,360,
+Rotate yz,0,0,360,
 Rescaling,0.25,0.75,1.25,
-Edge Replicate Pad,0.0,0,0,0.075
+Edge Replicate Pad,0,0,0,0.075
 Vertical Flip,0.5,,,
 Horizontal Flip,0.5,,,
 Depth Flip,0.5,,,
@@ -15,5 +15,5 @@ Adjust Contrast,0.75,0.5,1.5,
 Adjust Gamma,0.75,0.5,1.5,
 Adjust Brightness,0.75,0.75,1.4,
 Salt And Pepper,0.25,0.005,0.01,
-Label Blur,1,1,1,5
+Label Blur,0,1,1,5
 Contour Blur,0,0.5,0.5,7

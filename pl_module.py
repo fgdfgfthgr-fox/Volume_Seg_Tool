@@ -43,7 +43,7 @@ class PLModule(pl.LightningModule):
         self.use_sparse_label_test = use_sparse_label_test
         self.logging = logging
         self.train_metrics, self.val_metrics, self.test_metrics = [], [], []
-        self.initial_lr = 0.0005
+        self.lr = 1 # Not the actual LR since it's automatically computed, but the ratio of lr as ReduceLROnPlateau works.
         self.p_loss_fn = Metrics.BinaryMetrics("focal")
         self.u_p_loss_fn = Metrics.BinaryMetrics("bce_no_dice")
         self.c_loss_fn = Metrics.BinaryMetrics("dice+bce")
@@ -113,7 +113,7 @@ class PLModule(pl.LightningModule):
 
     def configure_optimizers(self):
         #fused = True if device == "cuda" else False
-        optimizer = AdEMAMix(self.parameters(), lr=self.initial_lr, weight_decay=0.0001)
+        optimizer = AdEMAMix(self.parameters(), lr=self.lr, weight_decay=0.0001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                                factor=0.5, patience=15,
                                                                threshold_mode='rel',
@@ -202,31 +202,30 @@ class PLModule(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    torch.set_num_threads(12)
-    train_label_mean = DataComponents.path_to_tensor("Datasets/train/Labels_0.tif", label=True).to(torch.float32).mean()
-    model = PLModule(Semantic_General.UNet(base_channels=16, z_to_xy_ratio=1, depth=4, type='Residual', se=True, unsupervised=False, label_mean=train_label_mean),
+    train_label_mean = DataComponents.path_to_tensor("Datasets/train/Labels_image.tif", label=True).to(torch.float32).mean()
+    model = PLModule(Semantic_General.UNet(base_channels=16, z_to_xy_ratio=1, depth=4, type='Residual', se=True, unsupervised=True, label_mean=train_label_mean),
                      True, False, 'Datasets/mid_visualiser/Ts-4c_ref_patch.tif', False,
                      False, False, False, True)
-    val_dataset = DataComponents.ValDataset("Datasets/val", 128, 128, False, "Augmentation Parameters.csv")
-    predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 112, 8, 8, True)
+    val_dataset = DataComponents.ValDataset("Datasets/val", 256, 32, False, "Augmentation Parameters.csv")
+    predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 232, 24, 12, 4, True)
     train_dataset_pos = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters.csv",
                                                     64,
-                                                    128, 128, False, False, 0,
+                                                    256, 32, False, False, 0,
                                                     0,
                                                     0, 'positive')
     train_dataset_neg = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters.csv",
                                                     64,
-                                                    128, 128, False, False, 0,
+                                                    256, 32, False, False, 0,
                                                     0,
                                                     0, 'negative')
-    #unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
-    #                                                                "Augmentation Parameters.csv",
-    #                                                                64,
-    #                                                                128, 128)
-    #train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg, unsupervised_train_dataset)
-    train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg)
-    #sampler = DataComponents.CollectedSampler(train_dataset, 2, unsupervised_train_dataset)
-    sampler = DataComponents.CollectedSampler(train_dataset, 2)
+    unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
+                                                                    "Augmentation Parameters.csv",
+                                                                    128,
+                                                                    256, 32)
+    train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg, unsupervised_train_dataset)
+    #train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg)
+    sampler = DataComponents.CollectedSampler(train_dataset, 2, unsupervised_train_dataset)
+    #sampler = DataComponents.CollectedSampler(train_dataset, 2)
     collate_fn = DataComponents.custom_collate
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=2,
                                                collate_fn=collate_fn, sampler=sampler,
@@ -235,9 +234,9 @@ if __name__ == "__main__":
     predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
     val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
     #model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="{epoch}-{Val_epoch_dice:.2f}", mode="max", save_weights_only=True)
-    model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="16-true", mode="max",
+    model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="test", mode="max",
                                                     monitor="Val_epoch_dice", save_weights_only=True, enable_version_counter=False)
-    trainer = pl.Trainer(max_epochs=5, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name='16-true'),
+    trainer = pl.Trainer(max_epochs=5, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name='test'),
                          accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.3,
                          precision="32", enable_progress_bar=True, num_sanity_val_steps=0, callbacks=[model_checkpoint,
                                                                                                       FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
@@ -246,13 +245,13 @@ if __name__ == "__main__":
     trainer.fit(model,
                 val_dataloaders=val_loader,
                 train_dataloaders=train_loader)
-    model = PLModule.load_from_checkpoint('16-true.ckpt')
+    model = PLModule.load_from_checkpoint('test.ckpt')
     predictions = trainer.predict(model, predict_loader)
     #del predict_loader, predict_dataset
     DataComponents.predictions_to_final_img(predictions, meta_info, direc='Datasets/result',
-                                            hw_size=112, depth_size=112,
-                                            hw_overlap=8,
-                                            depth_overlap=8,
+                                            hw_size=232, depth_size=24,
+                                            hw_overlap=12,
+                                            depth_overlap=4,
                                             TTA_hw=True)
     #end_time = time.time()
     #elapsed_time = end_time - start_time

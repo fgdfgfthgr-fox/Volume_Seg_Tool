@@ -627,38 +627,6 @@ class CollectedDataset(torch.utils.data.Dataset):
                 return self.dataset_negative[idx]
 
 
-class CollectedDatasetAlt(torch.utils.data.Dataset):
-    """
-    For handling unsupervised learning without dataset pairing.
-    """
-    def __init__(self, dataset, dataset_unsupervised):
-        self.dataset = dataset
-        self.dataset_unsupervised = dataset_unsupervised
-        self.rectified_unsupervised_size = math.floor(len(self.dataset_unsupervised)/2) * 2
-
-    def __len__(self):
-        return self.rectified_unsupervised_size + len(self.dataset)
-
-    def __getitem__(self, idx):
-        if idx < self.rectified_unsupervised_size:
-            return self.dataset_unsupervised[idx]
-        else:
-            idx -= self.rectified_unsupervised_size
-            return self.dataset[idx]
-
-
-class CollectedSamplerAlt(torch.utils.data.Sampler):
-    def __init__(self, data_source):
-        super(CollectedSamplerAlt, self).__init__(data_source)
-        self.data_source = data_source
-
-    def __iter__(self):
-        return iter(np.random.permutation(len(self.data_source)))
-
-    def __len__(self):
-        return len(self.data_source)
-
-
 class CollectedSampler(torch.utils.data.Sampler):
     def __init__(self, data_source, batch_size, dataset_unsupervised=None):
         super(CollectedSampler, self).__init__(data_source)
@@ -710,6 +678,38 @@ class CollectedSampler(torch.utils.data.Sampler):
                 return iter(shuffled_array)
         else:
             raise ValueError("Invalid batch size. We only support 1 or 2.")
+
+    def __len__(self):
+        return len(self.data_source)
+
+
+class CollectedDatasetAlt(torch.utils.data.Dataset):
+    """
+    For handling unsupervised learning without dataset pairing.
+    """
+    def __init__(self, dataset, dataset_unsupervised):
+        self.dataset = dataset
+        self.dataset_unsupervised = dataset_unsupervised
+        self.rectified_unsupervised_size = math.floor(len(self.dataset_unsupervised)/2) * 2
+
+    def __len__(self):
+        return self.rectified_unsupervised_size + len(self.dataset)
+
+    def __getitem__(self, idx):
+        if idx < self.rectified_unsupervised_size:
+            return self.dataset_unsupervised[idx]
+        else:
+            idx -= self.rectified_unsupervised_size
+            return self.dataset[idx]
+
+
+class CollectedSamplerAlt(torch.utils.data.Sampler):
+    def __init__(self, data_source):
+        super(CollectedSamplerAlt, self).__init__(data_source)
+        self.data_source = data_source
+
+    def __iter__(self):
+        return iter(np.random.permutation(len(self.data_source)))
 
     def __len__(self):
         return len(self.data_source)
