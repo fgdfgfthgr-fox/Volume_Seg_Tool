@@ -1,81 +1,66 @@
+import torch
 import torch.nn as nn
-import math
 
 
 class ResBasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3)):
+    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), num_conv=2):
         super().__init__()
         padding = tuple((k - 1) // 2 for k in kernel_size)
-        self.mapping = nn.Conv3d(in_channels, out_channels, kernel_size=1) if in_channels != out_channels else None
-        self.conv_1 = nn.Conv3d(in_channels, out_channels, kernel_size=kernel_size,
-                                padding=padding, padding_mode='zeros', bias=False)
-        self.conv_2 = nn.Conv3d(out_channels, out_channels, kernel_size=kernel_size,
-                                padding=padding, padding_mode='zeros')
-        self.bn = nn.InstanceNorm3d(out_channels, track_running_stats=False)
+        layers = []
+        for i in range(num_conv):
+            layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
+                                    kernel_size=kernel_size, padding=padding, bias=False))
+            layers.append(nn.InstanceNorm3d(out_channels, track_running_stats=True))
+            if i != num_conv - 1:
+                layers.append(nn.SiLU(inplace=True))
+        self.operations = nn.Sequential(*layers)
         self.silu = nn.SiLU(inplace=True)
 
     def forward(self, x):
-        x_id = x
-        x = self.silu(self.bn(self.conv_1(x)))
-        x = self.conv_2(x)
-        x_id = self.mapping(x_id) if self.mapping else x_id
-        x = self.silu(self.bn(x + x_id))
-        return x
+        return self.silu(x + self.operations(x))
 
 
 class ResBottleneckBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), neck=4):
+    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), neck=4, num_conv=1):
         super().__init__()
         padding = tuple((k - 1) // 2 for k in kernel_size)
-        self.mapping = nn.Conv3d(in_channels, out_channels, kernel_size=1) if in_channels != out_channels else None
-        middle_channel = math.ceil(out_channels/neck)
-        self.conv_1 = nn.Conv3d(in_channels, middle_channel, kernel_size=1, bias=False)
-        self.conv_2 = nn.Conv3d(middle_channel, middle_channel, kernel_size=kernel_size,
-                                padding=padding, padding_mode='zeros', bias=False)
-        self.conv_3 = nn.Conv3d(middle_channel, out_channels, kernel_size=1)
-        self.bn1 = nn.InstanceNorm3d(middle_channel, track_running_stats=False)
-        self.bn2 = nn.InstanceNorm3d(out_channels, track_running_stats=False)
+        middle_channel = out_channels//neck
+        self.conv_down = nn.Conv3d(in_channels, middle_channel, kernel_size=1, bias=False)
+
+        layers = []
+        for i in range(num_conv):
+            layers.append(
+                nn.Conv3d(middle_channel, middle_channel, kernel_size=kernel_size, padding=padding, bias=False))
+            layers.append(nn.InstanceNorm3d(middle_channel, track_running_stats=True))
+            if i != num_conv - 1:
+                layers.append(nn.SiLU(inplace=True))
+        self.convs = nn.Sequential(*layers)
+
+        self.conv_up = nn.Conv3d(middle_channel, out_channels, kernel_size=1)
+        self.bn = nn.InstanceNorm3d(middle_channel, track_running_stats=True)
         self.silu = nn.SiLU(inplace=True)
 
     def forward(self, x):
-        x_id = x
-        x = self.silu(self.bn1(self.conv_1(x)))
-        x = self.silu(self.bn1(self.conv_2(x)))
-        x = self.conv_3(x)
-        x_id = self.mapping(x_id) if self.mapping else x_id
-        x = self.silu(self.bn2(x + x_id))
-        return x
+        b_x = self.silu(self.bn(self.conv_down(x)))
+        b_x = self.convs(b_x)
+        b_x = self.conv_up(b_x)
+        return x + b_x
 
 
 class BasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3, 3, 3)):
+    def __init__(self, in_channels, out_channels, kernel_size=(3, 3, 3), num_conv=2):
         super().__init__()
         padding = tuple((k - 1) // 2 for k in kernel_size)
-        self.conv_1 = nn.Conv3d(in_channels, out_channels,
-                                kernel_size=kernel_size, padding=padding, padding_mode='zeros', bias=False)
-        self.conv_2 = nn.Conv3d(out_channels, out_channels,
-                                kernel_size=kernel_size, padding=padding, padding_mode='zeros', bias=False)
-        self.bn = nn.InstanceNorm3d(out_channels, track_running_stats=False)
-        self.silu = nn.SiLU(inplace=True)
+        layers = []
+        for i in range(num_conv):
+            layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
+                                    kernel_size=kernel_size, padding=padding, bias=False))
+            layers.append(nn.InstanceNorm3d(out_channels, track_running_stats=True))
+            layers.append(nn.SiLU(inplace=True))
+        self.operations = nn.Sequential(*layers)
 
     def forward(self, x):
-        x = self.silu(self.bn(self.conv_1(x)))
-        x = self.silu(self.bn(self.conv_2(x)))
-        return x
-
-
-class BasicBlockSingle(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3, 3, 3)):
-        super().__init__()
-        padding = tuple((k - 1) // 2 for k in kernel_size)
-        self.conv_1 = nn.Conv3d(in_channels, out_channels,
-                                kernel_size=kernel_size, padding=padding, padding_mode='zeros', bias=False)
-        self.bn = nn.InstanceNorm3d(out_channels, track_running_stats=False)
-        self.silu = nn.SiLU(inplace=True)
-
-    def forward(self, x):
-        x = self.silu(self.bn(self.conv_1(x)))
-        return x
+        return self.operations(x)
 
 
 class cSE(nn.Module):
@@ -85,13 +70,12 @@ class cSE(nn.Module):
         self.fc1 = nn.Linear(in_channels, in_channels // 2)
         self.silu = nn.SiLU(inplace=True)
         self.fc2 = nn.Linear(in_channels // 2, in_channels)
-        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         batch_size, num_channels, D, H, W = x.size()
         x_avg = self.avg_pool(x).view(batch_size, num_channels)
         x_avg = self.silu(self.fc1(x_avg))
-        x_avg = self.sigmoid(self.fc2(x_avg))
+        x_avg = torch.sigmoid(self.fc2(x_avg))
         return x * (x_avg.view(batch_size, num_channels, 1, 1, 1))
 
 
@@ -99,14 +83,14 @@ class sSE(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
         self.fc = nn.Conv3d(in_channels, 1, kernel_size=1)
-        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x_spatial = self.fc(x)
-        x_spatial = self.sigmoid(x_spatial)
+        x_spatial = torch.sigmoid(self.fc(x))
         return x * x_spatial
 
 
+# Concurrent Spatial and Channel Squeeze & Excitation
+# https://arxiv.org/abs/1803.02579
 class scSE(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
@@ -139,12 +123,13 @@ class FeatureFusionModule(nn.Module):
                             nn.Sequential(nn.Upsample(scale_factor=difference, mode='trilinear', align_corners=True),
                                           nn.Conv3d(feature_channels[i], feature_channels[j], 1, bias=False),
                                           nn.InstanceNorm3d(feature_channels[j])))
+            setattr(self, f'bn_{i}', nn.InstanceNorm3d(feature_channels[i]))
         self.activation = nn.SiLU(inplace=True)
 
     def forward(self, feature_maps):
         # feature_maps is a list of features from different resolution branches
         num_features = len(feature_maps)
-        fused_features = [feature_maps[i] for i in range(num_features)]  # Start with the original feature maps
+        fused_features = [f.clone() for f in feature_maps]  # Start with the original feature maps
 
         for i in range(num_features):
             for j in range(num_features):
@@ -156,6 +141,8 @@ class FeatureFusionModule(nn.Module):
                     # Downsample i to match the resolution of j
                     downsample = getattr(self, f'{i}_to_{j}_down')
                     fused_features[j] = fused_features[j] + downsample(feature_maps[i])
+        for i in range(num_features):
+            fused_features[i] = getattr(self, f'bn_{i}')(fused_features[i])
 
         # Apply activation after fusion
         fused_features = [self.activation(f) for f in fused_features]

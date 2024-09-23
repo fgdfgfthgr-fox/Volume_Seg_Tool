@@ -84,6 +84,7 @@ def adj_brightness(tensor, brightness):
 #    The sigma is automatically calculated in the way same as torchvision.transforms.functional.gaussian_blur(),
 #    which is sigma = 0.3 * ((kernel_size - 1) * 0.5 - 1) + 0.8\n
 
+
 def gaussian_blur_3d(tensor, kernel_size=3, sigma=0.8):
     """
     Apply 3D Gaussian blur to a 3D tensor.
@@ -116,54 +117,76 @@ def gaussian_blur_3d(tensor, kernel_size=3, sigma=0.8):
     return blurred_output
 
 
-def random_rotation_3d(tensors, angle_range, plane='xy', interpolations=('bilinear', 'nearest'), expand_output=False, fill_values=(0, 0)):
+def rotate_4d_tensor(tensor, planes=['xy', 'xz', 'yz'], angles=[0., 0., 0.],
+                     interpolation='bilinear'):
     """
-    Randomly rotates 3D PyTorch tensors with the same rotation.
+    Rotate a 4D PyTorch tensor on the xy, xz, and yz planes simultaneously.
 
     Args:
-        tensors (list): Variable number of input tensors of shape (C, Depth, Height, Width).
-        angle_range (tuple): Range of angles for rotation in degrees (min_angle, max_angle).
-        plane (str): The plane which the random rotation will take place: 'xy'|'xz'|'yz'. Default: 'xy'.
-        interpolations (tuple): Interpolation methods for each tensor ('nearest' or 'bilinear', default: ('bilinear', 'nearest')).
-        expand_output (bool): If True, expand the output to fit the entire rotated image; otherwise, crop it (default: False).
-        fill_values (tuple): Pixel fill values for areas outside the rotated image for each input tensor (default: (0, 0)).
+        tensor (torch.Tensor): Tensor of shape (Channel, Depth, Height, Width).
+        planes (List of str): the planes to rotate ('xy', 'xz', 'yz').
+        angles (List of floats): the rotation angles for each plane.
+        interpolation (str): the interpolation method ('nearest' or 'bilinear').
 
     Returns:
-        List of rotated tensors with the same rotation.
+        torch.Tensor
     """
-    # Check if the number of tensors, interpolations, and fill_values are the same
-    #if not (len(tensors) == len(interpolations) == len(fill_values)):
-    #    raise ValueError("The lengths of tensors, interpolations, and fill_values must match.")
 
-    # Generate random angles within the specified range
-    angle = random.uniform(*angle_range)
+    _, D, H, W = tensor.shape
 
-    def apply_rotation(tensor, interp, fill, plane):
-        if plane == 'xz':
-            tensor = tensor.transpose(1, 3)
+    # Create a base affine matrix for each rotation plane
+    affine_matrices = []
+
+    for plane, ang in zip(planes, angles):
+        theta = math.radians(ang)
+
+        if plane == 'xy':
+            # Rotation in the xy plane
+            rotation_matrix = torch.tensor([
+                [math.cos(theta), -math.sin(theta), 0],
+                [math.sin(theta),  math.cos(theta), 0],
+                [0, 0, 1]
+            ])
+        elif plane == 'xz':
+            # Rotation in the xz plane
+            rotation_matrix = torch.tensor([
+                [math.cos(theta), 0, -math.sin(theta)],
+                [0, 1, 0],
+                [math.sin(theta), 0,  math.cos(theta)]
+            ])
         elif plane == 'yz':
-            tensor = tensor.transpose(2, 3)
+            # Rotation in the yz plane
+            rotation_matrix = torch.tensor([
+                [1, 0, 0],
+                [0, math.cos(theta), -math.sin(theta)],
+                [0, math.sin(theta),  math.cos(theta)]
+            ])
+        affine_matrices.append(rotation_matrix)
 
-        rotated = T_F.rotate(
-            tensor, angle,
-            interpolation=transforms.InterpolationMode.BILINEAR if interp == 'bilinear' else transforms.InterpolationMode.NEAREST,
-            expand=expand_output, fill=[fill]
-        )
+    # Combine all rotation matrices
+    total_rotation = affine_matrices[0]
+    for matrix in affine_matrices[1:]:
+        total_rotation = total_rotation @ matrix
 
-        if plane in ['xz', 'yz']:
-            rotated = rotated.transpose(1, 3) if plane == 'xz' else rotated.transpose(2, 3)
+    # Create the affine matrix in 4D (4x4 matrix)
+    affine_4x4 = torch.eye(4)
+    affine_4x4[:3, :3] = total_rotation
 
-        return rotated
-    if isinstance(tensors, list):
-        return [apply_rotation(t, interp, fill, plane) for t, interp, fill in zip(tensors, interpolations, fill_values)]
-    else:
-        return apply_rotation(tensors, interpolations, fill_values, plane)
+    # Create the affine grid
+    grid = F.affine_grid(affine_4x4[:3, :].unsqueeze(0), tensor.unsqueeze(0).shape, align_corners=False)
+
+    # Apply the grid sample using the specified interpolation
+    rotated = F.grid_sample(tensor.to(torch.float32).unsqueeze(0), grid, mode=interpolation, padding_mode='zeros', align_corners=False)
+
+    return rotated.squeeze(0)
 
 
-def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True, ensure_bothground=True,
-                     max_attempts=50, minimal_foreground=0.01, minimal_background=0.02):
+def custom_rand_crop_rotate(tensors, depth, height, width,
+                            angle_range=((0, 360), (0, 360), (0, 360)),
+                            planes=['xy'], interpolations=('bilinear', 'nearest'),# fill_values=(0, 0),
+                            ensure_bothground=True, max_attempts=50, minimal_foreground=0.01, minimal_background=0.02):
     """
-    Randomly crop a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least 1% foreground object.\n
+    Randomly crop then rotate a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least 1% foreground object.\n
     Whether it contains foreground object is determined by the second tensor in the list,
     pixels with values larger or equal to 1 are considered foreground.\n
     If no foreground object is found after max_attempts attempts, it will output a warning message and crop a random volume.
@@ -173,7 +196,9 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True, ensure_b
         depth (int): Desired depth of the cropped tensors.
         height (int): Desired height of the cropped tensors.
         width (int): Desired width of the cropped tensors.
-        pad_if_needed (bool): If True, pad the input tensors when they're smaller than any desired dimension (default: True).
+        angle_range (list of tuple): Range of rotation angles (min_angle, max_angle) for each plane in degrees.
+        planes (list or None): The plane(s) on which the random rotation will be applied: ['xy', 'xz', 'yz']. Default: ['xy']
+        interpolations (tuple): Interpolation methods for each tensor ('nearest' or 'bilinear').
         ensure_bothground (bool): If True, will try to ensure that the output contains both foreground and background objects according to the settings below. (default: True)
         max_attempts (int): Maximum number of attempts to find a crop with at least 1% foreground object (default: 50).
         minimal_foreground (float): Proportion of desired minimal foreground pixels (default: 0.01).
@@ -189,55 +214,68 @@ def custom_rand_crop(tensors, depth, height, width, pad_if_needed=True, ensure_b
 
         return (total_pixels * minimal_foreground) <= pixels_greater_than_zero <= (total_pixels * (1 - minimal_background))
 
-
     # Suppose all the tensors in the list are the exact same shape.
     c, d, h, w = tensors[0].shape
 
     if d < depth or h < height or w < width:
-        if not pad_if_needed:
-            raise ValueError("Input tensor dimensions are smaller than the crop size.")
-        else:
-            # Calculate the amount of padding needed for each dimension
-            d_pad = max(0, depth - d)
-            h_pad = max(0, height - h)
-            w_pad = max(0, width - w)
-            padded_list = []
-            for tensor in tensors:
-                # Pad the tensor if needed
-                tensor = F.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
-                padded_list.append(tensor)
+        # Calculate the amount of padding needed for each dimension
+        d_pad = max(0, depth - d)
+        h_pad = max(0, height - h)
+        w_pad = max(0, width - w)
+        padded_tensors = []
+        for tensor in tensors:
+            # Pad the tensor if needed
+            tensor = F.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
+            padded_tensors.append(tensor)
     else:
-        padded_list = tensors
+        padded_tensors = tensors
 
-    def cropping(padded_list):
+    def rotation(tensors):
+        if len(planes) == 0:
+            return tensors
+        angles = [random.uniform(*angle) for angle in angle_range]
+        rotated_tensors = []
+        for idx, tensor in enumerate(tensors):
+            rotated_tensor = tensor.clone()
+            rotated_tensor = rotate_4d_tensor(rotated_tensor, planes, angles, interpolations[idx])
+            rotated_tensors.append(rotated_tensor)
+
+        return rotated_tensors
+
+    def cropping(tensors):
         # Randomly select crop starting locations within the valid range
-        d_offset = random.randint(0, padded_list[0].shape[1] - depth)
-        h_offset = random.randint(0, padded_list[0].shape[2] - height)
-        w_offset = random.randint(0, padded_list[0].shape[3] - width)
+        d_offset = random.randint(0, tensors[0].shape[1] - depth)
+        h_offset = random.randint(0, tensors[0].shape[2] - height)
+        w_offset = random.randint(0, tensors[0].shape[3] - width)
         cropped_tensors = []
-        for tensor in padded_list:
+        for tensor in tensors:
             cropped_tensor = tensor[:, d_offset:d_offset + depth,
                                     h_offset:h_offset + height,
                                     w_offset:w_offset + width]
             cropped_tensors.append(cropped_tensor)
         return cropped_tensors
+
     if ensure_bothground:
         attempts = 0
         while attempts < max_attempts:
             attempts += 1
-
-            cropped_tensors = cropping(padded_list)
+            cropped_tensors = cropping(padded_tensors)
+            if len(planes) != 0:
+                rotated_tensors = rotation(cropped_tensors)
+            else:
+                rotated_tensors = cropped_tensors
 
             # Check if the label tensor (2nd tensor) contains a foreground object
-            if contains_bothground(cropped_tensors[1]):
-                return cropped_tensors
+            if contains_bothground(rotated_tensors[1]):
+                return rotated_tensors
         # If no suitable crop is found after max_attempts, raise a warning
         print(f"Random clop failed: No suitable crop with desired threshold found after {max_attempts} attempts. Will "
               f"return a random crop.")
-        return cropping(padded_list)
+        return cropping(padded_tensors)
     else:
-        return cropping(padded_list)
-
+        cropped_tensors = cropping(padded_tensors)
+        rotated_tensors = rotation(cropped_tensors)
+        return cropping(rotated_tensors)
 
 
 def random_gradient(tensor, range=(0.5, 1.5), gamma=True):
@@ -498,3 +536,27 @@ def nearest_interpolate(input_tensor, target_size):
                                  width_indices[None, None, :]]
 
     return output_tensor
+
+
+def edge_replicate_pad(input_tensors, padding_percentile=0.1):
+    """
+    Crops the input tensors to a smaller version, and replicate pad the lost region.
+
+    Args:
+        input_tensors (tuple of torch.Tensor): Input tensors with a shape of (C, D, H, W)
+        padding_percentile (float): The maximal percentile of cropping. Default is 0.1
+
+    Return:
+        output_tensor (list of torch.Tensor): Output tensors.
+    """
+    crop_percentile = random.uniform(0, padding_percentile)
+    C, D, H, W = input_tensors[0].shape
+    D_crop = max(int(D * crop_percentile), 1)
+    H_crop = max(int(H * crop_percentile), 1)
+    W_crop = max(int(W * crop_percentile), 1)
+    output_tensors = []
+    for input_tensor in input_tensors:
+        output_tensor = input_tensor[:, D_crop:-D_crop, H_crop:-H_crop, W_crop:-W_crop]
+        output_tensor = T_F.pad(output_tensor, [W_crop, W_crop, H_crop, H_crop, D_crop, D_crop], padding_mode='replicate')
+        output_tensors.append(output_tensor)
+    return output_tensors

@@ -14,11 +14,25 @@ from Components import DataComponents
 from Networks import *
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
+from lightning.pytorch.callbacks import LearningRateFinder
 
 
 num_cpu_cores = os.cpu_count()
 desired_num_workers = max(num_cpu_cores-1, 1)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class FineTuneLearningRateFinder(LearningRateFinder):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def on_fit_start(self, *args, **kwargs):
+        return
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        if trainer.current_epoch == 0:
+            self.lr_find(trainer, pl_module)
+
 
 
 def create_logger(args):
@@ -168,22 +182,22 @@ def start_work_flow(args):
             return min_channel
         current_channel_count = find_max_channel(1, 128)
         arch = pick_arch(args.model_architecture, current_channel_count, args.model_depth, args.z_to_xy_ratio,
-                         args.model_se, args.enable_unsupervised, label_mean)
+                         args.model_se, args.enable_unsupervised, label_mean, contour_mean)
     else:
         arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio,
-                         args.model_se, args.enable_unsupervised, label_mean)
+                         args.model_se, args.enable_unsupervised, label_mean, contour_mean)
     if ('Sparsely Labelled' in args.train_dataset_mode) or (args.exclude_edge):
         sparse_train = True
     else:
         sparse_train = False
-    model = PLModule(arch,
-                     'Validation' in args.workflow_box, args.enable_mid_visualization,
-                     args.mid_visualization_input, instance_mode,
-                     sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
-                     'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
-    del arch
     if args.read_existing_model:
-        model.load_state_dict(torch.load(args.existing_model_path))
+        model = PLModule.load_from_checkpoint(args.existing_model_path)
+    else:
+        model = PLModule(arch,
+                         'Validation' in args.workflow_box, args.enable_mid_visualization,
+                         args.mid_visualization_input, instance_mode,
+                         sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
+                         'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
     if args.enable_tensorboard:
         tensorboard_thread = threading.Thread(target=start_tensorboard, args=[args])
         tensorboard_thread.daemon = True
@@ -196,10 +210,18 @@ def start_work_flow(args):
             lr_monitor = LearningRateMonitor(logging_interval='epoch')
         else:
             lr_monitor = None
+        if 'Validation' in args.workflow_box:
+            to_monitor = 'Val_epoch_dice'
+        else:
+            to_monitor = 'Train_epoch_dice'
+        model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
+                                                        filename=f"{args.save_model_name}",
+                                                        mode="max", monitor=to_monitor,
+                                                        save_weights_only=True)
         trainer = pl.Trainer(max_epochs=args.num_epochs, log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=False,
                              precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
-                             callbacks=[lr_monitor],
+                             callbacks=[lr_monitor, model_checkpoint, FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')],
                              #profiler='simple',
                              )
         start_time = time.time()
@@ -213,9 +235,6 @@ def start_work_flow(args):
         trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=logger, accelerator="gpu")
         trainer.test(model, dataloaders=test_loader)
         del test_loader
-    if args.save_model:
-        full = os.path.join(args.save_model_path, args.save_model_name)
-        torch.save(model.state_dict(), full)
     if 'Predict' in args.workflow_box:
         trainer = pl.Trainer(precision="16-mixed", enable_progress_bar=True, logger=False, accelerator="gpu")
         predict_dataset = DataComponents.Predict_Dataset(args.predict_dataset_path,
@@ -270,7 +289,6 @@ if __name__ == "__main__":
     parser.add_argument("--read_existing_model", action="store_true", help="Read Existing Model Weight File")
     parser.add_argument("--existing_model_path", type=str, default="", help="Path to Existing Model Weight File")
     parser.add_argument("--precision", choices=["32", "16-mixed", "bf16"], default="32", help="Precision")
-    parser.add_argument("--save_model", action="store_true", help="Save Trained Model Weight")
     parser.add_argument("--save_model_name", type=str, default="example_name.pth",
                         help="File Name for Model Saved, including extension")
     parser.add_argument("--save_model_path", type=str, default=".", help="Path to Save the Model Weight")

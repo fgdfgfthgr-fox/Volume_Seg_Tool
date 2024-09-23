@@ -39,7 +39,9 @@ class GhostDoubleConv(nn.Module):
         return x
 
 
-def merge(x1, x2):
-    size = (x1.shape[2], x1.shape[3], x1.shape[4])
-    x2 = torch.nn.functional.interpolate(x2, size=size, mode='trilinear', align_corners=True)
-    return torch.add(x1, x2)
+def merge(encoder_features):
+    _, _, D, H, W = encoder_features[0].shape
+    new_features = []
+    for feature in encoder_features[1:]:
+        new_features.append(torch.nn.functional.interpolate(feature, size=(D, H, W), mode='trilinear', align_corners=True))
+    return torch.sum(torch.stack(new_features), dim=0)

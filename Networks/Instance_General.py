@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import math
-from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, BasicBlockSingle, scSE
+from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, scSE
 
 # Ronneberger, O., Fischer, P., & Brox, T. (2015). U-net: Convolutional networks for biomedical image segmentation.
 # In Medical Image Computing and Computer-Assisted Intervention–MICCAI 2015: 18th International Conference, Munich,
@@ -48,82 +48,70 @@ class UNet(nn.Module):
         kernel_sizes_transpose = [(1, 2, 2) if self.special_layers > 0 and i < self.special_layers else
                                   (2, 1, 1) if self.special_layers < 0 and i < -self.special_layers else
                                   (2, 2, 2) for i in range(depth)]
+        kernel_sizes_down = [(1, 4, 4) if self.special_layers > 0 and i < self.special_layers else
+                             (4, 1, 1) if self.special_layers < 0 and i < -self.special_layers else
+                             (4, 4, 4) for i in range(depth)]
+        padding_down = [(0, 1, 1) if self.special_layers > 0 and i < self.special_layers else
+                        (1, 0, 0) if self.special_layers < 0 and i < -self.special_layers else
+                        (1, 1, 1) for i in range(depth)]
         block = {'Basic': BasicBlock, 'Residual': ResBasicBlock, 'ResidualBottleneck': ResBottleneckBlock}[type]
-        block_top = {'Basic': BasicBlockSingle, 'Residual': ResBasicBlock, 'ResidualBottleneck': ResBottleneckBlock}[type]
         for i in range(depth):
             if i == 0:
-                setattr(self, f'encode0',
-                        block_top(1, base_channels, kernel_sizes_conv))
-                if se: setattr(self, f'encode_se0', scSE(base_channels))
-                setattr(self, f'p_decode0',
-                        block_top(base_channels, base_channels, kernel_sizes_conv))
-                if se: setattr(self, f'p_decode_se0', scSE(base_channels))
-                setattr(self, f'c_decode0',
-                        block_top(base_channels, base_channels, kernel_sizes_conv))
-                if se: setattr(self, f'c_decode_se0', scSE(base_channels))
-                setattr(self, f'p_up0',
-                        nn.ConvTranspose3d(2*base_channels, base_channels, kernel_sizes_transpose[0], kernel_sizes_transpose[0]))
-                setattr(self, f'c_up0',
-                        nn.ConvTranspose3d(2*base_channels, base_channels, kernel_sizes_transpose[0], kernel_sizes_transpose[0]))
-                if unsupervised:
-                    setattr(self, f'u_decode0',
-                            block_top(base_channels, base_channels, kernel_sizes_conv))
-                    if se: setattr(self, f'u_decode_se0', scSE(base_channels))
-                    setattr(self, f'u_up0',
-                            nn.ConvTranspose3d(2 * base_channels, base_channels, kernel_sizes_transpose[0],
-                                               kernel_sizes_transpose[0]))
-            elif i == depth-1:
-                setattr(self, 'bottleneck',
-                        block(base_channels * (2 ** (i-1)), (base_channels * (2 ** i)),
-                              kernel_sizes_conv))
-                if se: setattr(self, f'bottleneck_se', scSE(base_channels * (2 ** i)))
+                num_conv = 1
             else:
-                setattr(self, f'encode{i}',
-                        block(base_channels * (2 ** (i-1)), (base_channels * (2 ** i)), kernel_sizes_conv))
-                if se: setattr(self, f'encode_se{i}', scSE(base_channels * (2 ** i)))
-                setattr(self, f'p_decode{i}',
-                        block(base_channels * (2 ** i), (base_channels * (2 ** (i))), kernel_sizes_conv))
-                if se: setattr(self, f'p_decode_se{i}', scSE(base_channels * (2 ** i)))
-                setattr(self, f'c_decode{i}',
-                        block(base_channels * (2 ** i), (base_channels * (2 ** (i))), kernel_sizes_conv))
-                if se: setattr(self, f'c_decode_se{i}', scSE(base_channels * (2 ** i)))
-                setattr(self, f'p_up{i}',
-                        nn.ConvTranspose3d((base_channels * (2 ** (i+1))), (base_channels * (2 ** i)),
-                                           kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
-                setattr(self, f'c_up{i}',
-                        nn.ConvTranspose3d((base_channels * (2 ** (i+1))), (base_channels * (2 ** i)),
-                                           kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
+                num_conv = 2
+            multiplier_h = base_channels * (2 ** i)
+            multiplier_v = base_channels * (2 ** (i+1))
+            if i != depth - 1:
+                if i == 0:
+                    if type == 'ResidualBottleneck':
+                        multiplier_h = multiplier_h // 2
+                        setattr(self, f'encode{i}', BasicBlock(1, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
+                    else:
+                        setattr(self, f'encode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
+                if se: setattr(self, f'encode_se{i}', scSE(multiplier_h))
+                setattr(self, f'down{i}',
+                        nn.Conv3d(multiplier_h, multiplier_v, kernel_sizes_down[i], 2, padding_down[i]))
+                setattr(self, f'p_deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
+                setattr(self, f'c_deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
+                setattr(self, f'p_decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
+                setattr(self, f'c_decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
+                if se: setattr(self, f'p_decode_se{i}', scSE(multiplier_h))
+                if se: setattr(self, f'c_decode_se{i}', scSE(multiplier_h))
                 if unsupervised:
+                    setattr(self, f'u_deconv{i}',
+                            nn.ConvTranspose3d(multiplier_v, multiplier_h, kernel_sizes_transpose[i],
+                                               kernel_sizes_transpose[i]))
                     setattr(self, f'u_decode{i}',
-                            block(base_channels * (2 ** i), (base_channels * (2 ** i)), kernel_sizes_conv))
-                    if se: setattr(self, f'u_decode_se{i}', scSE(base_channels * (2 ** i)))
-                    setattr(self, f'u_up{i}',
-                            nn.ConvTranspose3d((base_channels * (2 ** (i + 1))), (base_channels * (2 ** i)),
-                                               kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
+                            block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
+                    if se: setattr(self, f'u_decode_se{i}', scSE(multiplier_h))
+
+            else:
+                setattr(self, 'bottleneck', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
+                if se: setattr(self, f'bottleneck_se', scSE(multiplier_h))
 
         logit_label_mean = torch.log(label_mean / (1 - label_mean)) * 0.5
         logit_contour_mean = torch.log(contour_mean / (1 - contour_mean)) * 0.5
-        self.p_out = nn.Sequential(nn.Conv3d(base_channels, 1, kernel_size=1),
-                                   nn.Sigmoid())
-        self.c_out = nn.Sequential(nn.Conv3d(base_channels, 1, kernel_size=1),
-                                   nn.Sigmoid())
+        if type == 'ResidualBottleneck': base_channels = base_channels // 2
+        self.p_out = nn.Conv3d(base_channels, 1, kernel_size=1)
+        self.c_out = nn.Conv3d(base_channels, 1, kernel_size=1)
         with torch.no_grad():
-            self.p_out[0].bias.fill_(logit_label_mean)
-            self.c_out[0].bias.fill_(logit_contour_mean)
+            self.p_out.bias.fill_(logit_label_mean)
+            self.c_out.bias.fill_(logit_contour_mean)
         if unsupervised:
-            self.u_out = nn.Sequential(nn.Conv3d(base_channels, 1, kernel_size=1),
-                                       nn.Sigmoid())
+            self.u_out = nn.Conv3d(base_channels, 1, kernel_size=1)
 
     def instance_decode(self, bottleneck, encode_features):
         for i in reversed(range(self.depth - 1)):
             if i == self.depth - 2:
-                p_x = getattr(self, f"p_up{i}")(bottleneck)
-                c_x = getattr(self, f"c_up{i}")(bottleneck)
+                p_x = getattr(self, f"p_deconv{i}")(bottleneck)
+                c_x = getattr(self, f"c_deconv{i}")(bottleneck)
             else:
-                p_x = getattr(self, f"p_up{i}")(p_x)
-                c_x = getattr(self, f"c_up{i}")(c_x)
-            p_x = p_x + encode_features[i]
-            c_x = c_x + encode_features[i]
+                p_x = getattr(self, f"p_deconv{i}")(p_x)
+                c_x = getattr(self, f"c_deconv{i}")(c_x)
+            if i > 0:  # Skip connection for all but the first layer
+                p_x = p_x + encode_features[i]
+                c_x = c_x + encode_features[i]
             p_x = getattr(self, f"p_decode{i}")(p_x)
             if self.se: p_x = getattr(self, f"p_decode_se{i}")(p_x)
             c_x = getattr(self, f"c_decode{i}")(c_x)
@@ -136,9 +124,9 @@ class UNet(nn.Module):
     def unsupervised_decode(self, bottleneck):
         for i in reversed(range(self.depth - 1)):
             if i == self.depth - 2:
-                u_x = getattr(self, f"u_up{i}")(bottleneck)
+                u_x = getattr(self, f"u_deconv{i}")(bottleneck)
             else:
-                u_x = getattr(self, f"u_up{i}")(u_x)
+                u_x = getattr(self, f"u_deconv{i}")(u_x)
             u_x = getattr(self, f"u_decode{i}")(u_x)
             if self.se: u_x = getattr(self, f"u_decode_se{i}")(u_x)
 
@@ -152,10 +140,9 @@ class UNet(nn.Module):
         for i in range(self.depth - 1):
             x = getattr(self, f"encode{i}")(x)
             if self.se: x = getattr(self, f"encode_se{i}")(x)
-            encode_features.append(x)
-            x = self.max_pool_flat(x) if self.special_layers > 0 and i < self.special_layers else \
-                self.max_pool_shrink(x) if self.special_layers < 0 and i < -self.special_layers else \
-                self.max_pool(x)
+            if i != 0:
+                encode_features.append(x)
+            x = getattr(self, f"down{i}")(x)
 
         bottleneck = getattr(self, "bottleneck")(x)
         if self.se: bottleneck = getattr(self, f"bottleneck_se")(bottleneck)
@@ -165,6 +152,6 @@ class UNet(nn.Module):
         elif type[0] == 1:
             return self.unsupervised_decode(bottleneck)
         elif type[0] == 2:
-            return self.instance_decode(bottleneck, encode_features), self.unsupervised_decode(bottleneck)
+            return [self.instance_decode(bottleneck, encode_features), self.unsupervised_decode(bottleneck)]
         else:
-            raise ValueError("Invalid data type. Should be either '0'(normal) or '1'(unsupervised).")
+            raise ValueError("Invalid data type. Should be either '0'(normal) or '1'(unsupervised) or '2'(both).")

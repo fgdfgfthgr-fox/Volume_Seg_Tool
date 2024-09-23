@@ -1,12 +1,29 @@
 import lightning.pytorch as pl
 import torch
 import torch.utils.data
+
 from Components import DataComponents
 from Components import Metrics
+from Components.AdEMAMix import AdEMAMix
 import torch.utils.tensorboard
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
+from lightning.pytorch.utilities import grad_norm
 import time
 from Networks import *
+from lightning.pytorch.callbacks import LearningRateFinder
+
+
+class FineTuneLearningRateFinder(LearningRateFinder):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def on_fit_start(self, *args, **kwargs):
+        return
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        if trainer.current_epoch == 0:
+            self.lr_find(trainer, pl_module)
+
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -15,6 +32,7 @@ class PLModule(pl.LightningModule):
     def __init__(self, network_arch, enable_val, enable_mid_visual, mid_visual_image, instance_mode,
                  use_sparse_label_train, use_sparse_label_val, use_sparse_label_test, logging):
         super().__init__()
+        self.save_hyperparameters()
         self.model = network_arch
         self.enable_val = enable_val
         self.enable_mid_visual = enable_mid_visual
@@ -41,64 +59,65 @@ class PLModule(pl.LightningModule):
             # 0 = normal, 1 = unsupervised
             if type[0] == 0:
                 p_output, c_output = self.forward(img, type)
-                p_loss, p_dice, p_sensitivity, p_specificity = self.p_loss_fn(p_output, lab, False)
-                c_loss, c_dice, c_sensitivity, c_specificity = self.c_loss_fn(c_output, contour, False)
+                p_loss, p_i, p_u, p_tp, p_fn, p_tn, p_fp = self.p_loss_fn(p_output, lab, False)
+                c_loss, c_i, c_u, c_tp, c_fn, c_tn, c_fp = self.c_loss_fn(c_output, contour, False)
                 loss = p_loss + c_loss
-                return loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity
+                return loss, p_i, c_i, p_u, c_u, p_tp, c_tp, p_fn, c_fn, p_tn, c_tn, p_fp, c_fp
             else:
                 output = self.forward(img, type)
-                loss, _, _, _ = self.u_p_loss_fn(output, img, False)
-                return loss, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan,
+                loss, _, _, _, _, _, _ = self.u_p_loss_fn(output, img, False)
+                return loss, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan
         else:
             img, lab, type = batch
             output = self.forward(img, type)
             if type[0] == 0:
-                loss, dice, sensitivity, specificity = self.p_loss_fn(output, lab, sparse)
+                # loss, intersection, union, tp, fn, tn, fp
+                return self.p_loss_fn(output, lab, sparse)
             else:
-                loss, dice, sensitivity, specificity = self.u_p_loss_fn(output, lab, False)
-            return loss, dice, sensitivity, specificity
+                # loss, nan, nan, nan, nan, nan, nan
+                return self.u_p_loss_fn(output, lab, False)
 
     def training_step(self, batch, batch_idx):
         if self.instance_mode:
-            loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity = self._step(batch, self.use_sparse_label_train)
-            self.log("train_loss", loss, logger=False)
-            self.train_metrics.append([loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity])
+            result_tuple = self._step(batch, self.use_sparse_label_train)
+            self.log("train_loss", result_tuple[0], logger=False)
+            self.train_metrics.append(result_tuple)
         else:
-            loss, dice, sensitivity, specificity = self._step(batch, self.use_sparse_label_train)
-            self.log("train_loss", loss, logger=False)
-            self.train_metrics.append([loss, dice, sensitivity, specificity])
-        return {'loss': loss}
+            result_tuple = self._step(batch, self.use_sparse_label_train)
+            self.log("train_loss", result_tuple[0], logger=False)
+            self.train_metrics.append(result_tuple)
+        return {'loss': result_tuple[0]}
 
     def validation_step(self, batch, batch_idx):
         if self.instance_mode:
-            loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity = self._step(batch, self.use_sparse_label_val)
-            self.log("val_loss", loss, logger=False)
-            self.val_metrics.append([loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity])
+            result_tuple = self._step(batch, self.use_sparse_label_val)
+            self.log("val_loss", result_tuple[0], logger=False)
+            self.val_metrics.append(result_tuple)
         else:
-            loss, dice, sensitivity, specificity = self._step(batch, self.use_sparse_label_val)
-            self.log("val_loss", loss, logger=False)
-            self.val_metrics.append([loss, dice, sensitivity, specificity])
-        return {'loss': loss}
+            result_tuple = self._step(batch, self.use_sparse_label_val)
+            self.log("val_loss", result_tuple[0], logger=False)
+            self.val_metrics.append(result_tuple)
+        return {'loss': result_tuple[0]}
 
     def test_step(self, batch, batch_idx):
         if self.instance_mode:
-            loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity = self._step(batch, self.use_sparse_label_test)
-            self.test_metrics.append([loss, p_dice, c_dice, p_sensitivity, p_specificity, c_sensitivity, c_specificity])
+            result_tuple = self._step(batch, self.use_sparse_label_test)
+            self.test_metrics.append(result_tuple)
         else:
-            loss, dice, sensitivity, specificity = self._step(batch, self.use_sparse_label_test)
-            self.test_metrics.append([loss, dice, sensitivity, specificity])
-        return {'loss': loss}
+            result_tuple = self._step(batch, self.use_sparse_label_test)
+            self.test_metrics.append(result_tuple)
+        return {'loss': result_tuple[0]}
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        return [tensor.to(torch.float16) for tensor in self.forward(batch[0], batch[1])]  # fp32 is unnecessary
+        return [torch.sigmoid(tensor).to(torch.float16) for tensor in self.forward(batch[0], batch[1])]  # fp32 is unnecessary
 
     def configure_optimizers(self):
-        fused = True if device == "cuda" else False
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.initial_lr, fused=fused)
+        #fused = True if device == "cuda" else False
+        optimizer = AdEMAMix(self.parameters(), lr=self.initial_lr, weight_decay=0.0001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
-                                                               factor=0.5, patience=10,
+                                                               factor=0.5, patience=15,
                                                                threshold_mode='rel',
-                                                               cooldown=0, min_lr=0.00001, verbose=True)
+                                                               cooldown=0, min_lr=0.00001)
         metrics = "val_loss" if self.enable_val else "train_loss"
         return {
             "optimizer": optimizer,
@@ -109,52 +128,66 @@ class PLModule(pl.LightningModule):
         if metrics_list:
             epoch_averages = torch.stack([torch.tensor(metrics) for metrics in metrics_list]).nanmean(dim=0)
             if self.instance_mode:
+                # Since each patch have equal number of pixels, it's safe to use their average intersection and union
+                p_dice = epoch_averages[1]/epoch_averages[3]
+                c_dice = epoch_averages[2]/epoch_averages[4]
+                # Sensitivity = tp/(tp+fn)
+                p_sensitivity = epoch_averages[5]/(epoch_averages[5]+epoch_averages[7])
+                c_sensitivity = epoch_averages[6]/(epoch_averages[6]+epoch_averages[8])
+                # Specificity = tn/(tn+fp)
+                p_specificity = epoch_averages[9]/(epoch_averages[9]+epoch_averages[11])
+                c_specificity = epoch_averages[10]/(epoch_averages[10]+epoch_averages[12])
                 self.logger.experiment.add_scalar(f"{prefix}/Total Loss", epoch_averages[0], self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Pixel Predict Dice", epoch_averages[1], self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Contour Predict Dice", epoch_averages[2],
+                self.logger.experiment.add_scalar(f"{prefix}/Pixel Predict Dice", p_dice, self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Contour Predict Dice", c_dice,
                                                   self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Pixel Sensitivity", epoch_averages[3], self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Pixel Specificity", epoch_averages[4], self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Contour Sensitivity", epoch_averages[5],
+                self.logger.experiment.add_scalar(f"{prefix}/Pixel Sensitivity", p_sensitivity, self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Pixel Specificity", c_sensitivity, self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Contour Sensitivity", p_specificity,
                                                   self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Contour Specificity", epoch_averages[6],
+                self.logger.experiment.add_scalar(f"{prefix}/Contour Specificity", c_specificity,
                                                   self.current_epoch)
+                self.log(f"{prefix}_epoch_dice", p_dice+c_dice, logger=False)
             else:
+                dice = epoch_averages[1]/epoch_averages[2]
+                sensitivity = epoch_averages[3]/(epoch_averages[3]+epoch_averages[4])
+                specificity = epoch_averages[5]/(epoch_averages[5]+epoch_averages[6])
                 self.logger.experiment.add_scalar(f"{prefix}/Loss", epoch_averages[0], self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Dice", epoch_averages[1], self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Sensitivity", epoch_averages[2], self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Specificity", epoch_averages[3], self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Dice", dice, self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Sensitivity", sensitivity, self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Specificity", specificity, self.current_epoch)
+                self.log(f"{prefix}_epoch_dice", dice, logger=False)
             metrics_list.clear()
 
     def on_validation_epoch_end(self):
         if self.logging:
-            self.log_metrics("Val", self.val_metrics)
+            with torch.no_grad():
+                self.log_metrics("Val", self.val_metrics)
         sch = self.lr_schedulers()
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and self.enable_val:
             sch.step(self.trainer.callback_metrics["val_loss"])
 
     def on_train_epoch_end(self):
         if self.logging:
-            self.log_metrics("Train", self.train_metrics)
-            if device == 'cuda':
-                vram_data = torch.cuda.mem_get_info()
-                #vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
-                vram_usage = (vram_data[1] - vram_data[0])/(1024**2)
-                self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
-                torch.cuda.reset_peak_memory_stats()
-            if self.enable_mid_visual:
-                if self.instance_mode:
-                    with torch.inference_mode():
+            with torch.no_grad():
+                self.log_metrics("Train", self.train_metrics)
+                if device == 'cuda':
+                    vram_data = torch.cuda.mem_get_info()
+                    #vram_usage = torch.cuda.max_memory_allocated()/(1024**2)
+                    vram_usage = (vram_data[1] - vram_data[0])/(1024**2)
+                    self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
+                    torch.cuda.reset_peak_memory_stats()
+                if self.enable_mid_visual:
+                    if self.instance_mode:
                         mid_visual_pixel, mid_visual_contour = self.forward(self.mid_visual_tensor, [0,])
-                        mid_visual_pixel = mid_visual_pixel[:, :, 0:1, :, :].squeeze([0, 1])
-                        mid_visual_contour = mid_visual_contour[:, :, 0:1, :, :].squeeze([0, 1])
-                    self.logger.experiment.add_image(f'Model Output/Pixel', mid_visual_pixel, self.current_epoch)
-                    self.logger.experiment.add_image(f'Model Output/Contour', mid_visual_contour, self.current_epoch)
-                else:
-                    with torch.inference_mode():
+                        mid_visual_pixel = torch.sigmoid(mid_visual_pixel[:, :, 0:1, :, :].squeeze([0, 1]))
+                        mid_visual_contour = torch.sigmoid(mid_visual_contour[:, :, 0:1, :, :].squeeze([0, 1]))
+                        self.logger.experiment.add_image(f'Model Output/Pixel', mid_visual_pixel, self.current_epoch)
+                        self.logger.experiment.add_image(f'Model Output/Contour', mid_visual_contour, self.current_epoch)
+                    else:
                         mid_visual_result = self.forward(self.mid_visual_tensor, [0,])
-                        mid_visual_result = mid_visual_result[:, :, 0:1, :, :].squeeze([0, 1])
-                    self.logger.experiment.add_image(f'Model Output', mid_visual_result, self.current_epoch)
+                        mid_visual_result = torch.sigmoid(mid_visual_result[:, :, 0:1, :, :].squeeze([0, 1]))
+                        self.logger.experiment.add_image(f'Model Output', mid_visual_result, self.current_epoch)
         sch = self.lr_schedulers()
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and not self.enable_val:
             sch.step(self.trainer.callback_metrics["train_loss"])
@@ -163,32 +196,32 @@ class PLModule(pl.LightningModule):
         if self.logging:
             self.log_metrics("Test", self.test_metrics)
 
+    def on_before_optimizer_step(self, optimizer):
+        norms = grad_norm(self.model, norm_type=2)
+        self.log_dict(norms, logger=True)
+
 
 if __name__ == "__main__":
-    torch.set_float32_matmul_precision('medium')
+    torch.set_num_threads(12)
     train_label_mean = DataComponents.path_to_tensor("Datasets/train/Labels_0.tif", label=True).to(torch.float32).mean()
-    model = PLModule(Semantic_FFM.UNet(base_channels=8, z_to_xy_ratio=1, depth=4, type='Basic', se=True, unsupervised=True, label_mean=train_label_mean),
+    model = PLModule(Semantic_General.UNet(base_channels=16, z_to_xy_ratio=1, depth=4, type='Residual', se=True, unsupervised=False, label_mean=train_label_mean),
                      True, False, 'Datasets/mid_visualiser/Ts-4c_ref_patch.tif', False,
                      False, False, False, True)
-    #model.load_state_dict(torch.load('t4_4c_unsupervised.pth'))
-    #train_dataset = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters.csv",
-    #                                            8, 128, 64, True)
-    #train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=1, shuffle=True)
     val_dataset = DataComponents.ValDataset("Datasets/val", 128, 128, False, "Augmentation Parameters.csv")
     predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 112, 8, 8, True)
     train_dataset_pos = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters.csv",
-                                                    32,
+                                                    64,
                                                     128, 128, False, False, 0,
                                                     0,
                                                     0, 'positive')
     train_dataset_neg = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters.csv",
-                                                    32,
+                                                    64,
                                                     128, 128, False, False, 0,
                                                     0,
                                                     0, 'negative')
     #unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
     #                                                                "Augmentation Parameters.csv",
-    #                                                                32,
+    #                                                                64,
     #                                                                128, 128)
     #train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg, unsupervised_train_dataset)
     train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg)
@@ -197,19 +230,23 @@ if __name__ == "__main__":
     collate_fn = DataComponents.custom_collate
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=2,
                                                collate_fn=collate_fn, sampler=sampler,
-                                               num_workers=0, pin_memory=True)
+                                               num_workers=6, pin_memory=True, persistent_workers=True)
     meta_info = predict_dataset.__getmetainfo__()
     predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
     val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
-    trainer = pl.Trainer(max_epochs=200, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name='FFM'),
-                         accelerator="gpu", enable_checkpointing=False,  # gradient_clip_val=0.001,
-                         precision="32", enable_progress_bar=True, num_sanity_val_steps=0)
+    #model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="{epoch}-{Val_epoch_dice:.2f}", mode="max", save_weights_only=True)
+    model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="16-true", mode="max",
+                                                    monitor="Val_epoch_dice", save_weights_only=True, enable_version_counter=False)
+    trainer = pl.Trainer(max_epochs=5, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name='16-true'),
+                         accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.3,
+                         precision="32", enable_progress_bar=True, num_sanity_val_steps=0, callbacks=[model_checkpoint,
+                                                                                                      FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
     # print(subprocess.run("tensorboard --logdir='lightning_logs'", shell=True))
     start_time = time.time()
     trainer.fit(model,
                 val_dataloaders=val_loader,
                 train_dataloaders=train_loader)
-
+    model = PLModule.load_from_checkpoint('16-true.ckpt')
     predictions = trainer.predict(model, predict_loader)
     #del predict_loader, predict_dataset
     DataComponents.predictions_to_final_img(predictions, meta_info, direc='Datasets/result',
@@ -217,9 +254,9 @@ if __name__ == "__main__":
                                             hw_overlap=8,
                                             depth_overlap=8,
                                             TTA_hw=True)
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    print(f"Elapsed time: {elapsed_time} seconds")
+    #end_time = time.time()
+    #elapsed_time = end_time - start_time
+    #print(f"Elapsed time: {elapsed_time} seconds")
 
     '''
     torch.save(model.state_dict(), 'placeholder.pth')

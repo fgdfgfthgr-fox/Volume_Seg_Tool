@@ -97,13 +97,11 @@ class Auto(nn.Module):
                             SegDecodeBlock_3(base_channels * (2 ** i), (base_channels * (2 ** i)), kernel_sizes_conv))
                     if se: setattr(self, f'u_decode_se{i}', scSE(base_channels * (2 ** i)))
         logit_label_mean = torch.log(label_mean / (1 - label_mean)) * 0.5
-        self.s_out = nn.Sequential(nn.Conv3d(2, 1, kernel_size=1),
-                                   nn.Sigmoid())
+        self.s_out = nn.Conv3d(2, 1, kernel_size=1)
         with torch.no_grad():
-            self.s_out[0].bias.fill_(logit_label_mean)
+            self.s_out.bias.fill_(logit_label_mean)
         if unsupervised:
-            self.u_out = nn.Sequential(nn.Conv3d(2, 1, kernel_size=1),
-                                       nn.Sigmoid())
+            self.u_out = nn.Conv3d(2, 1, kernel_size=1)
 
     def semantic_decode(self, x, encode_indices):
         for i in reversed(range(self.depth)):

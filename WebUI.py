@@ -83,8 +83,6 @@ def start_work_flow(inputs):
         cmd += "--enable_tensorboard "
     if inputs[enable_unsupervised]:
         cmd += "--enable_unsupervised "
-    if inputs[save_model]:
-        cmd += "--save_model "
     if inputs[read_existing_model]:
         cmd += "--read_existing_model "
     if inputs[exclude_edge]:
@@ -103,13 +101,8 @@ def start_work_flow(inputs):
     command_executor.execute_command(cmd)
 
 
-def visualisation_activations(existing_model_path, example_image, slice_to_show,
-                              model_architecture, model_channel_count, model_depth,
-                              model_z_to_xy_ratio, model_se, model_unsupervised_v):
-    arch = pick_arch(model_architecture, model_channel_count, model_depth, model_z_to_xy_ratio, model_se, model_unsupervised_v)
-    model = V_N_PLModule(arch, model_unsupervised_v)
-    del arch
-    model.load_state_dict(torch.load(existing_model_path))
+def visualisation_activations(existing_model_path, example_image, slice_to_show):
+    model = V_N_PLModule.load_from_checkpoint(existing_model_path).to('cpu')
     figure_list = []
     tensor = DataComponents.path_to_tensor(example_image).unsqueeze(0).unsqueeze(0)
     # Pass the test tensor through the model
@@ -171,17 +164,18 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show,
     plt.close()
     figure_list.append(img_buffer)
 
-    plt.figure(figsize=(16, 9))
-    plt.suptitle(f'Unsupervised Output Layer')
-    output = model.u_outs[-1][:, :, slice_to_show:slice_to_show + 1, :, :].squeeze()
-    plt.imshow(output.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
-    plt.colorbar()
-    plt.axis('off')
-    canvas = plt.get_current_fig_manager().canvas
-    canvas.draw()
-    img_buffer = np.array(canvas.renderer.buffer_rgba())
-    plt.close()
-    figure_list.append(img_buffer)
+    if len(model.u_outs) != 0:
+        plt.figure(figsize=(16, 9))
+        plt.suptitle(f'Unsupervised Output Layer')
+        output = model.u_outs[-1][:, :, slice_to_show:slice_to_show + 1, :, :].squeeze()
+        plt.imshow(output.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
+        plt.colorbar()
+        plt.axis('off')
+        canvas = plt.get_current_fig_manager().canvas
+        canvas.draw()
+        img_buffer = np.array(canvas.renderer.buffer_rgba())
+        plt.close()
+        figure_list.append(img_buffer)
     return figure_list
 
 
@@ -245,7 +239,7 @@ available_architectures_semantic = ['HalfUNetBasic',
                                     'HalfUNetResidual',
                                     'HalfUNetResidualBottleneck',
                                     'UNetBasic',
-                                    'UNetResidual',
+                                    'UNetResidual (Recommended)',
                                     'UNetResidualBottleneck',
                                     'SegNet',
                                     #'Tiniest'
@@ -270,7 +264,7 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised):
         "HalfUNetResidual": (Semantic_HalfUNets.HalfUNet, 'Residual'),
         "HalfUNetResidualBottleneck": (Semantic_HalfUNets.HalfUNet, 'ResidualBottleneck'),
         "UNetBasic": (Semantic_General.UNet, 'Basic'),
-        "UNetResidual": (Semantic_General.UNet, 'Residual'),
+        "UNetResidual (Recommended)": (Semantic_General.UNet, 'Residual'),
         "UNetResidualBottleneck": (Semantic_General.UNet, 'ResidualBottleneck'),
         "SegNet": (Semantic_SegNets.Auto, 'Auto'),
         "InstanceBasic": (Instance_General.UNet, 'Basic'),
@@ -287,7 +281,10 @@ def get_stats_between_maps(predicted_path, groundtruth_path):
     predicted = DataComponents.path_to_tensor(predicted_path, label=True)
     ground_truth, predicted = torch.clamp(ground_truth, 0, 1), torch.clamp(predicted, 0, 1)
     Loss_Fn = Metrics.BinaryMetrics(loss_mode='dice')
-    loss, dice, sensitivity, specificity = Loss_Fn(predicted, ground_truth)
+    loss, intersection, union, tp, fn, tn, fp = Loss_Fn(predicted, ground_truth)
+    dice = intersection/union
+    sensitivity = tp/(tp+fn)
+    specificity = tn/(tn+fp)
     return dice.item(), sensitivity.item(), specificity.item()
 
 
@@ -633,6 +630,12 @@ if __name__ == "__main__":
                                                          "this settings will try to reclaim those lost pixels, but can take quite some time.")
                         #TTA_z = gr.Checkbox(label="Enable Test-Time Augmentation for z dimension", info="Depth Wise flip the image")
             with gr.Row():
+                read_existing_model = gr.Checkbox(label="Read Existing Model Weight File", scale=0,
+                                                  info="Else it will create a new model with randomised weight.")
+                existing_model_path = gr.Textbox('example_name.ckpt', label="Path to Existing Model Weight File, it should be a file with 'ckpt' at the end.")
+                file_button = gr.Button(document_symbol, scale=0)
+                file_button.click(open_file, outputs=existing_model_path)
+            with gr.Row():
                 model_architecture = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
                 segmentation_mode.change(update_available_arch, inputs=segmentation_mode, outputs=model_architecture)
                 model_channel_count = gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
@@ -649,21 +652,29 @@ if __name__ == "__main__":
                         return gr.Number(8, label="Base Channel Count", precision=0, minimum=1, visible=True,
                                          info="Often means the number of output channels in the first encoder block. Determines the size of the network.")
                 find_max_channel_count.change(show_hide_model_channel_count, inputs=find_max_channel_count, outputs=model_channel_count)
-#                model_growth_rate = gr.Number(12, label="Model Growth Rate", precision=0,
-#                                              info="Only work for DenseNet, check out their paper for more detail.")
-#                model_dropout_p = gr.Number(0.2, label="Model Dropout Probability", step=0.1,
-#                                            info="Only work for DenseNet, check out their paper for more detail.")
                 model_se = gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
                                        info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.")
+                def show_hide_model_tab(read_existing_model):
+                    if read_existing_model:
+                        visible = False
+                    else:
+                        visible = True
+                    options = (gr.Dropdown(available_architectures_semantic, label="Model Architecture", visible=visible),
+                               gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
+                               info="Often means the number of output channels in the first encoder block. Determines the size of the network.", visible=visible),
+                               gr.Checkbox(label="Automatically find the largest channel count",
+                                           info="Finds the largest channel count that doesn't result in a "
+                                                "Out-of-memory error through trials and errors. A slow process. "
+                                                "Certain graphic cards can be very slow with the largest "
+                                                "channel count (<0.1it/s), a lower channel count is recommended.", visible=visible),
+                               gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
+                               info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.", visible=visible))
+                    return options
+
+                read_existing_model.change(show_hide_model_tab, inputs=read_existing_model, outputs=[model_architecture, model_channel_count, find_max_channel_count, model_se])
             precision = gr.Dropdown(["32", "16-mixed", "bf16"], value="32", label="Precision",
                                     info="fp16 precision could significantly cut the VRAM usage. However if you are not using an Nvidia GPU, it could signficantly slow down the training as well."
                                          "bf16 is recommended over fp16 if you are using a newer GPU (30 series or newer).")
-            with gr.Row():
-                read_existing_model = gr.Checkbox(label="Read Existing Model Weight File", scale=0,
-                                                  info="Else it will create a new model with randomised weight.")
-                existing_model_path = gr.Textbox('example_name.pth', label="Path to Existing Model Weight File")
-                file_button = gr.Button(document_symbol, scale=0)
-                file_button.click(open_file, outputs=existing_model_path)
             with gr.Accordion("Visualising training progress on the fly"):
                 gr.Markdown("Note: Gradio doesn't support direct display of 3D image. The result are displayed in the tensorboard.")
                 gr.Markdown("Could slow down training process, especially if the image is big.")
@@ -673,7 +684,6 @@ if __name__ == "__main__":
                     file_button = gr.Button(document_symbol, scale=0)
                     file_button.click(open_file, outputs=mid_visualization_input)
             with gr.Row():
-                save_model = gr.Checkbox(label="Save Trained Model Weight")
                 save_model_name = gr.Textbox('example_name.pth', label="File Name for Model Saved, including extension",
                                              info="Recommend extension: .pth")
                 save_model_path = gr.Textbox("'enter where you want the model to be saved'", scale=2, label="Path to Save the Model Weight",
@@ -703,7 +713,6 @@ if __name__ == "__main__":
                 read_existing_model,
                 existing_model_path,
                 precision,
-                save_model,
                 save_model_name,
                 save_model_path,
                 hw_size,
@@ -751,26 +760,9 @@ if __name__ == "__main__":
                 file_button = gr.Button(document_symbol, scale=0)
                 file_button.click(open_file, outputs=image_path_av)
             slice_to_show = gr.Number(0, label="Depth Slice to show", precision=0, minimum=0)
-            with gr.Row():
-                model_architecture_v = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
-                segmentation_mode.change(update_available_arch, inputs=segmentation_mode, outputs=model_architecture_v)
-                model_channel_count_v = gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
-                                                  info="Often means the number of output channels in the first encoder block. Determines the size of the network.")
-                model_depth_v = gr.Number(5, label="Model Depth", precision=0, minimum=3,
-                                          info="Means the number of different downsampled sizes. Including un-downsampled.")
-#                model_growth_rate_v = gr.Number(12, label="Model Growth Rate", precision=0,
-#                                              info="Only work for DenseNet, check out their paper for more detail.")
-#                model_dropout_p_v = gr.Number(0.2, label="Model Dropout Probability", step=0.1,
-#                                            info="Only work for DenseNet, check out their paper for more detail.")
-                model_z_to_xy_ratio_v = gr.Number(1.0, label="Z resolution to XY resolution ratio",
-                                                  info="The ratio which the z resolution of the images in the dataset divided by their xy resolution. Determines some internal model layout. We assume xy has the same resolution.")
-                model_se_v = gr.Checkbox(scale=0, label="Enable Squeeze-and-Excitation plug-in")
-                model_unsupervised_v = gr.Checkbox(scale=0, label="The model was trained with unsupervised training")
             outputs = gr.Gallery(label="Output Images", preview=True, selected_index=0)
             start_button = gr.Button("Show Visualization")
-            start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show,
-                                                                  model_architecture_v, model_channel_count_v, model_depth_v,
-                                                                  model_z_to_xy_ratio_v, model_se_v, model_unsupervised_v], outputs=outputs)
+            start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show], outputs=outputs)
 
         with gr.Tab("Augmentations Visualisation"):
             gr.Markdown("Given your Training Dataset and Augmentation CSV, show some examples of augmented images that will be fed into the network.")

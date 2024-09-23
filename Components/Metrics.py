@@ -141,15 +141,15 @@ class BDLoss(nn.Module):
 
 
 class BinaryMetrics(nn.Module):
-    def __init__(self, loss_mode: str, smooth=1e-8):
+    def __init__(self, loss_mode: str, smooth=1024):
         """
         Initializes the BinaryMetrics module. Which can be set for using Boundary loss (for semantic map)
         or Focal Loss (for contour map).
 
         Args:
-            loss_mode (str): A string indicating whether to use boundary loss ("boundary") or focal loss ("focal")
+            loss_mode (str): A string indicating whether to use focal loss ("focal")
                              or dice loss ("dice") or dice+bce ("dice+bce") or bce loss without dice calculation ("bce_no_dice")
-            smooth (float): A smoothing factor for numerical stability (default is 1e-8)
+            smooth (float): A smoothing factor for numerical stability (default is 1024, very large, explained in the code)
         """
         super(BinaryMetrics, self).__init__()
         self.loss_mode = loss_mode
@@ -169,27 +169,24 @@ class BinaryMetrics(nn.Module):
         targets = targets[known_label]
         return inputs, targets
 
-    def calculate_dice_and_metrics(self, inputs: torch.Tensor, targets: torch.Tensor):
-        intersection = 2 * torch.sum(targets * inputs) + self.smooth
-        union = torch.sum(inputs) + torch.sum(targets) + self.smooth
-        dice_score = intersection / union
-
+    def calculate_iou_loss(self, inputs: torch.Tensor, targets: torch.Tensor):
+        intersection_s = 2 * torch.sum(targets * inputs) + self.smooth
+        # Huge smooth to prevent loss jump when the ground truth foreground is very low or 0
+        union_s = torch.sum(inputs) + torch.sum(targets) + self.smooth
+        loss = 1 - (intersection_s / union_s)
         inputs = torch.where(inputs >= 0.5, 1, 0).to(torch.int8)
+        intersection = 2 * torch.sum(targets * inputs)
+        union = torch.sum(inputs) + torch.sum(targets)
+        return intersection, union, loss
 
+    @staticmethod
+    def calculate_other_metrices(inputs: torch.Tensor, targets: torch.Tensor):
+        inputs = torch.where(inputs >= 0.5, 1, 0).to(torch.int8)
         true_positives = (inputs*targets).sum().detach()
         false_negatives = ((1-inputs)*targets).sum().detach()
         true_negatives = ((1-inputs)*(1-targets)).sum().detach()
         false_positives = (inputs*(1-targets)).sum().detach()
-
-        # Calculate True Positive Rate (TPR) and True Negative Rate (TNR)
-        tpr = (true_positives + self.smooth) / (true_positives + false_negatives + self.smooth)
-        tnr = (true_negatives + self.smooth) / (true_negatives + false_positives + self.smooth)
-        return dice_score, tpr, tnr
-
-    def dice_loss(self, inputs: torch.Tensor, targets: torch.Tensor):
-        dice_score, tpr, tnr = self.calculate_dice_and_metrics(inputs, targets)
-        loss = 1 - dice_score
-        return loss, dice_score, tpr, tnr
+        return true_positives, false_negatives, true_negatives, false_positives
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor, sparse_label=False):
         """
@@ -205,9 +202,12 @@ class BinaryMetrics(nn.Module):
 
         Returns:
             loss (torch.Tensor): The calculated loss value based on the chosen loss function.
-            dice_score (torch.Tensor): The Dice score.
-            tpr (torch.Tensor): True Positive Rate (Sensitivity).
-            tnr (torch.Tensor): True Negative Rate (Specificity).
+            intersection (torch.Tensor)
+            union (torch.Tensor)
+            true_positives (torch.Tensor)
+            false_negatives (torch.Tensor)
+            true_negatives (torch.Tensor)
+            false_positives (torch.Tensor)
         """
         # In Non-sparse label cases:
         # Input: 1 = Foreground, 0 = Background. Can be any number in between.
@@ -216,46 +216,33 @@ class BinaryMetrics(nn.Module):
             inputs, targets = self.sparse_label_transform(inputs, targets)
             return self.dice_loss(inputs, targets)
 
-        if self.loss_mode == "boundary":
-            # thanks pywick!
-            # boundary map
-            n, c, d, h, w = inputs.shape
-            gt_b = F.max_pool3d(1-targets, kernel_size=5, stride=1, padding=2)
-            gt_b -= 1 - targets
-            pred_b = F.max_pool3d(1-inputs, kernel_size=5, stride=1, padding=2)
-            pred_b -= 1 - inputs
-            # extended boundary map
-            gt_b_ext = F.max_pool3d(gt_b, kernel_size=7, stride=1, padding=3)
-            pred_b_ext = F.max_pool3d(pred_b, kernel_size=7, stride=1, padding=3)
-            # reshape
-            gt_b = gt_b.view(n, -1)
-            pred_b = pred_b.view(n, -1)
-            gt_b_ext = gt_b_ext.view(n, -1)
-            pred_b_ext = pred_b_ext.view(n, -1)
-            # Precision and Recall
-            P = (torch.sum(pred_b * gt_b_ext, dim=1)+self.smooth) / (torch.sum(pred_b, dim=1)+self.smooth)
-            R = (torch.sum(pred_b_ext * gt_b, dim=1)+self.smooth) / (torch.sum(gt_b, dim=1)+self.smooth)
-            # Boundary F1 Score
-            BF1 = (2 * P * R) / (P + R + self.smooth)
-            loss = torch.mean(1 - BF1)
-            dice_score, tpr, tnr = self.calculate_dice_and_metrics(inputs, targets)
-            return loss, dice_score, tpr, tnr
-        elif self.loss_mode == "focal":
-            BCE_loss = F.binary_cross_entropy(inputs, targets, reduction='none')
+        if self.loss_mode == "focal":
+            BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+            inputs = torch.sigmoid(inputs)
             pt = torch.exp(-BCE_loss)
             F_loss = (1-pt) ** 1.333 * BCE_loss
-            dice_score, tpr, tnr = self.calculate_dice_and_metrics(inputs, targets)
-            return F_loss.mean(), dice_score, tpr, tnr
+            with torch.no_grad():
+                intersection, union, _ = self.calculate_iou_loss(inputs, targets)
+                tp, fn, tn, fp = self.calculate_other_metrices(inputs, targets)
+            return F_loss.mean(), intersection, union, tp, fn, tn, fp
         elif self.loss_mode == "bce_no_dice":
-            BCE_loss = F.binary_cross_entropy(inputs, targets, reduction='none')
-            return BCE_loss.mean(), torch.nan, torch.nan, torch.nan
+            # Scale down to 10% since it's used for unsupervised learning and is often much higher than supervised
+            BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none') * 0.1
+            return BCE_loss.mean(), torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan
         elif self.loss_mode == "dice":
-            return self.dice_loss(inputs, targets)
+            inputs = torch.sigmoid(inputs)
+            intersection, union, loss = self.calculate_iou_loss(inputs, targets)
+            with torch.no_grad():
+                tp, fn, tn, fp = self.calculate_other_metrices(inputs, targets)
+            return loss, intersection, union, tp, fn, tn, fp
         elif self.loss_mode == "dice+bce":
-            dice_loss, dice_score, tpr, tnr = self.dice_loss(inputs, targets)
-            bce_loss = F.binary_cross_entropy(inputs, targets, reduction='none').mean()
+            bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none').mean()
+            inputs = torch.sigmoid(inputs)
+            intersection, union, dice_loss = self.calculate_iou_loss(inputs, targets)
+            with torch.no_grad():
+                tp, fn, tn, fp = self.calculate_other_metrices(inputs, targets)
             total_loss = (dice_loss*0.1+bce_loss*1.9)/2
-            return total_loss, dice_score, tpr, tnr
+            return total_loss, intersection, union, tp, fn, tn, fp
         else:
             raise ValueError("Invalid loss. Use 'boundary' or 'focal' or 'dice' or 'dice+bce'.")
 

@@ -21,23 +21,23 @@ INPUT = 'Datasets/mid_visualiser/Ts-4c_ref_patch.tif'
 
 class V_N_PLModule(pl.LightningModule):
 
-    def __init__(self, network_arch, unsupervised=False):
+    def __init__(self, network_arch):
         super(V_N_PLModule, self).__init__()
         self.model = network_arch
-        self.unsupervised = unsupervised
         self.activations = []
         self.s_outs = []
         self.u_outs = []
+        self.unsupervised = False
 
         # Register a hook for activations layers
         def activation_hook_fn(module, input, output):
             self.activations.append(output)
 
         def s_outs_hook_fn(module, input, output):
-            self.s_outs.append(output)
+            self.s_outs.append(torch.sigmoid(output))
 
         def u_outs_hook_fn(module, input, output):
-            self.u_outs.append(output)
+            self.u_outs.append(torch.sigmoid(output))
 
         # Register the hook for all relevant layers in the model
         for name, module in self.model.named_modules():
@@ -53,11 +53,11 @@ class V_N_PLModule(pl.LightningModule):
                 module.register_forward_hook(activation_hook_fn)
             if isinstance(module, nn.SiLU):
                 module.register_forward_hook(activation_hook_fn)
-            if name == "u_out.1":
+            if name == "u_out":
                 module.register_forward_hook(u_outs_hook_fn)
-            if name == "s_out.1":
+            if name == "s_out":
                 module.register_forward_hook(s_outs_hook_fn)
-            if name == "p_out.1":
+            if name == "p_out":
                 module.register_forward_hook(s_outs_hook_fn)
 
     def forward(self, image):
@@ -65,6 +65,7 @@ class V_N_PLModule(pl.LightningModule):
             return self.model(image, [2,])
         else:
             return self.model(image, [0,])
+
 
 
 if __name__ == "__main__":

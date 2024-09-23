@@ -66,17 +66,28 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
     Returns:
         Transformed Image and Label Tensor.
     """
+    rotation_methods = []
+    rotation_angles = []
     for _, row in augmentation_params.iterrows():
         augmentation_method, prob = row['Augmentation'], row['Probability']
-        if augmentation_method == 'Rescaling':
+        if augmentation_method == 'Rotate xy' and random.random() < prob:
+            rotation_methods.append('xy')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate xz' and random.random() < prob:
+            rotation_methods.append('xz')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate yz' and random.random() < prob:
+            rotation_methods.append('yz')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rescaling':
             if random.random() < prob:
                 scale = random.uniform(row['Low Bound'], row['High Bound'])
                 if contour_tensor is not None:
-                    img_tensor, lab_tensor, contour_tensor = Aug.custom_rand_crop(
+                    img_tensor, lab_tensor, contour_tensor = Aug.custom_rand_crop_rotate(
                         [img_tensor, lab_tensor, contour_tensor],
-                        int(scale * d_size),
-                        int(scale * hw_size),
-                        int(scale * hw_size),
+                        int(scale * d_size), int(scale * hw_size), int(scale * hw_size),
+                        rotation_angles, rotation_methods,
+                        ('bilinear', 'nearest', 'nearest'),
                         minimal_foreground=foreground_threshold,
                         minimal_background=background_threshold)
                     contour_tensor = contour_tensor[None, :]
@@ -84,12 +95,14 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
                                                    mode="nearest-exact")
                     contour_tensor = torch.squeeze(contour_tensor, 0)
                 else:
-                    img_tensor, lab_tensor = Aug.custom_rand_crop([img_tensor, lab_tensor],
-                                                                  int(scale * d_size),
-                                                                  int(scale * hw_size),
-                                                                  int(scale * hw_size),
-                                                                  minimal_foreground=foreground_threshold,
-                                                                  minimal_background=background_threshold)
+                    img_tensor, lab_tensor = Aug.custom_rand_crop_rotate([img_tensor, lab_tensor],
+                                                                         int(scale * d_size),
+                                                                         int(scale * hw_size),
+                                                                         int(scale * hw_size),
+                                                                         rotation_angles, rotation_methods,
+                                                                         ('bilinear', 'nearest'),
+                                                                         minimal_foreground=foreground_threshold,
+                                                                         minimal_background=background_threshold)
                 img_tensor = img_tensor[None, :]
                 img_tensor = F.interpolate(img_tensor, size=(d_size, hw_size, hw_size), mode="trilinear",
                                            align_corners=True)
@@ -102,48 +115,24 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
                 lab_tensor = torch.squeeze(lab_tensor, 0)
             else:
                 if contour_tensor is not None:
-                    img_tensor, lab_tensor, contour_tensor = Aug.custom_rand_crop(
+                    img_tensor, lab_tensor, contour_tensor = Aug.custom_rand_crop_rotate(
                         [img_tensor, lab_tensor, contour_tensor],
                         d_size, hw_size, hw_size,
+                        rotation_angles, rotation_methods,
+                        ('bilinear', 'nearest', 'nearest'),
                         minimal_foreground=foreground_threshold, minimal_background=background_threshold)
                 else:
-                    img_tensor, lab_tensor = Aug.custom_rand_crop(
+                    img_tensor, lab_tensor = Aug.custom_rand_crop_rotate(
                         [img_tensor, lab_tensor],
                         d_size, hw_size, hw_size,
+                        rotation_angles, rotation_methods,
+                        ('bilinear', 'nearest'),
                         minimal_foreground=foreground_threshold, minimal_background=background_threshold)
-        elif augmentation_method == 'Rotate xy' and random.random() < prob:
+        elif augmentation_method == 'Edge Replicate Pad' and random.random() < prob:
             if contour_tensor is not None:
-                img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor, contour_tensor],
-                                                                                interpolations=('bilinear', 'nearest', 'bilinear'),
-                                                                                fill_values=(0, 0, 0),
-                                                                                plane='xy', angle_range=(row['Low Bound'], row['High Bound']))
+                img_tensor, lab_tensor, contour_tensor = Aug.edge_replicate_pad((img_tensor, lab_tensor, contour_tensor), row['Value'])
             else:
-                img_tensor, lab_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor],
-                                                                interpolations=('bilinear', 'nearest'),
-                                                                plane='xy',
-                                                                angle_range=(row['Low Bound'], row['High Bound']))
-        elif augmentation_method == 'Rotate xz' and random.random() < prob:
-            if contour_tensor is not None:
-                img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor, contour_tensor],
-                                                                                interpolations=('bilinear', 'nearest', 'nearest'),
-                                                                                fill_values=(0, 0, 0),
-                                                                                plane='xz', angle_range=(row['Low Bound'], row['High Bound']))
-            else:
-                img_tensor, lab_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor],
-                                                                interpolations=('bilinear', 'nearest'),
-                                                                plane='xz',
-                                                                angle_range=(row['Low Bound'], row['High Bound']))
-        elif augmentation_method == 'Rotate yz' and random.random() < prob:
-            if contour_tensor is not None:
-                img_tensor, lab_tensor, contour_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor, contour_tensor],
-                                                                                interpolations=('bilinear', 'nearest', 'nearest'),
-                                                                                fill_values=(0, 0, 0),
-                                                                                plane='yz', angle_range=(row['Low Bound'], row['High Bound']))
-            else:
-                img_tensor, lab_tensor = Aug.random_rotation_3d([img_tensor, lab_tensor],
-                                                                interpolations=('bilinear', 'nearest'),
-                                                                plane='yz',
-                                                                angle_range=(row['Low Bound'], row['High Bound']))
+                img_tensor, lab_tensor = Aug.edge_replicate_pad((img_tensor, lab_tensor), row['Value'])
         elif augmentation_method == 'Vertical Flip' and random.random() < prob:
             img_tensor, lab_tensor = T_F.vflip(img_tensor), T_F.vflip(lab_tensor)
             if contour_tensor is not None:
@@ -152,6 +141,10 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
             img_tensor, lab_tensor = T_F.hflip(img_tensor), T_F.hflip(lab_tensor)
             if contour_tensor is not None:
                 contour_tensor = T_F.hflip(contour_tensor)
+        elif augmentation_method == 'Depth Flip' and random.random() < prob:
+            img_tensor, lab_tensor = img_tensor.flip([1]), lab_tensor.flip([1])
+            if contour_tensor is not None:
+                contour_tensor = contour_tensor.flip([1])
         elif augmentation_method == 'Simulate Low Resolution' and random.random() < prob:
             img_tensor = Aug.sim_low_res(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gaussian Blur' and random.random() < prob:
@@ -196,16 +189,29 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
         Returns:
             Transformed Image Tensor.
         """
+    rotation_methods = []
+    rotation_angles = []
     for _, row in augmentation_params.iterrows():
         augmentation_method, prob = row['Augmentation'], row['Probability']
-        if augmentation_method == 'Rescaling':
+        if augmentation_method == 'Rotate xy' and random.random() < prob:
+            rotation_methods.append('xy')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate xz' and random.random() < prob:
+            rotation_methods.append('xz')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate yz' and random.random() < prob:
+            rotation_methods.append('yz')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rescaling':
             if random.random() < prob:
                 scale = random.uniform(row['Low Bound'], row['High Bound'])
-                img_tensor = Aug.custom_rand_crop(
+                img_tensor = Aug.custom_rand_crop_rotate(
                     [img_tensor],
                     int(scale * d_size),
                     int(scale * hw_size),
                     int(scale * hw_size),
+                    rotation_angles, rotation_methods,
+                    ('bilinear',),
                     ensure_bothground=False)
                 img_tensor = img_tensor[0]
                 img_tensor = img_tensor[None, :]
@@ -213,30 +219,21 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
                                            align_corners=True)
                 img_tensor = torch.squeeze(img_tensor, 0)
             else:
-                img_tensor = Aug.custom_rand_crop(
+                img_tensor = Aug.custom_rand_crop_rotate(
                     [img_tensor],
                     d_size, hw_size, hw_size,
+                    rotation_angles, rotation_methods,
+                    ('bilinear',),
                     ensure_bothground=False)
                 img_tensor = img_tensor[0]
-        elif augmentation_method == 'Rotate xy' and random.random() < prob:
-            img_tensor = Aug.random_rotation_3d(img_tensor,
-                                                interpolations='bilinear',
-                                                plane='xy', fill_values=0,
-                                                angle_range=(row['Low Bound'], row['High Bound']))
-        elif augmentation_method == 'Rotate xz' and random.random() < prob:
-            img_tensor = Aug.random_rotation_3d(img_tensor,
-                                                interpolations='bilinear',
-                                                plane='xz', fill_values=0,
-                                                angle_range=(row['Low Bound'], row['High Bound']))
-        elif augmentation_method == 'Rotate yz' and random.random() < prob:
-            img_tensor = Aug.random_rotation_3d(img_tensor,
-                                                interpolations='bilinear',
-                                                plane='yz', fill_values=0,
-                                                angle_range=(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Edge Replicate Pad' and random.random() < prob:
+            img_tensor = Aug.edge_replicate_pad((img_tensor,), row['Value'])
         elif augmentation_method == 'Vertical Flip' and random.random() < prob:
             img_tensor = T_F.vflip(img_tensor)
         elif augmentation_method == 'Horizontal Flip' and random.random() < prob:
             img_tensor = T_F.hflip(img_tensor)
+        elif augmentation_method == 'Depth Flip' and random.random() < prob:
+            img_tensor = img_tensor.flip([1])
         elif augmentation_method == 'Simulate Low Resolution' and random.random() < prob:
             img_tensor = Aug.sim_low_res(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gaussian Blur' and random.random() < prob:

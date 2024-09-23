@@ -1,6 +1,6 @@
 import torch.nn as nn
 import math
-from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, scSE, sSE, BasicBlockSingle
+from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, scSE, sSE
 
 # Models for various testing purpose
 
