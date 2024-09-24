@@ -10,7 +10,7 @@ class ResBasicBlock(nn.Module):
         for i in range(num_conv):
             layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
                                     kernel_size=kernel_size, padding=padding, bias=False))
-            layers.append(nn.InstanceNorm3d(out_channels, track_running_stats=True))
+            layers.append(nn.InstanceNorm3d(out_channels))
             if i != num_conv - 1:
                 layers.append(nn.SiLU(inplace=True))
         self.operations = nn.Sequential(*layers)
@@ -31,13 +31,13 @@ class ResBottleneckBlock(nn.Module):
         for i in range(num_conv):
             layers.append(
                 nn.Conv3d(middle_channel, middle_channel, kernel_size=kernel_size, padding=padding, bias=False))
-            layers.append(nn.InstanceNorm3d(middle_channel, track_running_stats=True))
+            layers.append(nn.InstanceNorm3d(middle_channel))
             if i != num_conv - 1:
                 layers.append(nn.SiLU(inplace=True))
         self.convs = nn.Sequential(*layers)
 
         self.conv_up = nn.Conv3d(middle_channel, out_channels, kernel_size=1)
-        self.bn = nn.InstanceNorm3d(middle_channel, track_running_stats=True)
+        self.bn = nn.InstanceNorm3d(middle_channel)
         self.silu = nn.SiLU(inplace=True)
 
     def forward(self, x):
@@ -55,7 +55,7 @@ class BasicBlock(nn.Module):
         for i in range(num_conv):
             layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
                                     kernel_size=kernel_size, padding=padding, bias=False))
-            layers.append(nn.InstanceNorm3d(out_channels, track_running_stats=True))
+            layers.append(nn.InstanceNorm3d(out_channels))
             layers.append(nn.SiLU(inplace=True))
         self.operations = nn.Sequential(*layers)
 

@@ -662,10 +662,10 @@ class CollectedSampler(torch.utils.data.Sampler):
                 shuffled_array = np.empty(len(self.data_source), dtype=int)
 
                 # Interleave the pairs as much as possible
-                shuffled_array[0:2 * min_size:4] = unsupervised_array[:min_size // 2]
-                shuffled_array[1:2 * min_size:4] = unsupervised_array[min_size // 2:min_size]
-                shuffled_array[2:2 * min_size:4] = supervised_array[:min_size // 2]
-                shuffled_array[3:2 * min_size:4] = supervised_array[min_size // 2:min_size]
+                shuffled_array[0:2 * min_size:4] = supervised_array[:min_size // 2]
+                shuffled_array[1:2 * min_size:4] = supervised_array[min_size // 2:min_size]
+                shuffled_array[2:2 * min_size:4] = unsupervised_array[:min_size // 2]
+                shuffled_array[3:2 * min_size:4] = unsupervised_array[min_size // 2:min_size]
 
                 # Append the remaining pairs from the larger dataset
                 if len(supervised_array) > min_size:

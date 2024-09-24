@@ -71,7 +71,7 @@ class UNet(nn.Module):
                         setattr(self, f'encode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
                 if se: setattr(self, f'encode_se{i}', scSE(multiplier_h))
                 setattr(self, f'down{i}',
-                        nn.Conv3d(multiplier_h, multiplier_v, kernel_sizes_down[i], 2, padding_down[i]))
+                        nn.Conv3d(multiplier_h, multiplier_v, kernel_sizes_down[i], kernel_sizes_transpose[i], padding_down[i]))
                 setattr(self, f'p_deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
                 setattr(self, f'c_deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
                 setattr(self, f'p_decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))

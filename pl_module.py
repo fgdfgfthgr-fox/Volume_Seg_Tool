@@ -43,7 +43,7 @@ class PLModule(pl.LightningModule):
         self.use_sparse_label_test = use_sparse_label_test
         self.logging = logging
         self.train_metrics, self.val_metrics, self.test_metrics = [], [], []
-        self.lr = 1 # Not the actual LR since it's automatically computed, but the ratio of lr as ReduceLROnPlateau works.
+        self.lr = 3e-6 # Not the actual LR since it's automatically computed
         self.p_loss_fn = Metrics.BinaryMetrics("focal")
         self.u_p_loss_fn = Metrics.BinaryMetrics("bce_no_dice")
         self.c_loss_fn = Metrics.BinaryMetrics("dice+bce")

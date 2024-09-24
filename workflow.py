@@ -78,6 +78,7 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised, label
 
 def start_work_flow(args):
     torch.set_float32_matmul_precision('medium')
+    torch.backends.cudnn.benchmark = True
     if 'Semantic' in args.segmentation_mode:
         instance_mode = False
     else:
@@ -86,7 +87,7 @@ def start_work_flow(args):
     label_mean = torch.tensor(0.5)
     contour_mean = torch.tensor(0.5)
     if not args.memory_saving_mode:
-        desired_num_workers = min(os.cpu_count()//2, 6)
+        desired_num_workers = min(os.cpu_count()//2, 8)
         persistent_workers = True
     else:
         desired_num_workers = 0

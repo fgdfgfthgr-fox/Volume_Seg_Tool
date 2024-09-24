@@ -462,9 +462,8 @@ if __name__ == "__main__":
                         train_length.change(length_to_steps, inputs=train_length, outputs=train_steps)
                         num_epochs = gr.Number(None, label="Maximum Number of Epochs, automatically calculated", precision=0, minimum=1)
 
-                        def steps_to_epochs(train_steps, train_multiplier, num_t_files, enable_unsupervised):
-                            another_multiplier = 2 if enable_unsupervised else 1
-                            return math.ceil(train_steps/(train_multiplier*num_t_files*another_multiplier))
+                        def steps_to_epochs(train_steps, train_multiplier, num_t_files):
+                            return math.ceil(train_steps/(train_multiplier*num_t_files))
 
                     with gr.Row():
                         enable_tensorboard = gr.Checkbox(scale=0, label="Enable TensorBoard Logging")
@@ -625,7 +624,7 @@ if __name__ == "__main__":
                         num_u_files = 1
                     train_multiplier = calculate_train_multiplier(val_num_patch, num_t_files, workflow_box)
                     unsupervised_train_multiplier = (train_multiplier // num_u_files) * batch_size
-                    num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files, enable_unsupervised)
+                    num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files)
                     return val_num_patch, num_t_files, num_u_files, train_multiplier, unsupervised_train_multiplier, num_epochs
                 calculate_repeats.click(get_auto_parameters,
                                         [workflow_box, train_dataset_path, val_dataset_path, hw_size, d_size, batch_size, train_steps, enable_unsupervised, unsupervised_train_dataset_path],

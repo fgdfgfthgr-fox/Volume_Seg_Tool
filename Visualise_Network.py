@@ -10,13 +10,13 @@ from Networks.Modules.EMNets_Components import TLU
 import time
 
 # The filename for the existing network to read.
-EXISTING_NETWORK_NAME = "t4_4c_unsupervised.pth"
+EXISTING_NETWORK_NAME = "''/example_name.ckpt"
 
 # The architecture of the network
-NETWORK_ARCH = Semantic_General.UNet(8, 4, 1, 'Basic', True, True)
+NETWORK_ARCH = Semantic_General.UNet(16, 4, 1, 'Residual', True, False)
 
 # The image file you are going to exam the network with.
-INPUT = 'Datasets/mid_visualiser/Ts-4c_ref_patch.tif'
+INPUT = 'Datasets/mid_visualiser/image.tif'
 
 
 class V_N_PLModule(pl.LightningModule):
@@ -54,6 +54,7 @@ class V_N_PLModule(pl.LightningModule):
             if isinstance(module, nn.SiLU):
                 module.register_forward_hook(activation_hook_fn)
             if name == "u_out":
+                self.unsupervised = True
                 module.register_forward_hook(u_outs_hook_fn)
             if name == "s_out":
                 module.register_forward_hook(s_outs_hook_fn)
@@ -69,8 +70,7 @@ class V_N_PLModule(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    model = V_N_PLModule(NETWORK_ARCH, True)
-    model.load_state_dict(torch.load(EXISTING_NETWORK_NAME))
+    model = V_N_PLModule.load_from_checkpoint(EXISTING_NETWORK_NAME).to('cpu')
     test_tensor = path_to_tensor(INPUT).unsqueeze(0).unsqueeze(0)  # Shape of (1, 1, 128, 256, 256)
     # Set the model to evaluation mode
     # model.eval()
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     plt.colorbar()
     plt.show()
 
-    # Now, self.activations contains the intermediate activations from (P)ReLU layers
+    # Now, self.activations contains the intermediate activations
     for i, activation in enumerate(model.activations):
         if i <= 50:
             pass
