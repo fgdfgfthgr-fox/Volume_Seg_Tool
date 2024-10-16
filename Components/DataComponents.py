@@ -9,9 +9,11 @@ import numpy as np
 import imageio
 import random
 import time
+import h5py
+import multiprocessing
 # import scipy
 import pandas as pd
-from skimage import morphology
+from multiprocessing import Pool, shared_memory, cpu_count
 from scipy.ndimage import label
 from torchvision.datasets.folder import has_file_allowed_extension, IMG_EXTENSIONS
 from . import Augmentations as Aug
@@ -23,20 +25,25 @@ def get_label_fname(fname):
     return 'Labels_' + fname
 
 
-# 输入图像或者标签的路径，得到已标准化的图像张量或者标签的张量
-def path_to_tensor(path, label=False):
+
+def path_to_tensor(path, label=False, key='default'):
     """
-    Transform a path to an image file into a Pytorch tensor.
+    Transform a path to an image file into a Pytorch tensor. Can support other image format but usually tif is the only one that can store 3d information.
 
     Args:
         path (str): Path to the image file.
         label (bool): If false, the output will be a float32 tensor range from 0 to 1. Default: False.
+        key (str): If trying to load from a hdf5 file, will load the File object with this name.
 
     Returns:
         torch.Tensor: transformed Tensor.
     """
-    # ToTensor()对16位图不方便，因此才用这招
-    img = imageio.v3.imread(path)
+    if 'hdf5' in path:
+        file_object = h5py.File(path, 'r')
+        img = np.array(file_object[key])
+    else:
+        # ToTensor()对16位图不方便，因此才用这招
+        img = imageio.v3.imread(path)
     if label:
         if img.dtype == np.uint16 or img.dtype == np.uint32:
             img = img.astype(np.int32)
@@ -171,7 +178,7 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
             contour_tensor = Aug.gaussian_blur_3d(contour_tensor, int(row['Value']),
                                                   random.uniform(row['Low Bound'], row['High Bound']))
     if contour_tensor is not None:
-        return img_tensor, lab_tensor, contour_tensor
+        return img_tensor, lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
     else:
         return img_tensor, lab_tensor
 
@@ -254,7 +261,7 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
     return img_tensor
 
 
-def make_dataset_tv(image_dir, extensions=IMG_EXTENSIONS):
+def make_dataset_tv(image_dir, extensions=(".tif", ".tiff", ".hdf5")):
     """
     Generate a list containing pairs of file paths to training images and their labels.
     The labels should have the same name as their corresponding image, with a prefix "Labels_".
@@ -278,7 +285,7 @@ def make_dataset_tv(image_dir, extensions=IMG_EXTENSIONS):
     return image_label_pair
 
 
-def make_dataset_predict(image_dir, extensions=IMG_EXTENSIONS):
+def make_dataset_predict(image_dir, extensions=(".tif", ".tiff", ".hdf5")):
     """
     Generate a list containing file paths to images waiting to get predicted.
 
@@ -320,10 +327,12 @@ class TrainDataset(torch.utils.data.Dataset):
         negative_control (str or None): If 'negative', allow the returned lab_tensor to be fully negative (no foreground object).
                                         If 'positive', allow the returned lab_tensor to be fully positive. If None, will try to generate lab_tensor
                                         that contain both positive and negative pixels. Default: None
+        key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
 
     def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64, instance_mode=False,
-                 exclude_edge=False, exclude_edge_size_in=1, exclude_edge_size_out=1, contour_map_width=1, negative_control=None):
+                 exclude_edge=False, exclude_edge_size_in=1, exclude_edge_size_out=1, contour_map_width=1, negative_control=None,
+                 hdf5_key='Default'):
         # Get a list of file paths for images and labels
         self.file_list = make_dataset_tv(images_dir)
         self.num_files = len(self.file_list)
@@ -331,8 +340,8 @@ class TrainDataset(torch.utils.data.Dataset):
         if instance_mode:
             self.contour_tensors = [get_contour_maps(item, 'generated_contour_maps', contour_map_width) for item in
                                     self.file_list]
-        self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], label=True)) for item in self.file_list]
-        self.img_tensors = [path_to_tensor(item[0], label=False) for item in self.file_list]
+        self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], key=hdf5_key, label=True)) for item in self.file_list]
+        self.img_tensors = [path_to_tensor(item[0], key=hdf5_key, label=False) for item in self.file_list]
         if exclude_edge and not instance_mode:
             self.lab_tensors = [
                 Aug.exclude_border_labels(item, exclude_edge_size_in, exclude_edge_size_out).to(torch.float32) for item
@@ -343,14 +352,14 @@ class TrainDataset(torch.utils.data.Dataset):
         self.d_size = d_size
         if negative_control:
             if negative_control == 'positive':
-                self.foreground_threshold = 0.02
+                self.foreground_threshold = 0.01
                 self.background_threshold = 0
             elif negative_control == 'negative':
-                self.background_threshold = 0.02
+                self.background_threshold = 0.01
                 self.foreground_threshold = 0
         else:
-            self.background_threshold = 0.02
-            self.foreground_threshold = 0.02
+            self.background_threshold = 0.01
+            self.foreground_threshold = 0.01
 
         super().__init__()
 
@@ -367,12 +376,12 @@ class TrainDataset(torch.utils.data.Dataset):
             img_tensor, lab_tensor, contour_tensor = apply_aug(img_tensor, lab_tensor, contour_tensor,
                                                                self.augmentation_params, self.hw_size, self.d_size,
                                                                self.foreground_threshold, self.background_threshold)
-            return img_tensor, lab_tensor.to(torch.float32), torch.tensor(0, dtype=torch.float32), contour_tensor.to(torch.float32)
+            return img_tensor, lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
         else:
             img_tensor, lab_tensor = apply_aug(img_tensor, lab_tensor, None,
                                                self.augmentation_params, self.hw_size, self.d_size,
                                                self.foreground_threshold, self.background_threshold)
-            return img_tensor, lab_tensor.to(torch.float32), torch.tensor(0, dtype=torch.float32)
+            return img_tensor, lab_tensor.to(torch.float32)
 
     def get_label_mean(self):
         return torch.cat(self.lab_tensors).to(torch.float32).mean()
@@ -391,11 +400,12 @@ class UnsupervisedDataset(torch.utils.data.Dataset):
         train_multiplier (int): A.k.a repeat, the number of training images in each epoch are multiplied by this number. Default: 1
         hw_size (int): The height and width of each generated patch. Default: 64
         d_size (int): The depth of each generated patch. Default: 64
+        key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
-    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64):
+    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64, hdf5_key='Default'):
         self.file_list = make_dataset_predict(images_dir)
         self.num_files = len(self.file_list)
-        self.img_tensors = [path_to_tensor(item, label=False) for item in self.file_list]
+        self.img_tensors = [path_to_tensor(item, key=hdf5_key, label=False) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
         self.hw_size = hw_size
@@ -408,7 +418,7 @@ class UnsupervisedDataset(torch.utils.data.Dataset):
         idx = math.floor(idx / self.train_multiplier)
         img_tensor = self.img_tensors[idx][None, :]
         img_tensor = apply_aug_unsupervised(img_tensor, self.augmentation_params, self.hw_size, self.d_size)
-        return img_tensor, img_tensor, torch.tensor(1, dtype=torch.float32)
+        return (img_tensor,)
 
 
 class ValDataset(torch.utils.data.Dataset):
@@ -424,19 +434,20 @@ class ValDataset(torch.utils.data.Dataset):
         instance_mode (bool): If true, will prepare contour tensors for instance segmentation.
         augmentation_csv (str): Path to the .csv file that contains the image augmentations parameters.
         contour_map_width (int): Width of the contour map. Default: 1.
+        key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
 
-    def __init__(self, images_dir, hw_size, d_size, instance_mode, augmentation_csv, contour_map_width=1):
+    def __init__(self, images_dir, hw_size, d_size, instance_mode, augmentation_csv, contour_map_width=1, hdf5_key='Default'):
         # Get a list of file paths for images and labels
         file_list = make_dataset_tv(images_dir)
         self.num_files = len(file_list)
         self.instance_mode = instance_mode
         if instance_mode:
-            tensors_pairs = [(path_to_tensor(item[0], label=False),
+            tensors_pairs = [(path_to_tensor(item[0], key=hdf5_key, label=False),
                               Aug.binarisation(path_to_tensor(item[1], label=True)),
                               get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in file_list]
         else:
-            tensors_pairs = [(path_to_tensor(item[0], label=False),
+            tensors_pairs = [(path_to_tensor(item[0], key=hdf5_key, label=False),
                               Aug.binarisation(path_to_tensor(item[1], label=True))) for item in file_list]
         self.chopped_tensor_pairs = []
         # augmentation_params = pd.read_csv(augmentation_csv)
@@ -494,9 +505,9 @@ class ValDataset(torch.utils.data.Dataset):
         img_tensor, lab_tensor = self.chopped_tensor_pairs[idx][0][None, :], self.chopped_tensor_pairs[idx][1][None, :]
         if self.instance_mode:
             contour_tensor = self.chopped_tensor_pairs[idx][2][None, :]
-            return img_tensor, lab_tensor, torch.tensor(0, dtype=torch.float32), contour_tensor
+            return img_tensor, lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
         else:
-            return img_tensor, lab_tensor, torch.tensor(0, dtype=torch.float32)
+            return img_tensor, lab_tensor.to(torch.float32)
 
 
 class Predict_Dataset(torch.utils.data.Dataset):
@@ -512,10 +523,11 @@ class Predict_Dataset(torch.utils.data.Dataset):
         depth_size (int): The depth of patches the prediction image will be cropped to. In pixels.
         hw_overlap (int): The additional gain in height and width of the patches. In pixels. Helps smooth out borders between patches.
         depth_overlap (int): The additional gain in depth of the patches. In pixels. Helps smooth out borders between patches.
+        key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
 
     def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False,
-                 leave_out_idx=None):
+                 leave_out_idx=None, hdf5_key='Default'):
         self.file_list = make_dataset_predict(images_dir)
         self.patches_list = []
         self.meta_list = []
@@ -523,7 +535,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
             file = self.file_list[leave_out_idx]
             self.file_list = [file]
         for file in self.file_list:
-            image = path_to_tensor(file, label=False)[None, :]
+            image = path_to_tensor(file, key=hdf5_key, label=False)[None, :]
             shape = image.shape
             depth = shape[1]
             height = shape[2]
@@ -585,7 +597,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
         return len(self.patches_list)
 
     def __getitem__(self, idx):
-        return self.patches_list[idx], torch.tensor(0, dtype=torch.float32)
+        return self.patches_list[idx]
 
     def __getmetainfo__(self):
         return self.meta_list
@@ -1029,7 +1041,28 @@ def hovernet_map_transform(input_tensor):
 '''
 
 
-def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, pixel_reclaim=True, distance_threshold=2):
+def allocate_pixels(args):
+    # Allocates the lost pixels to the object that has the largest proportion of pixels within the threshold distance
+    batch_indices, segmentation, touching_pixels, shm_name, map_size, distance_threshold, minlength = args
+    shm_segmentation = shared_memory.SharedMemory(name=shm_name)
+    new_segmentation_np = np.ndarray(map_size, dtype=np.int16, buffer=shm_segmentation.buf)
+    for pixel_idx in batch_indices:
+        z, y, x = touching_pixels[pixel_idx, 0], touching_pixels[pixel_idx, 1], touching_pixels[pixel_idx, 2]
+        local_segment = segmentation[
+                        max(z - distance_threshold, 0):min(z + distance_threshold, map_size[0]),
+                        max(y - distance_threshold, 0):min(y + distance_threshold, map_size[1]),
+                        max(x - distance_threshold, 0):min(x + distance_threshold, map_size[2])
+                        ]
+        # Compute object counts with background count included
+        object_counts = torch.bincount(local_segment.flatten(), minlength=minlength)
+        # If there is any non-background pixel, go with the object with the largest count, else background
+        object_counts = object_counts[1:]
+        if object_counts.sum() > 0:
+            closest_object = torch.argmax(object_counts, dim=0) + 1
+            new_segmentation_np[z,y,x] = closest_object
+
+
+def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, pixel_reclaim=True, distance_threshold=1, batch_size=256):
     """
     Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.
     Pixels in touching areas are assigned to the closest object based on the largest proportion of pixels within 5 pixel distance to the pixel.
@@ -1039,14 +1072,15 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
         contour_map (np.Array): The input contour segmented map.
         size_threshold (int): The minimal size in pixel of each object. Object smaller than this will be removed.
         pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
-        distance_threshold (int): The radius in pixels to search for nearby pixels when allocating. Default: 2.
+        distance_threshold (int): The radius in pixels to search for nearby pixels when allocating. Default: 1.
+        batch_size (int): Batch size for pixel reclaim. Default: 256.
 
     Returns:
         torch.Tensor: instance segmented map where 0 is background and every other value represent an object.
     """
     semantic_map = torch.where(semantic_map >= 0.5, True, False)
     # Treat contour map with lower threshold to ensure separation
-    contour_map = torch.where(contour_map >= 0.1, True, False)
+    contour_map = torch.where(contour_map >= 0.2, True, False)
 
     # Find boundary that lies within foreground objects
     touching_map = torch.logical_and(contour_map, semantic_map)
@@ -1066,49 +1100,41 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
          [0, 0, 0]]
     ])
     # Connected Component Labelling
-    segmentation, _ = label(new_map.numpy(), structure=structure.numpy(), output=np.int32)
-    del structure, new_map
+    segmentation, _ = label(new_map.numpy(), structure=structure.numpy(), output=np.int16)
     # Remove small segments
-    segmentation = morphology.remove_small_objects(segmentation, min_size=size_threshold, connectivity=2, out=segmentation)
+    #segmentation = morphology.remove_small_objects(segmentation, min_size=size_threshold, connectivity=structure.numpy())
+
+    del structure, new_map
 
     if pixel_reclaim:
         segmentation = torch.from_numpy(segmentation)
-        # Pre-compute all local segments
         touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.int32)
         del touching_map
         num_touching_pixels = len(touching_pixels)
         minlength = segmentation.max().item()
         map_size = segmentation.shape
-        new_segmentation = segmentation.clone()
-        # Allocates the lost pixels to the object that has the largest proportion of pixels within the threshold distance
-        def allocate_pixels(pixel_idx):
-            z, y, x = touching_pixels[pixel_idx, 0], touching_pixels[pixel_idx, 1], touching_pixels[pixel_idx, 2]
-            local_segment = segmentation[
-                            max(z - distance_threshold, 0):min(z + distance_threshold, map_size[0] - 1),
-                            max(y - distance_threshold, 0):min(y + distance_threshold, map_size[1] - 1),
-                            max(x - distance_threshold, 0):min(x + distance_threshold, map_size[2] - 1)
-                            ]
-            # Compute object counts with background count included
-            object_counts = torch.bincount(local_segment.flatten(), minlength=minlength)
-            # Exclude background count
-            object_counts = object_counts[1:]
-            if object_counts.numel() > 0:
-                closest_objects = torch.argmax(object_counts, dim=0).to(torch.int16) + 1
-                new_segmentation[touching_pixels[pixel_idx, 0],
-                                 touching_pixels[pixel_idx, 1],
-                                 touching_pixels[pixel_idx, 2]] = closest_objects
 
-        data_loader = torch.utils.data.DataLoader(range(num_touching_pixels), batch_size=1, num_workers=0, pin_memory=True)
+        # Create a shared memory array for the output segmentation
+        shm_segmentation = shared_memory.SharedMemory(create=True, size=segmentation.numel() * np.dtype(np.int16).itemsize)
+        new_segmentation_np = np.ndarray(map_size, dtype=np.int16, buffer=shm_segmentation.buf)
+        new_segmentation_np[:] = segmentation.numpy()
+
+        batch_indices = [list(range(i, min(i + batch_size, num_touching_pixels))) for i in range(0, num_touching_pixels, batch_size)]
+
+        args = [(batch, segmentation, touching_pixels, shm_segmentation.name, map_size, distance_threshold, minlength) for batch in batch_indices]
+
         start_time = time.time()
-        current_proportion = 0.0
-        for batch in data_loader:
-            allocate_pixels(batch)
-            if (batch[0] + 1) / len(touching_pixels) >= current_proportion + 0.001:
-                elapsed_time = time.time() - start_time
-                print(
-                    f"Processed {batch[0] + 1}/{len(touching_pixels)} voxels at {((batch[0] + 1) / elapsed_time):.2f} voxels/sec")
-                current_proportion += 0.001
-        return new_segmentation
+        with Pool(cpu_count()) as pool:
+            pool.map(allocate_pixels, args)
+        elapsed_time = time.time() - start_time
+        print(f"Time taken: {elapsed_time}")
+        # Convert the shared memory array back to a PyTorch tensor
+        new_segmentation_np = np.ndarray(map_size, dtype=np.int16, buffer=shm_segmentation.buf)
+        segmentation_result = torch.tensor(new_segmentation_np)
+        # Clean up shared memory
+        shm_segmentation.close()
+        shm_segmentation.unlink()
+        return segmentation_result
     else:
         return segmentation
 

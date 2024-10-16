@@ -6,46 +6,36 @@ import pytorch_lightning as pl
 import torch.nn as nn
 from Networks import *
 from Components.DataComponents import path_to_tensor
-from Networks.Modules.EMNets_Components import TLU
+from pl_module import pick_arch
 import time
 
-# The filename for the existing network to read.
-EXISTING_NETWORK_NAME = "''/example_name.ckpt"
-
-# The architecture of the network
-NETWORK_ARCH = Semantic_General.UNet(16, 4, 1, 'Residual', True, False)
-
-# The image file you are going to exam the network with.
-INPUT = 'Datasets/mid_visualiser/image.tif'
 
 
 class V_N_PLModule(pl.LightningModule):
 
-    def __init__(self, network_arch):
+    def __init__(self, arch_args):
         super(V_N_PLModule, self).__init__()
-        self.model = network_arch
+        self.network = pick_arch(arch_args)
         self.activations = []
-        self.s_outs = []
-        self.u_outs = []
+        self.c_outs = []
+        self.p_outs = []
         self.unsupervised = False
 
         # Register a hook for activations layers
         def activation_hook_fn(module, input, output):
             self.activations.append(output)
 
-        def s_outs_hook_fn(module, input, output):
-            self.s_outs.append(torch.sigmoid(output))
+        def c_outs_hook_fn(module, input, output):
+            self.c_outs.append(torch.sigmoid(output))
 
-        def u_outs_hook_fn(module, input, output):
-            self.u_outs.append(torch.sigmoid(output))
+        def p_outs_hook_fn(module, input, output):
+            self.p_outs.append(torch.sigmoid(output))
 
         # Register the hook for all relevant layers in the model
-        for name, module in self.model.named_modules():
+        for name, module in self.network.named_modules():
             if isinstance(module, nn.ReLU):
                 module.register_forward_hook(activation_hook_fn)
             if isinstance(module, nn.PReLU):
-                module.register_forward_hook(activation_hook_fn)
-            if isinstance(module, TLU):
                 module.register_forward_hook(activation_hook_fn)
             if isinstance(module, nn.GELU):
                 module.register_forward_hook(activation_hook_fn)
@@ -53,23 +43,34 @@ class V_N_PLModule(pl.LightningModule):
                 module.register_forward_hook(activation_hook_fn)
             if isinstance(module, nn.SiLU):
                 module.register_forward_hook(activation_hook_fn)
-            if name == "u_out":
+            '''if name == "u_out":
                 self.unsupervised = True
-                module.register_forward_hook(u_outs_hook_fn)
-            if name == "s_out":
-                module.register_forward_hook(s_outs_hook_fn)
-            if name == "p_out":
-                module.register_forward_hook(s_outs_hook_fn)
+                module.register_forward_hook(u_outs_hook_fn)'''
+            if name == "c_out":
+                module.register_forward_hook(c_outs_hook_fn)
+            if "rescale" in name or name == "p_out0":
+                module.register_forward_hook(p_outs_hook_fn)
 
     def forward(self, image):
-        if self.unsupervised:
+        '''if self.unsupervised:
             return self.model(image, [2,])
         else:
-            return self.model(image, [0,])
+            return self.model(image, [0,])'''
+        return self.network(image)
 
 
 
 if __name__ == "__main__":
+
+    # The filename for the existing network to read.
+    EXISTING_NETWORK_NAME = "''/example_name.ckpt"
+
+    # The architecture of the network
+    NETWORK_ARCH = Semantic_General.UNet(16, 4, 1, 'Residual', True, 0.5)
+
+    # The image file you are going to exam the network with.
+    INPUT = 'Datasets/mid_visualiser/image.tif'
+
     model = V_N_PLModule.load_from_checkpoint(EXISTING_NETWORK_NAME).to('cpu')
     test_tensor = path_to_tensor(INPUT).unsqueeze(0).unsqueeze(0)  # Shape of (1, 1, 128, 256, 256)
     # Set the model to evaluation mode

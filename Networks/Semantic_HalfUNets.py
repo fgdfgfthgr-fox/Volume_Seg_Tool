@@ -19,7 +19,7 @@ import math
 
 class HalfUNet(nn.Module):
 
-    def __init__(self, base_channels=16, depth=5, z_to_xy_ratio=1, type='Basic', se=False, unsupervised=False, label_mean=torch.tensor(0.5)):
+    def __init__(self, base_channels=16, depth=5, z_to_xy_ratio=1, type='Basic', se=False, label_mean=torch.tensor(0.5)):
         super(HalfUNet, self).__init__()
         self.max_pool = nn.MaxPool3d(2)
         self.max_pool_flat = nn.MaxPool3d((1, 2, 2))
@@ -57,15 +57,15 @@ class HalfUNet(nn.Module):
 
         self.decoder = block(base_channels, base_channels, kernel_sizes_conv, 1)
         if se: self.decoder_se = scSE(base_channels)
-        if unsupervised:
+        '''if unsupervised:
             self.u_decoder = block(base_channels, base_channels, kernel_sizes_conv, 1)
-            if se: self.u_decoder_se = scSE(base_channels)
+            if se: self.u_decoder_se = scSE(base_channels)'''
         logit_label_mean = torch.log(label_mean / (1 - label_mean)) * 0.5
         self.s_out = nn.Conv3d(base_channels, 1, kernel_size=1)
         with torch.no_grad():
             self.s_out.bias.fill_(logit_label_mean)
-        if unsupervised:
-            self.u_out = nn.Conv3d(base_channels, 1, kernel_size=1)
+        '''if unsupervised:
+            self.u_out = nn.Conv3d(base_channels, 1, kernel_size=1)'''
 
     def semantic_decode(self, x):
         x = self.decoder(x)
@@ -73,13 +73,13 @@ class HalfUNet(nn.Module):
         x = self.s_out(x)
         return x
 
-    def unsupervised_decode(self, x):
+    '''def unsupervised_decode(self, x):
         u_x = self.u_decoder(x)
         if self.se: u_x = self.u_decoder_se(u_x)
         u_x = self.u_out(u_x)
-        return u_x
+        return u_x'''
 
-    def forward(self, x, type=(1,)):
+    def forward(self, x):
         _, _, D, H, W = x.shape
         for i in range(0, self.depth):
             x = getattr(self, f'encode{i}')(x)
@@ -90,10 +90,11 @@ class HalfUNet(nn.Module):
                 x_out = x_out + torch.nn.functional.interpolate(x, size=(D, H, W), mode='trilinear', align_corners=True)
             if i != self.depth - 1:
                 x = getattr(self, f"down{i}")(x)
+        return self.semantic_decode(x_out)
 
-        if type[0] == 0:
+        '''if type[0] == 0:
             return self.semantic_decode(x_out)
         elif type[0] == 1:
             return self.unsupervised_decode(x_out)
         elif type[0] == 2:
-            return self.semantic_decode(x_out), self.unsupervised_decode(x_out)
+            return self.semantic_decode(x_out), self.unsupervised_decode(x_out)'''

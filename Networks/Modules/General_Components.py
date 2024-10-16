@@ -7,6 +7,10 @@ class ResBasicBlock(nn.Module):
         super().__init__()
         padding = tuple((k - 1) // 2 for k in kernel_size)
         layers = []
+        if in_channels == out_channels:
+            self.mapping = nn.Identity()
+        else:
+            self.mapping = nn.Conv3d(in_channels, out_channels, 1, padding)
         for i in range(num_conv):
             layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
                                     kernel_size=kernel_size, padding=padding, bias=False))
@@ -17,7 +21,7 @@ class ResBasicBlock(nn.Module):
         self.silu = nn.SiLU(inplace=True)
 
     def forward(self, x):
-        return self.silu(x + self.operations(x))
+        return self.silu(self.mapping(x) + self.operations(x))
 
 
 class ResBottleneckBlock(nn.Module):
@@ -48,13 +52,13 @@ class ResBottleneckBlock(nn.Module):
 
 
 class BasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3, 3, 3), num_conv=2):
+    def __init__(self, in_channels, out_channels, kernel_size=(3, 3, 3), num_conv=2, padding_mode='zeros'):
         super().__init__()
         padding = tuple((k - 1) // 2 for k in kernel_size)
         layers = []
         for i in range(num_conv):
             layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
-                                    kernel_size=kernel_size, padding=padding, bias=False))
+                                    kernel_size=kernel_size, padding=padding, bias=False, padding_mode=padding_mode))
             layers.append(nn.InstanceNorm3d(out_channels))
             layers.append(nn.SiLU(inplace=True))
         self.operations = nn.Sequential(*layers)
@@ -99,6 +103,36 @@ class scSE(nn.Module):
 
     def forward(self, x):
         return self.cse(x) + self.sse(x)
+
+
+# Attention Block from Attention UNet
+# https://arxiv.org/abs/1804.03999
+class AttentionBlock(nn.Module):
+    def __init__(self, g_channel, f_channel):
+        super().__init__()
+        intermediate_channel = g_channel // 2
+        self.w_g = nn.Sequential(
+            nn.Conv3d(g_channel, intermediate_channel, kernel_size=1, bias=False),
+            nn.InstanceNorm3d(intermediate_channel)
+        )
+
+        self.w_x = nn.Sequential(
+            nn.Conv3d(f_channel, intermediate_channel, kernel_size=1, bias=False),
+            nn.InstanceNorm3d(intermediate_channel)
+        )
+
+        self.psi = nn.Sequential(
+            nn.Conv3d(intermediate_channel, 1, kernel_size=1, bias=False),
+            nn.InstanceNorm3d(1),
+            nn.Sigmoid(),
+        )
+
+        self.silu = nn.SiLU(inplace=True)
+
+    def forward(self, gate, x):
+        g1 = self.w_g(gate)
+        x1 = self.w_x(x)
+        return self.psi(self.silu(g1 + x1)) * x
 
 
 # https://www-sciencedirect-com.ezproxy.otago.ac.nz/science/article/pii/S095741742401594X

@@ -4,9 +4,11 @@ import threading
 import argparse
 import subprocess
 import webbrowser
+from gc import callbacks
 
 import lightning.pytorch as pl
 import torch
+import multiprocessing
 from torch.utils.data import DataLoader
 
 from pl_module import PLModule
@@ -47,38 +49,16 @@ def start_tensorboard(args):
     webbrowser.open(tensorboard_url)
 
 
-def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised, label_mean, contour_mean):
-    if arch == "HalfUNetBasic":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, unsupervised, label_mean)
-    elif arch == "HalfUNetGhost":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Ghost', se, unsupervised, label_mean)
-    elif arch == "HalfUNetResidual":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, unsupervised, label_mean)
-    elif arch == "HalfUNetResidualBottleneck":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, unsupervised, label_mean)
-    elif arch == "UNetBasic":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, unsupervised, label_mean)
-    elif arch == "UNetResidual_(Recommended)":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, unsupervised, label_mean)
-    elif arch == "UNetResidualBottleneck":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, unsupervised, label_mean)
-    elif arch == "SegNet":
-        return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio, se, unsupervised, label_mean)
-    #elif arch == "Tiniest":
-    #    return Testing_Models.Tiniest(base_channels, depth, z_to_xy_ratio)
-    #elif arch == "SingleTopLayer":
-    #    return Testing_Models.SingleTopLayer(base_channels, depth, z_to_xy_ratio, 'Basic', se)
-    elif arch == "InstanceBasic":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, unsupervised, label_mean, contour_mean)
-    elif arch == "InstanceResidual":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, unsupervised, label_mean, contour_mean)
-    elif arch == "InstanceResidualBottleneck":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, unsupervised, label_mean, contour_mean)
-
-
 def start_work_flow(args):
     torch.set_float32_matmul_precision('medium')
-    torch.backends.cudnn.benchmark = True
+    if torch.cuda.is_available() and torch.version.cuda:
+        print('Optimising computing and memory use via cuDNN! (NVIDIA GPU only).')
+        torch.backends.cudnn.enabled = True
+        torch.backends.cudnn.benchmark = True
+    elif torch.cuda.is_available() and torch.version.hip:
+        print('Optimising computing using TunableOp! (AMD GPU only).')
+        torch.cuda.tunable.enable()
+        torch.cuda.tunable.set_filename('TunableOp_results')
     if 'Semantic' in args.segmentation_mode:
         instance_mode = False
     else:
@@ -87,7 +67,7 @@ def start_work_flow(args):
     label_mean = torch.tensor(0.5)
     contour_mean = torch.tensor(0.5)
     if not args.memory_saving_mode:
-        desired_num_workers = min(os.cpu_count()//2, 8)
+        desired_num_workers = min(os.cpu_count()//2, 16)
         persistent_workers = True
     else:
         desired_num_workers = 0
@@ -97,17 +77,17 @@ def start_work_flow(args):
             train_dataset_pos = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
                                                             args.hw_size, args.d_size, instance_mode,
                                                             args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
-                                                            args.contour_map_width, 'positive')
+                                                            args.contour_map_width, 'positive', args.train_key_name)
             train_dataset_neg = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
                                                             args.hw_size, args.d_size, instance_mode,
                                                             args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
-                                                            args.contour_map_width, 'negative')
+                                                            args.contour_map_width, 'negative', args.train_key_name)
             label_mean = train_dataset_pos.get_label_mean()
             if instance_mode: contour_mean = train_dataset_pos.get_contour_mean()
             if args.enable_unsupervised:
                 unsupervised_train_dataset = DataComponents.UnsupervisedDataset(args.unsupervised_train_dataset_path,
                                                                                 args.augmentation_csv_path, args.unsupervised_train_multiplier,
-                                                                                args.hw_size, args.d_size)
+                                                                                args.hw_size, args.d_size, args.train_key_name)
             else:
                 unsupervised_train_dataset = None
             train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg, unsupervised_train_dataset)
@@ -117,14 +97,14 @@ def start_work_flow(args):
             train_dataset = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
                                                         args.hw_size, args.d_size, instance_mode,
                                                         args.exclude_edge, args.exclude_edge_size_in,
-                                                        args.exclude_edge_size_out, args.contour_map_width, None)
+                                                        args.exclude_edge_size_out, args.contour_map_width, None, args.train_key_name)
             label_mean = train_dataset.get_label_mean()
             if instance_mode: contour_mean = train_dataset.get_contour_mean()
             if args.enable_unsupervised:
                 unsupervised_train_dataset = DataComponents.UnsupervisedDataset(args.unsupervised_train_dataset_path,
                                                                                 args.augmentation_csv_path,
                                                                                 args.unsupervised_train_multiplier,
-                                                                                args.hw_size, args.d_size)
+                                                                                args.hw_size, args.d_size, args.train_key_name)
                 train_dataset = DataComponents.CollectedDatasetAlt(train_dataset, unsupervised_train_dataset)
                 sampler = DataComponents.CollectedSamplerAlt(train_dataset)
                 collate_fn = DataComponents.custom_collate
@@ -133,11 +113,11 @@ def start_work_flow(args):
                 collate_fn = None
         train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
                                   collate_fn=collate_fn, sampler=sampler,
-                                  num_workers=desired_num_workers, persistent_workers=persistent_workers, pin_memory=True)
+                                  num_workers=desired_num_workers, persistent_workers=persistent_workers)
         del train_dataset
         if 'Validation' in args.workflow_box:
             val_dataset = DataComponents.ValDataset(args.val_dataset_path, args.hw_size, args.d_size, instance_mode,
-                                                    args.augmentation_csv_path, args.contour_map_width)
+                                                    args.augmentation_csv_path, args.contour_map_width, args.val_key_name)
             val_loader = DataLoader(dataset=val_dataset, batch_size=args.batch_size,
                                     #num_workers=12, persistent_workers=True, pin_memory=True)
                                     num_workers=0, pin_memory=True)
@@ -146,10 +126,10 @@ def start_work_flow(args):
             val_loader = None
         if 'Test' in args.workflow_box:
             test_dataset = DataComponents.ValDataset(args.test_dataset_path, args.hw_size, args.d_size, instance_mode,
-                                                     args.augmentation_csv_path, args.contour_map_width)
+                                                     args.augmentation_csv_path, args.contour_map_width, args.test_key_name)
             test_loader = DataLoader(dataset=test_dataset, batch_size=args.batch_size)
             del test_dataset
-    if args.find_max_channel_count:
+    '''if args.find_max_channel_count:
         print('Start searching for the maximum channel count...')
         def check_fit_in_memory(channel_count):
             try:
@@ -191,7 +171,9 @@ def start_work_flow(args):
                          args.model_se, args.enable_unsupervised, label_mean, contour_mean)
     else:
         arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio,
-                         args.model_se, args.enable_unsupervised, label_mean, contour_mean)
+                         args.model_se, args.enable_unsupervised, label_mean, contour_mean)'''
+    arch_args = (args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio,
+                 args.model_se, label_mean, contour_mean)
     if ('Sparsely Labelled' in args.train_dataset_mode) or (args.exclude_edge):
         sparse_train = True
     else:
@@ -199,12 +181,12 @@ def start_work_flow(args):
     if args.read_existing_model:
         model = PLModule.load_from_checkpoint(args.existing_model_path)
     else:
-        model = PLModule(arch,
+        model = PLModule(arch_args,
                          'Validation' in args.workflow_box, args.enable_mid_visualization,
                          args.mid_visualization_input, instance_mode,
                          sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
                          'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
-    if args.enable_tensorboard:
+    if 'Training' in args.workflow_box:
         tensorboard_thread = threading.Thread(target=start_tensorboard, args=[args])
         tensorboard_thread.daemon = True
         tensorboard_thread.start()
@@ -212,34 +194,35 @@ def start_work_flow(args):
     else:
         logger = False
     if 'Training' in args.workflow_box:
-        if logger:
-            lr_monitor = LearningRateMonitor(logging_interval='epoch')
-        else:
-            lr_monitor = None
         if 'Validation' in args.workflow_box:
             to_monitor = 'Val_epoch_dice'
         else:
             to_monitor = 'Train_epoch_dice'
+        callbacks = []
         model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
                                                         filename=f"{args.save_model_name}",
                                                         mode="max", monitor=to_monitor,
                                                         save_weights_only=True, enable_version_counter=False)
+        if logger:
+            callbacks.append(LearningRateMonitor(logging_interval='epoch'))
+        callbacks.append(model_checkpoint)
         trainer = pl.Trainer(max_epochs=args.num_epochs, log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=True,
                              precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
-                             callbacks=[lr_monitor, model_checkpoint],
+                             callbacks=callbacks,
                              #profiler='simple',
                              )
         start_time = time.time()
-        tuner = Tuner(trainer)
-        lr_finder = tuner.lr_find(model, train_loader, min_lr=1e-6, max_lr=0.1)
-        new_lr = lr_finder.suggestion()
-        print(f'Learning Rate set to: {new_lr}.')
-        model.hparams.lr = new_lr
+        #tuner = Tuner(trainer)
+        #lr_finder = tuner.lr_find(model, train_loader, min_lr=1e-5, max_lr=0.002)
+        #new_lr = lr_finder.suggestion()
+        #print(f'Learning Rate set to: {new_lr}.')
+        #model.hparams.lr = new_lr
         trainer.fit(model,
                     val_dataloaders=val_loader,
                     train_dataloaders=train_loader)
         del val_loader, train_loader
+        model = PLModule.load_from_checkpoint(f"{args.save_model_path}/{args.save_model_name}.ckpt")
         end_time = time.time()
         print(f"Training Taken: {end_time - start_time} seconds")
     if 'Test' in args.workflow_box:
@@ -247,11 +230,11 @@ def start_work_flow(args):
         trainer.test(model, dataloaders=test_loader)
         del test_loader
     if 'Predict' in args.workflow_box:
-        trainer = pl.Trainer(precision="16-mixed", enable_progress_bar=True, logger=False, accelerator="gpu")
+        trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=False, accelerator="gpu")
         predict_dataset = DataComponents.Predict_Dataset(args.predict_dataset_path,
                                                          hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                          hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                                                         TTA_hw=args.TTA_xy)
+                                                         TTA_hw=args.TTA_xy, hdf5_key=args.predict_key_name)
         meta_info = predict_dataset.__getmetainfo__()
         predict_loader = DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
         del predict_dataset
@@ -276,6 +259,9 @@ def start_work_flow(args):
 
 
 if __name__ == "__main__":
+    # To prevent some import errors that might showup
+    multiprocessing.set_start_method('spawn', force=True)
+
     parser = argparse.ArgumentParser(description="Deep Learning Workflow")
     parser.add_argument("--workflow_box", nargs='+', choices=["Training", "Validation", "Test", "Predict"], default=[],
                         help="Workflows to enable")
@@ -304,6 +290,10 @@ if __name__ == "__main__":
     parser.add_argument("--save_model_name", type=str, default="example_name.pth",
                         help="File Name for Model Saved, including extension")
     parser.add_argument("--save_model_path", type=str, default=".", help="Path to Save the Model Weight")
+    parser.add_argument("--train_key_name", type=str, default=".", help="hdf5 dataset name")
+    parser.add_argument("--val_key_name", type=str, default=".", help="hdf5 dataset name")
+    parser.add_argument("--test_key_name", type=str, default=".", help="hdf5 dataset name")
+    parser.add_argument("--predict_key_name", type=str, default=".", help="hdf5 dataset name")
     parser.add_argument("--hw_size", type=int, default=64, help="Height and Width of each Patch (px)")
     parser.add_argument("--d_size", type=int, default=64, help="Depth of each Patch (px)")
     parser.add_argument("--predict_hw_size", type=int, default=128, help="Height and Width of each Patch (px) during prediction")

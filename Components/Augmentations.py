@@ -12,6 +12,8 @@ from joblib import Parallel, delayed
 from scipy.ndimage import distance_transform_edt
 import torch.multiprocessing as mp
 
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
 # Various customize image augmentation implementations specialised in 4 dimensional tensors.
 # (Channel, Depth, Height, Width).
 # The expected range should be between 0 and 1.
@@ -320,7 +322,6 @@ def random_gradient(tensor, range=(0.5, 1.5), gamma=True):
         gradient = torch.linspace(range[0], range[1], tensor.shape[1])
         gradient = gradient.view(1, -1, 1, 1)
         gradient = gradient.flip(dims=(1,))
-
     if gamma:
         return tensor ** gradient
     else:
@@ -339,14 +340,14 @@ def salt_and_pepper_noise(tensor, prob=0.01):
     Returns:
         torch.Tensor: Tensor with salt and pepper noise added.
     """
-    noisy_tensor = tensor.clone()
+    noisy_tensor = tensor.detach()
 
     # Add salt noise
-    salt_mask = torch.rand_like(tensor) < prob
+    salt_mask = torch.rand_like(tensor, device=device) < prob
     noisy_tensor[salt_mask] = 1.0
 
     # Add pepper noise
-    pepper_mask = torch.rand_like(tensor) < prob
+    pepper_mask = torch.rand_like(tensor, device=device) < prob
     noisy_tensor[pepper_mask] = 0.0
 
     return noisy_tensor
@@ -557,6 +558,6 @@ def edge_replicate_pad(input_tensors, padding_percentile=0.1):
     output_tensors = []
     for input_tensor in input_tensors:
         output_tensor = input_tensor[:, D_crop:-D_crop, H_crop:-H_crop, W_crop:-W_crop]
-        output_tensor = T_F.pad(output_tensor, [W_crop, W_crop, H_crop, H_crop, D_crop, D_crop], padding_mode='replicate')
+        output_tensor = F.pad(output_tensor, [W_crop, W_crop, H_crop, H_crop, D_crop, D_crop], mode='replicate')
         output_tensors.append(output_tensor)
     return output_tensors

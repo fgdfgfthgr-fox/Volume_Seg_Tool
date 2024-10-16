@@ -52,7 +52,7 @@ class Original(nn.Module):
 
 
 class Auto(nn.Module):
-    def __init__(self, base_channels=64, depth=5, z_to_xy_ratio=1, type='Auto', se=False, unsupervised=False, label_mean=torch.tensor(0.5)):
+    def __init__(self, base_channels=64, depth=5, z_to_xy_ratio=1, type='Auto', se=False, label_mean=torch.tensor(0.5)):
         super(Auto, self).__init__()
         if depth < 2:
             raise ValueError("The depth needs to be at least 2 (2 different feature map size exist).")
@@ -79,10 +79,10 @@ class Auto(nn.Module):
                 setattr(self, f'decode0',
                         SegDecodeBlock_2(base_channels, 2, kernel_sizes_conv, kernel_sizes_pool[0]))
                 if se: setattr(self, f'decode_se0', scSE(2))
-                if unsupervised:
+                '''if unsupervised:
                     setattr(self, f'u_decode0',
                             SegDecodeBlock_2(base_channels, 2, kernel_sizes_conv))
-                    if se: setattr(self, f'u_decode_se0', scSE(base_channels))
+                    if se: setattr(self, f'u_decode_se0', scSE(base_channels))'''
             else:
                 setattr(self, f'encode{i}',
                         SegEncodeBlock_3(base_channels * (2 ** (i-1)), (base_channels * (2 ** i)),
@@ -92,16 +92,16 @@ class Auto(nn.Module):
                         SegDecodeBlock_3(base_channels * (2 ** i), (base_channels * (2 ** (i-1))),
                                          kernel_sizes_conv, kernel_sizes_pool[i]))
                 if se: setattr(self, f'decode_se{i}', scSE(base_channels * (2 ** (i-1))))
-                if unsupervised:
+                '''if unsupervised:
                     setattr(self, f'u_decode{i}',
                             SegDecodeBlock_3(base_channels * (2 ** i), (base_channels * (2 ** i)), kernel_sizes_conv))
-                    if se: setattr(self, f'u_decode_se{i}', scSE(base_channels * (2 ** i)))
+                    if se: setattr(self, f'u_decode_se{i}', scSE(base_channels * (2 ** i)))'''
         logit_label_mean = torch.log(label_mean / (1 - label_mean)) * 0.5
         self.s_out = nn.Conv3d(2, 1, kernel_size=1)
         with torch.no_grad():
             self.s_out.bias.fill_(logit_label_mean)
-        if unsupervised:
-            self.u_out = nn.Conv3d(2, 1, kernel_size=1)
+        '''if unsupervised:
+            self.u_out = nn.Conv3d(2, 1, kernel_size=1)'''
 
     def semantic_decode(self, x, encode_indices):
         for i in reversed(range(self.depth)):
@@ -110,25 +110,26 @@ class Auto(nn.Module):
         output = self.s_out(x)
         return output
 
-    def unsupervised_decode(self, x, encode_indices):
+    '''def unsupervised_decode(self, x, encode_indices):
         for i in reversed(range(self.depth)):
             x = getattr(self, f"u_decode{i}")(x, encode_indices[i])
             if self.se: x = getattr(self, f"u_decode_se{i}")(x)
         output = self.u_out(x)
-        return output
+        return output'''
 
-    def forward(self, input, type=(1,)):
+    def forward(self, x):
         encode_indices = []
-        x = input
 
         for i in range(self.depth):
             x, indices = getattr(self, f"encode{i}")(x)
             if self.se: x = getattr(self, f"encode_se{i}")(x)
             encode_indices.append(indices)
 
-        if type[0] == 0:
+        return self.semantic_decode(x, encode_indices)
+
+        '''if type[0] == 0:
             return self.semantic_decode(x, encode_indices)
         elif type[0] == 1:
             return self.unsupervised_decode(x, encode_indices)
         elif type[0] == 2:
-            return self.semantic_decode(x, encode_indices), self.unsupervised_decode(x, encode_indices)
+            return self.semantic_decode(x, encode_indices), self.unsupervised_decode(x, encode_indices)'''
