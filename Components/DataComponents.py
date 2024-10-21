@@ -384,10 +384,20 @@ class TrainDataset(torch.utils.data.Dataset):
             return img_tensor, lab_tensor.to(torch.float32)
 
     def get_label_mean(self):
-        return torch.cat(self.lab_tensors).to(torch.float32).mean()
+        numels = 0
+        sum = 0
+        for tensor in self.lab_tensors:
+            numels += tensor.numel()
+            sum += tensor.sum()
+        return torch.tensor((sum/numels), dtype=torch.float32)
 
     def get_contour_mean(self):
-        return torch.cat(self.contour_tensors).to(torch.float32).mean()
+        numels = 0
+        sum = 0
+        for tensor in self.contour_tensors:
+            numels += tensor.numel()
+            sum += tensor.sum()
+        return torch.tensor((sum / numels), dtype=torch.float32)
 
 
 class UnsupervisedDataset(torch.utils.data.Dataset):

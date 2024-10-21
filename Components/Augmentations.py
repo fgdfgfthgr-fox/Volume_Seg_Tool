@@ -296,37 +296,37 @@ def random_gradient(tensor, range=(0.5, 1.5), gamma=True):
     # Check if the input tensor has the correct shape
     if tensor.ndim != 4:
         raise ValueError("Input tensor must have shape [channel, depth, height, width]")
+    random_range = random.uniform(range[0], 1.0), random.uniform(1.0, range[1])
 
     # Generate a random side (left, right, top, bottom, front, back) for the gradient effect
     gradient_side = torch.randint(0, 6, size=(1,))
 
     # Generate a gradient tensor for gamma adjustment based on the selected side
     if gradient_side == 0:  # Left side
-        gradient = torch.linspace(range[0], range[1], tensor.shape[3])
+        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[3])
         gradient = gradient.view(1, 1, 1, -1)
     elif gradient_side == 1:  # Right side
-        gradient = torch.linspace(range[0], range[1], tensor.shape[3])
+        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[3])
         gradient = gradient.view(1, 1, 1, -1)
         gradient = gradient.flip(dims=(3,))
     elif gradient_side == 2:  # Top side
-        gradient = torch.linspace(range[0], range[1], tensor.shape[2])
+        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[2])
         gradient = gradient.view(1, 1, -1, 1)
     elif gradient_side == 3:  # Bottom side
-        gradient = torch.linspace(range[0], range[1], tensor.shape[2])
+        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[2])
         gradient = gradient.view(1, 1, -1, 1)
         gradient = gradient.flip(dims=(2,))
     elif gradient_side == 4:  # Front side
-        gradient = torch.linspace(range[0], range[1], tensor.shape[1])
+        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[1])
         gradient = gradient.view(1, -1, 1, 1)
     else:  # Back side
-        gradient = torch.linspace(range[0], range[1], tensor.shape[1])
+        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[1])
         gradient = gradient.view(1, -1, 1, 1)
         gradient = gradient.flip(dims=(1,))
     if gamma:
         return tensor ** gradient
     else:
-        mean = tensor.mean()
-        return (gradient * tensor + (1.0 - gradient) * mean).clamp(0, 1)
+        return (gradient * tensor + (1.0 - gradient) * tensor.mean()).clamp(0, 1)
 
 
 def salt_and_pepper_noise(tensor, prob=0.01):
@@ -340,17 +340,16 @@ def salt_and_pepper_noise(tensor, prob=0.01):
     Returns:
         torch.Tensor: Tensor with salt and pepper noise added.
     """
-    noisy_tensor = tensor.detach()
 
     # Add salt noise
     salt_mask = torch.rand_like(tensor, device=device) < prob
-    noisy_tensor[salt_mask] = 1.0
+    tensor[salt_mask] = 1.0
 
     # Add pepper noise
     pepper_mask = torch.rand_like(tensor, device=device) < prob
-    noisy_tensor[pepper_mask] = 0.0
+    tensor[pepper_mask] = 0.0
 
-    return noisy_tensor
+    return tensor
 
 
 def exclude_border_labels(tensor, inward, outward):

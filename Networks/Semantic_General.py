@@ -59,8 +59,11 @@ class UNet(nn.Module):
                 if i == 0:
                     if type == 'ResidualBottleneck':
                         multiplier_h = multiplier_h // 2
+                        decode_multiplier_v = multiplier_v // 2
+                    else:
+                        decode_multiplier_v = multiplier_v
                     setattr(self, f'encode{i}', BasicBlock(1, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
-                    setattr(self, f'decode{i}', BasicBlock(multiplier_v, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
+                    setattr(self, f'decode{i}', BasicBlock(decode_multiplier_v, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
                     setattr(self, f'p_out{i}', nn.Conv3d(multiplier_h, 1, kernel_size=1))
                 else:
                     setattr(self, f'encode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
