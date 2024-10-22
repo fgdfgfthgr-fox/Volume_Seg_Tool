@@ -641,7 +641,7 @@ if __name__ == "__main__":
                     else:
                         num_u_files = 1
                     train_multiplier = calculate_train_multiplier(val_num_patch, num_t_files, workflow_box)
-                    unsupervised_train_multiplier = (train_multiplier // num_u_files) * batch_size
+                    unsupervised_train_multiplier = (train_multiplier * num_t_files // num_u_files) * batch_size
                     num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files)
                     return val_num_patch, num_t_files, num_u_files, train_multiplier, unsupervised_train_multiplier, num_epochs
                 calculate_repeats.click(get_auto_parameters,
