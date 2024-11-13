@@ -17,6 +17,7 @@ from Networks import *
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks import LearningRateFinder
+from lightning.pytorch.callbacks import StochasticWeightAveraging
 from lightning.pytorch.tuner import Tuner
 
 
@@ -33,7 +34,6 @@ class FineTuneLearningRateFinder(LearningRateFinder):
     def on_train_epoch_start(self, trainer, pl_module):
         if trainer.current_epoch == 0:
             self.lr_find(trainer, pl_module)
-
 
 
 def create_logger(args):
@@ -199,13 +199,19 @@ def start_work_flow(args):
         else:
             to_monitor = 'Train_epoch_dice'
         callbacks = []
-        model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
+        '''model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
                                                         filename=f"{args.save_model_name}",
                                                         mode="max", monitor=to_monitor,
-                                                        save_weights_only=True, enable_version_counter=False)
+                                                        save_weights_only=True, enable_version_counter=False)'''
+        model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
+                                                             filename=f"{args.save_model_name}",
+                                                             save_weights_only=True, enable_version_counter=False)
+        swa_callback = StochasticWeightAveraging(5e-5, 0.8, int(0.2*args.num_epochs-1))
+        print(f'SWA starts at {int(0.8*args.num_epochs)}\n')
         if logger:
             callbacks.append(LearningRateMonitor(logging_interval='epoch'))
-        callbacks.append(model_checkpoint)
+        callbacks.append(model_checkpoint_last)
+        callbacks.append(swa_callback)
         trainer = pl.Trainer(max_epochs=args.num_epochs, log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=True,
                              precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,

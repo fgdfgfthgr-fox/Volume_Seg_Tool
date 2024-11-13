@@ -38,7 +38,7 @@ if __name__ == "__main__":
                                                     2, 'negative')
     loader_for_lr = torch.utils.data.DataLoader(dataset=train_dataset_pos, batch_size=2, num_workers=16, pin_memory=True, persistent_workers=True)
     train_label_mean = train_dataset_pos.get_label_mean()
-    train_contour_mean = train_dataset_pos.get_contour_mean()
+    #train_contour_mean = train_dataset_pos.get_contour_mean()
     unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
                                                                     "Augmentation Parameters.csv",
                                                                     64,
@@ -53,12 +53,12 @@ if __name__ == "__main__":
     model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="test", mode="max",
                                                     monitor="Val_epoch_dice", save_weights_only=True,
                                                     enable_version_counter=False)
-    arch_args = ('InstanceResidual', 8, 4, 1, True, train_label_mean, train_contour_mean)
+    arch_args = ('InstanceResidual', 8, 4, 1, True, train_label_mean, 0.5)
 
-    def train_model(weight):
+    def train_model():
         model = PLModule(arch_args,
             True, True, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', False,
-            False, False, False, True, weight)
+            False, False, False, True)
         trainer = pl.Trainer(max_epochs=100, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name='test'),
                              accelerator="gpu", enable_checkpointing=True,
                              precision='bf16-mixed', enable_progress_bar=True, num_sanity_val_steps=0, callbacks=[model_checkpoint, LearningRateMonitor(logging_interval='epoch')])
@@ -72,5 +72,5 @@ if __name__ == "__main__":
                     train_dataloaders=train_loader)
     #i = 0.1
     #while i <= 1.5:
-    train_model(0.1)
+    train_model()
     #    i += 0.1
