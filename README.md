@@ -2,6 +2,8 @@
 
 This repository holds the script for Volume Segmentation Tool and its Gradio-based Webui.
 
+Paper coming soon...
+
 Supporting Operating Systems includes: Windows and Linux and macOS.
 
 ## About the Tool
