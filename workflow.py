@@ -206,7 +206,7 @@ def start_work_flow(args):
         model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
                                                              filename=f"{args.save_model_name}",
                                                              save_weights_only=True, enable_version_counter=False)
-        swa_callback = StochasticWeightAveraging(5e-5, 0.8, int(0.2*args.num_epochs-1))
+        swa_callback = StochasticWeightAveraging(1e-5, 0.8, int(0.2*args.num_epochs-1))
         print(f'SWA starts at {int(0.8*args.num_epochs)}\n')
         if logger:
             callbacks.append(LearningRateMonitor(logging_interval='epoch'))

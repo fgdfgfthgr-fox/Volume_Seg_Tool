@@ -211,8 +211,11 @@ class PLModule(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         outputs = self.forward(batch)
-        output = torch.mean(torch.stack(outputs, dim=0), dim=0).to(torch.float16) # fp32 is unnecessary
-        return output
+        if isinstance(outputs, tuple):
+            p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs[0], dim=0), dim=0)).to(torch.float16)
+            return p_outputs, torch.sigmoid(outputs[1]).to(torch.float16)
+        else:
+            return outputs.to(torch.float16)
 
     def log_metrics(self, prefix, metrics_list):
         if metrics_list:
