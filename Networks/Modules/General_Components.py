@@ -3,7 +3,7 @@ import torch.nn as nn
 
 
 class ResBasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), num_conv=2):
+    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), num_conv=2, norm=True):
         super().__init__()
         padding = tuple((k - 1) // 2 for k in kernel_size)
         layers = []
@@ -14,7 +14,8 @@ class ResBasicBlock(nn.Module):
         for i in range(num_conv):
             layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
                                     kernel_size=kernel_size, padding=padding, bias=False))
-            layers.append(nn.InstanceNorm3d(out_channels))
+            if norm:
+                layers.append(nn.InstanceNorm3d(out_channels))
             if i != num_conv - 1:
                 layers.append(nn.SiLU(inplace=True))
         self.operations = nn.Sequential(*layers)
@@ -25,7 +26,7 @@ class ResBasicBlock(nn.Module):
 
 
 class ResBottleneckBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), neck=4, num_conv=1):
+    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), neck=4, num_conv=1, norm=True):
         super().__init__()
         padding = tuple((k - 1) // 2 for k in kernel_size)
         middle_channel = out_channels//neck
@@ -35,13 +36,17 @@ class ResBottleneckBlock(nn.Module):
         for i in range(num_conv):
             layers.append(
                 nn.Conv3d(middle_channel, middle_channel, kernel_size=kernel_size, padding=padding, bias=False))
-            layers.append(nn.InstanceNorm3d(middle_channel))
+            if norm:
+                layers.append(nn.InstanceNorm3d(out_channels))
             if i != num_conv - 1:
                 layers.append(nn.SiLU(inplace=True))
         self.convs = nn.Sequential(*layers)
 
         self.conv_up = nn.Conv3d(middle_channel, out_channels, kernel_size=1)
-        self.bn = nn.InstanceNorm3d(middle_channel)
+        if norm:
+            self.bn = nn.InstanceNorm3d(middle_channel)
+        else:
+            self.bn = nn.Identity()
         self.silu = nn.SiLU(inplace=True)
 
     def forward(self, x):
@@ -52,14 +57,15 @@ class ResBottleneckBlock(nn.Module):
 
 
 class BasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3, 3, 3), num_conv=2, padding_mode='zeros'):
+    def __init__(self, in_channels, out_channels, kernel_size=(3, 3, 3), num_conv=2, padding_mode='zeros', norm=True):
         super().__init__()
         padding = tuple((k - 1) // 2 for k in kernel_size)
         layers = []
         for i in range(num_conv):
             layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
                                     kernel_size=kernel_size, padding=padding, bias=False, padding_mode=padding_mode))
-            layers.append(nn.InstanceNorm3d(out_channels))
+            if norm:
+                layers.append(nn.InstanceNorm3d(out_channels))
             layers.append(nn.SiLU(inplace=True))
         self.operations = nn.Sequential(*layers)
 

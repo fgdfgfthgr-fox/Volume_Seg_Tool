@@ -40,7 +40,7 @@ def pick_arch(arch_args):
         return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, label_mean)
     elif arch == "UNetBasic":
         return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, label_mean)
-    elif arch == "UNetResidual_(Recommended)":
+    elif arch == "UNetResidual_Recommended":
         return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, label_mean)
     elif arch == "UNetResidualBottleneck":
         return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, label_mean)
@@ -215,7 +215,7 @@ class PLModule(pl.LightningModule):
             p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs[0], dim=0), dim=0)).to(torch.float16)
             return p_outputs, torch.sigmoid(outputs[1]).to(torch.float16)
         else:
-            return outputs.to(torch.float16)
+            return torch.sigmoid(torch.mean(torch.stack(outputs, dim=0), dim=0)).to(torch.float16)
 
     def log_metrics(self, prefix, metrics_list):
         if metrics_list:

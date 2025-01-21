@@ -76,7 +76,9 @@ class BranchedUNet(nn.Module):
                     setattr(self, f'c_decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=2))
                 if se: setattr(self, f'encode_se{i}', scSE(multiplier_h))
                 setattr(self, f'down{i}',
-                        nn.Conv3d(multiplier_h, multiplier_v, kernel_sizes_down[i], kernel_sizes_transpose[i], padding_down[i]))
+                        nn.Sequential(nn.Conv3d(multiplier_h, multiplier_v, kernel_sizes_down[i], kernel_sizes_transpose[i], padding_down[i]),
+                                      nn.InstanceNorm3d(multiplier_v),
+                                      nn.SiLU(inplace=True)))
                 setattr(self, f'p_deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, kernel_sizes_down[i], kernel_sizes_conv[i]))
                 setattr(self, f'c_deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, kernel_sizes_down[i], kernel_sizes_conv[i]))
                 if se: setattr(self, f'p_decode_se{i}', scSE(multiplier_h))

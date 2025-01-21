@@ -215,6 +215,7 @@ def start_work_flow(args):
         trainer = pl.Trainer(max_epochs=args.num_epochs, log_every_n_steps=1, logger=logger,
                              accelerator="gpu", enable_checkpointing=True,
                              precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
+                             gradient_clip_val=0.2,
                              callbacks=callbacks,
                              #profiler='simple',
                              )
