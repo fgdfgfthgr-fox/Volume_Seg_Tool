@@ -212,11 +212,14 @@ class PLModule(pl.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         def apply_augmentation(data, i):
             if i % 2 == 0:
-                data = torch.flip(data, [0])
-            if i % 4 <= 1:
-                data = torch.flip(data, [1])
-            if i % 8 <= 3:
+                # D
                 data = torch.flip(data, [2])
+            if i % 4 <= 1:
+                # H
+                data = torch.flip(data, [3])
+            if i % 8 <= 3:
+                # W
+                data = torch.flip(data, [4])
             return data
 
         TTA_results = []
