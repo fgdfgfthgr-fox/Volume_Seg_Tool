@@ -241,7 +241,7 @@ def start_work_flow(args):
         predict_dataset = DataComponents.Predict_Dataset(args.predict_dataset_path,
                                                          hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                          hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                                                         TTA_hw=args.TTA_xy, hdf5_key=args.predict_key_name)
+                                                         hdf5_key=args.predict_key_name)
         meta_info = predict_dataset.__getmetainfo__()
         predict_loader = DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
         del predict_dataset
@@ -254,13 +254,12 @@ def start_work_flow(args):
         if 'Semantic' in args.segmentation_mode:
             DataComponents.predictions_to_final_img(predictions, meta_info, direc=args.result_folder_path,
                                                     hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
-                                                    hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                                                    TTA_hw=args.TTA_xy)
+                                                    hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap)
         else:
             DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=args.result_folder_path,
                                                              hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                              hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                                                             TTA_hw=args.TTA_xy, pixel_reclaim=args.pixel_reclaim)
+                                                            pixel_reclaim=args.pixel_reclaim)
         end_time = time.time()
         print(f"Converting and saving taken: {end_time - start_time} seconds")
 
@@ -329,7 +328,7 @@ if __name__ == "__main__":
                         help="Dataset Mode")
     parser.add_argument("--test_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],
                         default="Fully Labelled", help="Dataset Mode")
-    parser.add_argument("--TTA_xy", action="store_true", help="Enable Test-Time Augmentation for xy dimension")
+    #parser.add_argument("--TTA_xy", action="store_true", help="Enable Test-Time Augmentation for xy dimension")
     parser.add_argument("--pixel_reclaim", action="store_true", help="Enable reclaim of lost pixel during the instance segmentation.")
 
     args = parser.parse_args()

@@ -533,10 +533,10 @@ class Predict_Dataset(torch.utils.data.Dataset):
         depth_size (int): The depth of patches the prediction image will be cropped to. In pixels.
         hw_overlap (int): The additional gain in height and width of the patches. In pixels. Helps smooth out borders between patches.
         depth_overlap (int): The additional gain in depth of the patches. In pixels. Helps smooth out borders between patches.
-        key (str): If trying to load from a hdf5 file, will load the File object with this name.
+        hdf5_key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
 
-    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, TTA_hw=False,
+    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16,
                  leave_out_idx=None, hdf5_key='Default'):
         self.file_list = make_dataset_predict(images_dir)
         self.patches_list = []
@@ -550,56 +550,47 @@ class Predict_Dataset(torch.utils.data.Dataset):
             depth = shape[1]
             height = shape[2]
             width = shape[3]
-            image_list = [image]
-            if TTA_hw:
-                image_list.append(T_F.hflip(image))
-                image_list.append(T_F.vflip(image))
-                image_list.append(T_F.vflip(T_F.hflip(image)))
-            del image
             file_name = os.path.basename(file)
 
             # Calculate the multipliers for padding and cropping
             depth_multiplier = math.ceil(depth / depth_size)
             height_multiplier = math.ceil(height / hw_size)
             width_multiplier = math.ceil(width / hw_size)
-            TTA_multiplier = len(image_list)
             # Padding and cropping
             paddings = (hw_overlap, hw_overlap,
                         hw_overlap, hw_overlap,
                         depth_overlap, depth_overlap)
-            for i in range(len(image_list)):
-                image_list[i] = F.pad(image_list[i], paddings, mode="replicate")
+            image = F.pad(image, paddings, mode="replicate")
             # Loop through each depth, height, and width index
-            for i in range(TTA_multiplier):
-                for depth_idx in range(depth_multiplier):
-                    for height_idx in range(height_multiplier):
-                        for width_idx in range(width_multiplier):
-                            if depth_multiplier > 1:
-                                depth_start = (depth_size - ((depth_size * depth_multiplier - depth) / (
-                                            depth_multiplier - 1))) * depth_idx
-                                depth_start = math.floor(depth_start)
-                            else:
-                                depth_start = 0
-                            depth_end = depth_start + depth_size + (2 * depth_overlap)
-                            if height_multiplier > 1:
-                                height_start = (hw_size - ((hw_size * height_multiplier - height) / (
-                                            height_multiplier - 1))) * height_idx
-                                height_start = math.floor(height_start)
-                            else:
-                                height_start = 0
-                            height_end = height_start + hw_size + (2 * hw_overlap)
-                            if width_multiplier > 1:
-                                width_start = (hw_size - (
-                                            (hw_size * width_multiplier - width) / (width_multiplier - 1))) * width_idx
-                                width_start = math.floor(width_start)
-                            else:
-                                width_start = 0
-                            width_end = width_start + hw_size + (2 * hw_overlap)
-                            patch = image_list[i][:,
-                                                  depth_start:depth_end,
-                                                  height_start:height_end,
-                                                  width_start:width_end]
-                            self.patches_list.append(patch)
+            for depth_idx in range(depth_multiplier):
+                for height_idx in range(height_multiplier):
+                    for width_idx in range(width_multiplier):
+                        if depth_multiplier > 1:
+                            depth_start = (depth_size - ((depth_size * depth_multiplier - depth) / (
+                                        depth_multiplier - 1))) * depth_idx
+                            depth_start = math.floor(depth_start)
+                        else:
+                            depth_start = 0
+                        depth_end = depth_start + depth_size + (2 * depth_overlap)
+                        if height_multiplier > 1:
+                            height_start = (hw_size - ((hw_size * height_multiplier - height) / (
+                                        height_multiplier - 1))) * height_idx
+                            height_start = math.floor(height_start)
+                        else:
+                            height_start = 0
+                        height_end = height_start + hw_size + (2 * hw_overlap)
+                        if width_multiplier > 1:
+                            width_start = (hw_size - (
+                                        (hw_size * width_multiplier - width) / (width_multiplier - 1))) * width_idx
+                            width_start = math.floor(width_start)
+                        else:
+                            width_start = 0
+                        width_end = width_start + hw_size + (2 * hw_overlap)
+                        patch = image[:,
+                                      depth_start:depth_end,
+                                      height_start:height_end,
+                                      width_start:width_end]
+                        self.patches_list.append(patch)
             self.meta_list.append((file_name, shape))
         super().__init__()
 
@@ -844,8 +835,7 @@ class CrossValidationDataset(torch.utils.data.Dataset):
         return self.meta_list
 
 
-def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16,
-                          TTA_hw=False):
+def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
     """
     Stitch the patches of output volumes and reconstruct the original image tensor(s).
 
@@ -856,13 +846,11 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
         depth_size (int): The depth of the patches. In pixels.
         hw_overlap (int): The additional gain in height and width of the patches. In pixels.
         depth_overlap (int): The additional gain in depth of the patches. In pixels.
-        TTA_hw (bool): Whether to apply test-time augmentation.
 
     Returns:
         list: stitched tensors with shape (C, D, H, W).
     """
     output_list = []
-    TTA_multiplier = 4 if TTA_hw else 1
 
     for meta_info in meta_list:
         depth, height, width = meta_info[1][1:]
@@ -871,60 +859,47 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
         depth_multiplier = math.ceil(depth / depth_size)
         height_multiplier = math.ceil(height / hw_size)
         width_multiplier = math.ceil(width / hw_size)
-        total_multiplier = depth_multiplier * height_multiplier * width_multiplier * TTA_multiplier
+        total_multiplier = depth_multiplier * height_multiplier * width_multiplier
 
-        TTA_list = []
-        for TTA_idx in range(TTA_multiplier):
-            # f32 would be a waste here
-            result_volume = torch.zeros((depth,
-                                         height,
-                                         width), dtype=torch.float16)
+        # f32 would be a waste here
+        result_volume = torch.zeros((depth,
+                                     height,
+                                     width), dtype=torch.float16)
 
-            for i in range(TTA_idx * (total_multiplier // TTA_multiplier),
-                           (TTA_idx + 1) * (total_multiplier // TTA_multiplier)):
-                tensor_work_with = tensor_list[i]
-                if hw_overlap or depth_overlap:
-                    tensor_work_with = tensor_work_with[
-                                       (depth_overlap if depth_overlap else slice(None)):
-                                       -(depth_overlap if depth_overlap else slice(None)),
-                                       (hw_overlap if hw_overlap else slice(None)):
-                                       -(hw_overlap if hw_overlap else slice(None)),
-                                       (hw_overlap if hw_overlap else slice(None)):
-                                       -(hw_overlap if hw_overlap else slice(None))
-                                       ]
+        for i in range(total_multiplier):
+            tensor_work_with = tensor_list[i]
+            if hw_overlap or depth_overlap:
+                tensor_work_with = tensor_work_with[
+                                   (depth_overlap if depth_overlap else slice(None)):
+                                   -(depth_overlap if depth_overlap else slice(None)),
+                                   (hw_overlap if hw_overlap else slice(None)):
+                                   -(hw_overlap if hw_overlap else slice(None)),
+                                   (hw_overlap if hw_overlap else slice(None)):
+                                   -(hw_overlap if hw_overlap else slice(None))
+                                   ]
 
-                depth_idx, height_idx, width_idx = (i // (height_multiplier * width_multiplier)) % depth_multiplier, \
-                                                   (i // width_multiplier) % height_multiplier, \
-                                                   i % width_multiplier
+            depth_idx, height_idx, width_idx = (i // (height_multiplier * width_multiplier)) % depth_multiplier, \
+                                               (i // width_multiplier) % height_multiplier, \
+                                               i % width_multiplier
 
-                depth_start = math.floor((depth_size - (depth_size * depth_multiplier - depth) / (
-                            depth_multiplier - 1)) * depth_idx) if depth_multiplier > 1 else 0
-                height_start = math.floor((hw_size - (hw_size * height_multiplier - height) / (
-                            height_multiplier - 1)) * height_idx) if height_multiplier > 1 else 0
-                width_start = math.floor((hw_size - (hw_size * width_multiplier - width) / (
-                            width_multiplier - 1)) * width_idx) if width_multiplier > 1 else 0
+            depth_start = math.floor((depth_size - (depth_size * depth_multiplier - depth) / (
+                        depth_multiplier - 1)) * depth_idx) if depth_multiplier > 1 else 0
+            height_start = math.floor((hw_size - (hw_size * height_multiplier - height) / (
+                        height_multiplier - 1)) * height_idx) if height_multiplier > 1 else 0
+            width_start = math.floor((hw_size - (hw_size * width_multiplier - width) / (
+                        width_multiplier - 1)) * width_idx) if width_multiplier > 1 else 0
 
-                result_volume[depth_start:depth_start + tensor_work_with.shape[0],
-                height_start:height_start + tensor_work_with.shape[1],
-                width_start:width_start + tensor_work_with.shape[2]] = tensor_work_with
+            result_volume[depth_start:depth_start + tensor_work_with.shape[0],
+                          height_start:height_start + tensor_work_with.shape[1],
+                          width_start:width_start + tensor_work_with.shape[2]] = tensor_work_with
 
-            #result_volume = result_volume[:depth, :height, :width]
-            if TTA_idx == 1:
-                result_volume = T_F.hflip(result_volume)
-            elif TTA_idx == 2:
-                result_volume = T_F.vflip(result_volume)
-            elif TTA_idx == 3:
-                result_volume = T_F.vflip(T_F.hflip(result_volume))
-            TTA_list.append(result_volume)
-
-        result_volume = torch.mean(torch.stack(TTA_list), dim=0)
         output_list.append((result_volume, file_name))
 
     return output_list
 
 
 def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16,
-                             depth_overlap=16, TTA_hw=False):
+                             depth_overlap=16):
     """
     Stitch the patches of prediction output from network and save it in the selected directory.\n
     This one is for semantic segmentation.
@@ -942,8 +917,7 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
                    for prediction in predictions
                    for tensor in torch.split(prediction[0], 1, dim=0)]
 
-    stitched_volumes = stitch_output_volumes(tensor_list, meta_list, hw_size, depth_size, hw_overlap, depth_overlap,
-                                             TTA_hw)
+    stitched_volumes = stitch_output_volumes(tensor_list, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
     del tensor_list
     for volume in stitched_volumes:
         array = np.asarray(volume[0])
@@ -952,7 +926,7 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
 
 
 def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16,
-                                      depth_overlap=16, TTA_hw=False, pixel_reclaim=True):
+                                      depth_overlap=16, pixel_reclaim=True):
     """
     Stitch the patches of prediction output from network and save it in the selected directory.\n
     This one is for instance segmentation.
@@ -965,7 +939,6 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         depth_size (int): The depth of the patches. In pixels.
         hw_overlap (int): The additional gain in height and width of the patches. In pixels.
         depth_overlap (int): The additional gain in depth of the patches. In pixels.
-        TTA_hw (bool): Whether to enable test time augmentation for improved segmentation accuracy. Default: False
         pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
     """
     tensor_list_p = [
@@ -981,11 +954,9 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
     ]
 
     del predictions
-    stitched_volumes_p = stitch_output_volumes(tensor_list_p, meta_list, hw_size, depth_size, hw_overlap, depth_overlap,
-                                               TTA_hw)
+    stitched_volumes_p = stitch_output_volumes(tensor_list_p, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
     del tensor_list_p
-    stitched_volumes_c = stitch_output_volumes(tensor_list_c, meta_list, hw_size, depth_size, hw_overlap, depth_overlap,
-                                               TTA_hw)
+    stitched_volumes_c = stitch_output_volumes(tensor_list_c, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
     del tensor_list_c
     #    for volume in stitched_volumes_p:
     #        array = np.asarray(volume[0])

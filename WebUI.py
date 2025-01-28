@@ -102,8 +102,8 @@ def start_work_flow(inputs):
         cmd += "--exclude_edge "
     if inputs[enable_mid_visualization]:
         cmd += "--enable_mid_visualization "
-    if inputs[TTA_xy]:
-        cmd += "--TTA_xy "
+    '''if inputs[TTA_xy]:
+        cmd += "--TTA_xy "'''
     if inputs[model_se]:
         cmd += "--model_se "
     if inputs[find_max_channel_count]:
@@ -383,14 +383,14 @@ if __name__ == "__main__":
                     num_u_files = gr.Number(None,
                                             label="Number of image files in the unsupervised training set.",
                                             interactive=False, visible=False)
-                    unsupervised_train_multiplier = gr.Number(None, label="Unsupervised Train Multiplier (Repeats)",
+                    unsupervised_train_multiplier = gr.Number(1, label="Unsupervised Train Multiplier (Repeats)",
                                                               interactive=False, visible=False)
 
                     def show_hide_unsupervised_folder(enable_unsupervised):
                         visible = True if enable_unsupervised else False
                         options = (gr.Textbox('Datasets/unsupervised_train', scale=2,
                                    label="Unsupervised Train Dataset Path", visible=visible),
-                                   gr.Number(None, label="Unsupervised Train Multiplier (Repeats)",
+                                   gr.Number(1, label="Unsupervised Train Multiplier (Repeats)",
                                              interactive=False, visible=visible))
                         return options
                     enable_unsupervised.change(show_hide_unsupervised_folder,
@@ -419,7 +419,7 @@ if __name__ == "__main__":
                             total = depth_multiplier * height_multiplier * width_multiplier
                             counter += total
                         return counter
-                    val_num_patch = gr.Number(None,
+                    val_num_patch = gr.Number(1,
                                               label="Number of patches in validation set, automatically computed",
                                               precision=0, minimum=0, interactive=False)
                 val_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
@@ -444,7 +444,7 @@ if __name__ == "__main__":
                         return gr.Number(bs, label="Batch Size", precision=0, minimum=1, interactive=False,
                                          info="Number of training patch to feed into the network at once.")
                     pairing_samples.change(change_batch_size, inputs=pairing_samples, outputs=batch_size)
-                    num_t_files = gr.Number(None,
+                    num_t_files = gr.Number(1,
                                             label="Number of image files in the training set.",
                                             interactive=False, visible=False)
                 with gr.Accordion("When do you need to pair positive and negative sample", open=False):
@@ -615,10 +615,10 @@ if __name__ == "__main__":
                     folder_button = gr.Button(document_symbol, scale=0)
                     folder_button.click(open_folder, outputs=result_folder_path)
                 with gr.Row():
-                    TTA_xy = gr.Checkbox(label="Enable Test-Time Augmentation for xy dimension",
+                    '''TTA_xy = gr.Checkbox(label="Enable Test-Time Augmentation for xy dimension",
                                          info="Horizontal And Vertical flip the image; the augmented images are then passed into the model."
                                               " Corresponding reverse transformation then applys to the output probability maps, and those maps get combined together."
-                                              " Can improve segmentation accuracy, but will take longer and consume more CPU memory.")
+                                              " Can improve segmentation accuracy, but will take longer and consume more CPU memory.")'''
                     pixel_reclaim = gr.Checkbox(label="Enable Pixel reclaim operation for instance segmentation",
                                                 info="Due to how instance segmentation works, some pixels will be lost when seperating touching objects, "
                                                      "this settings will try to reclaim those lost pixels, but can take quite some time.")
@@ -770,7 +770,7 @@ if __name__ == "__main__":
                 contour_map_width,
                 val_dataset_mode,
                 test_dataset_mode,
-                TTA_xy,
+#                TTA_xy,
                 pixel_reclaim,
 #                TTA_z,
                 }

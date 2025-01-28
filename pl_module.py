@@ -210,12 +210,36 @@ class PLModule(pl.LightningModule):
         return {'loss': result_tuple[0]}
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        outputs = self.forward(batch)
-        if isinstance(outputs, tuple):
-            p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs[0], dim=0), dim=0)).to(torch.float16)
-            return p_outputs, torch.sigmoid(outputs[1]).to(torch.float16)
+        def apply_augmentation(data, i):
+            if i % 2 == 0:
+                data = torch.flip(data, [0])
+            if i % 4 <= 1:
+                data = torch.flip(data, [1])
+            if i % 8 <= 3:
+                data = torch.flip(data, [2])
+            return data
+
+        TTA_results = []
+        for i in range(8):
+            aug_batch = apply_augmentation(batch, i)
+            outputs = self.forward(aug_batch)
+
+            if isinstance(outputs, tuple):
+                p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs[0], dim=0), dim=0)).to(torch.float16)
+                c_outputs = torch.sigmoid(outputs[1]).to(torch.float16)
+                p_outputs = apply_augmentation(p_outputs, i)
+                c_outputs = apply_augmentation(c_outputs, i)
+                TTA_results.append((p_outputs, c_outputs))
+            else:
+                p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs[0], dim=0), dim=0)).to(torch.float16)
+                p_outputs = apply_augmentation(p_outputs, i)
+                TTA_results.append(p_outputs)
+
+        if isinstance(TTA_results[0], tuple):
+            p, c = zip(*TTA_results)
+            return torch.mean(torch.stack(p, dim=0), dim=0), torch.mean(torch.stack(c, dim=0), dim=0)
         else:
-            return torch.sigmoid(torch.mean(torch.stack(outputs, dim=0), dim=0)).to(torch.float16)
+            return torch.mean(torch.stack(TTA_results, dim=0), dim=0)
 
     def log_metrics(self, prefix, metrics_list):
         if metrics_list:

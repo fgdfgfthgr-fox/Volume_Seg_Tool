@@ -416,17 +416,19 @@ def instance_segmentation_metrics(pred_map, gt_map, iou_threshold):
                         best_pred_object = pred_object
 
             if best_iou > iou_threshold:
-                tp += 1
-                if best_pred_object in gt_to_pred_iou and gt_to_pred_iou[best_pred_object][0] < best_iou:
-                    fp += 1  # Previous best is now considered FP
-                gt_to_pred_iou[best_pred_object] = (best_iou, gt_object)
+                if best_pred_object not in gt_to_pred_iou:
+                    tp += 1
+                    gt_to_pred_iou[best_pred_object] = (best_iou, gt_object)
+                else:
+                    fp += 1  # Either the previous best is now considered FP, or the current one is an FP.
+                    if gt_to_pred_iou[best_pred_object][0] < best_iou:
+                        gt_to_pred_iou[best_pred_object] = (best_iou, gt_object)
             else:
                 if best_pred_object is not None:
                     fp += 1
 
             pbar.update(1)
 
-    fp += len(pred_boxes) - len(gt_to_pred_iou)  # All non-matching predictions are FPs
     fn -= tp  # Adjust FN
 
     tpr = tp / len(gt_boxes) if gt_boxes else 0
