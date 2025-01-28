@@ -52,7 +52,7 @@ def pick_arch(arch_args):
     #    return Testing_Models.SingleTopLayer(base_channels, depth, z_to_xy_ratio, 'Basic', se)
     elif arch == "InstanceBasic":
         return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, label_mean, contour_mean)
-    elif arch == "InstanceResidual":
+    elif arch == "InstanceResidual_Recommended":
         return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, label_mean, contour_mean)
     elif arch == "InstanceResidualBottleneck":
         return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, label_mean, contour_mean)

@@ -261,15 +261,15 @@ available_architectures_semantic = [#'HalfUNetBasic',
                                     #'SingleTopLayer'
                                     ]
 available_architectures_instance = ['InstanceBasic',
-                                    'InstanceResidual',
+                                    'InstanceResidual_Recommended',
                                     'InstanceResidualBottleneck',]
 
 
 def update_available_arch(radio_value):
     if radio_value == 'Semantic':
-        return gr.Dropdown(available_architectures_semantic, label="Model Architecture")
+        return gr.Dropdown(available_architectures_semantic, label="Model Architecture", value="UNetResidual_Recommended")
     else:
-        return gr.Dropdown(available_architectures_instance, label="Model Architecture")
+        return gr.Dropdown(available_architectures_instance, label="Model Architecture", value="InstanceResidual_Recommended")
 
 
 def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised):
@@ -283,7 +283,7 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised):
         "UNetResidualBottleneck": (Semantic_General.UNet, 'ResidualBottleneck'),
         "SegNet": (Semantic_SegNets.Auto, 'Auto'),
         "InstanceBasic": (Instance_General.UNet, 'Basic'),
-        "InstanceResidual": (Instance_General.UNet, 'Residual'),
+        "InstanceResidual_Recommended": (Instance_General.UNet, 'Residual'),
         "InstanceResidualBottleneck": (Instance_General.UNet, 'ResidualBottleneck')
     }
 
@@ -304,7 +304,9 @@ def get_stats_between_maps(predicted_path, groundtruth_path):
     dice = intersection/union
     sensitivity = tp/(tp+fn)
     specificity = tn/(tn+fp)
-    return dice.item(), sensitivity.item(), specificity.item()
+    fpr = fp/(fp+tn)
+    fnr = fn/(fn+tp)
+    return dice.item(), sensitivity.item(), specificity.item(), fpr.item(), fnr.item()
 
 
 if __name__ == "__main__":
@@ -839,10 +841,12 @@ if __name__ == "__main__":
                     file_button.click(open_file, outputs=ground_truth_img_path)
                 with gr.Row():
                     dice = gr.Number(interactive=False, label="Dice Score")
-                    sensitivity = gr.Number(interactive=False, label="Sensitivity")
-                    specificity = gr.Number(interactive=False, label="Specificity")
+                    sensitivity = gr.Number(interactive=False, label="Sensitivity (True Positive Rate)")
+                    specificity = gr.Number(interactive=False, label="Specificity (True Negative Rate)")
+                    fpr = gr.Number(interactive=False, label="False Positive Rate")
+                    fnr = gr.Number(interactive=False, label="False Negative Rate")
                 start_button = gr.Button("Get statistics!")
                 start_button.click(get_stats_between_maps, inputs=[predicted_img_path, ground_truth_img_path],
-                                   outputs=[dice, sensitivity, specificity])
+                                   outputs=[dice, sensitivity, specificity, fpr, fnr])
 
     WebUI.launch(inbrowser=True)
