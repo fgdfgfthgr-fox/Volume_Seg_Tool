@@ -196,18 +196,20 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show)
 
 def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_csv,
                             slice_to_show=1, num_copies=6, pairing_samples=False, size=(8, 4.5)):
+    dataset = DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size)
     if pairing_samples:
-        datasets = ((DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1,
-                                                  hw_size, d_size, negative_control='positive'), ' - positive'),
-                    (DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1,
-                                                hw_size, d_size, negative_control='negative'), ' - negative'))
+        types = [' - positive', ' - negative']
     else:
-        datasets = ((DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size), ''),)
+        types = ['']
     figure_list = []
-    for dataset in datasets:
-        type = dataset[1]
-        dataset = dataset[0]
-        num_data = len(dataset.img_tensors)
+    num_data = len(dataset.img_tensors)
+    for type in types:
+        if type == ' - positive':
+            arg = 'positive'
+        elif type == ' - negative':
+            arg = 'negative'
+        elif type == '':
+            arg = None
         for i in range(0, num_data):
             # 800 x 450
             plt.figure(figsize=size)
@@ -216,7 +218,7 @@ def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_cs
             rows = math.floor(math.sqrt(num_copies * 2))
             cols = math.ceil(num_copies / rows)
             for k in range(0, num_copies):
-                pair = dataset.__getitem__(i)
+                pair = dataset.__getitem__((i, arg))
                 image = pair[0][:, slice_to_show:slice_to_show+1, :, :].squeeze()
                 label = pair[1][:, slice_to_show:slice_to_show+1, :, :].squeeze()
 
@@ -643,7 +645,7 @@ if __name__ == "__main__":
                     else:
                         num_u_files = 1
                     train_multiplier = calculate_train_multiplier(val_num_patch, num_t_files, workflow_box)
-                    unsupervised_train_multiplier = (train_multiplier * num_t_files // num_u_files) * batch_size
+                    unsupervised_train_multiplier = train_multiplier * num_t_files // num_u_files
                     num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files)
                     return val_num_patch, num_t_files, num_u_files, train_multiplier, unsupervised_train_multiplier, num_epochs
                 calculate_repeats.click(get_auto_parameters,

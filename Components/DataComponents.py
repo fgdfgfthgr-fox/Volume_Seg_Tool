@@ -324,14 +324,11 @@ class TrainDataset(torch.utils.data.Dataset):
         exclude_edge_size_in (int): The thickness of the border in pixels, toward the inside of each object.
         exclude_edge_size_out (int): The thickness of the border in pixels, toward the outside of each object.
         contour_map_width (int): Width of the contour map. Default: 1.
-        negative_control (str or None): If 'negative', allow the returned lab_tensor to be fully negative (no foreground object).
-                                        If 'positive', allow the returned lab_tensor to be fully positive. If None, will try to generate lab_tensor
-                                        that contain both positive and negative pixels. Default: None
         key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
 
     def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64, instance_mode=False,
-                 exclude_edge=False, exclude_edge_size_in=1, exclude_edge_size_out=1, contour_map_width=1, negative_control=None,
+                 exclude_edge=False, exclude_edge_size_in=1, exclude_edge_size_out=1, contour_map_width=1,
                  hdf5_key='Default'):
         # Get a list of file paths for images and labels
         self.file_list = make_dataset_tv(images_dir)
@@ -350,37 +347,41 @@ class TrainDataset(torch.utils.data.Dataset):
         self.train_multiplier = train_multiplier
         self.hw_size = hw_size
         self.d_size = d_size
-        if negative_control:
-            if negative_control == 'positive':
-                self.foreground_threshold = 0.01
-                self.background_threshold = 0
-            elif negative_control == 'negative':
-                self.background_threshold = 0.01
-                self.foreground_threshold = 0
-        else:
-            self.background_threshold = 0.01
-            self.foreground_threshold = 0.01
-
         super().__init__()
 
     def __len__(self):
         return self.num_files * self.train_multiplier
 
     def __getitem__(self, idx):
-        # Get the image and label tensors at the specified index
-        # C, D, H, W
+        """
+        negative_control (str or None): If 'negative', allow the returned lab_tensor to be fully negative (no foreground object).
+                                        If 'positive', allow the returned lab_tensor to be fully positive. If None, will try to generate lab_tensor
+                                        that contain both positive and negative pixels. Default: None
+        """
+        negative_control = idx[1]
+        idx = idx[0]
+        if negative_control:
+            if negative_control == 'positive':
+                foreground_threshold = 0.01
+                background_threshold = 0
+            elif negative_control == 'negative':
+                background_threshold = 0.01
+                foreground_threshold = 0
+        else:
+            background_threshold = 0.01
+            foreground_threshold = 0.01
         idx = math.floor(idx / self.train_multiplier)
         img_tensor, lab_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :]
         if self.instance_mode:
             contour_tensor = self.contour_tensors[idx][None, :]
             img_tensor, lab_tensor, contour_tensor = apply_aug(img_tensor, lab_tensor, contour_tensor,
                                                                self.augmentation_params, self.hw_size, self.d_size,
-                                                               self.foreground_threshold, self.background_threshold)
+                                                               foreground_threshold, background_threshold)
             return img_tensor, lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
         else:
             img_tensor, lab_tensor = apply_aug(img_tensor, lab_tensor, None,
                                                self.augmentation_params, self.hw_size, self.d_size,
-                                               self.foreground_threshold, self.background_threshold)
+                                               foreground_threshold, background_threshold)
             return img_tensor, lab_tensor.to(torch.float32)
 
     def get_label_mean(self):
@@ -389,7 +390,7 @@ class TrainDataset(torch.utils.data.Dataset):
         for tensor in self.lab_tensors:
             numels += tensor.numel()
             sum += tensor.sum()
-        return torch.tensor((sum/numels), dtype=torch.float32)
+        return sum/numels
 
     def get_contour_mean(self):
         numels = 0
@@ -397,7 +398,7 @@ class TrainDataset(torch.utils.data.Dataset):
         for tensor in self.contour_tensors:
             numels += tensor.numel()
             sum += tensor.sum()
-        return torch.tensor((sum / numels), dtype=torch.float32)
+        return sum / numels
 
 
 class UnsupervisedDataset(torch.utils.data.Dataset):
@@ -605,127 +606,111 @@ class Predict_Dataset(torch.utils.data.Dataset):
 
 
 class CollectedDataset(torch.utils.data.Dataset):
-    """
-    For handling dataset pairing.
-    """
-    def __init__(self, dataset_positive, dataset_negative, dataset_unsupervised=None):
-        self.dataset_positive = dataset_positive
-        self.dataset_negative = dataset_negative
+    def __init__(self, dataset_supervised, dataset_unsupervised=None):
+        self.dataset_supervised = dataset_supervised
         self.dataset_unsupervised = dataset_unsupervised
         if self.dataset_unsupervised is not None:
             self.rectified_unsupervised_size = math.floor(len(self.dataset_unsupervised) / 2) * 2
 
     def __len__(self):
         if self.dataset_unsupervised:
-            return len(self.dataset_positive) + len(self.dataset_negative) + self.rectified_unsupervised_size
+            return len(self.dataset_supervised) + self.rectified_unsupervised_size
         else:
-            return len(self.dataset_positive) + len(self.dataset_negative)
+            return len(self.dataset_supervised)
 
     def __getitem__(self, idx):
         if self.dataset_unsupervised:
-            if idx < self.rectified_unsupervised_size:
-                return self.dataset_unsupervised[idx]
+            if idx[0] < self.rectified_unsupervised_size:
+                return self.dataset_unsupervised[idx[0]]
             else:
-                idx -= self.rectified_unsupervised_size
-                if idx < len(self.dataset_positive):
-                    return self.dataset_positive[idx]
-                else:
-                    idx -= len(self.dataset_positive)
-                    return self.dataset_negative[idx]
+                idx[0] = idx[0] - self.rectified_unsupervised_size
+                return self.dataset_supervised[idx]
         else:
-            if idx < len(self.dataset_positive):
-                return self.dataset_positive[idx]
-            else:
-                idx -= len(self.dataset_positive)
-                return self.dataset_negative[idx]
+            return self.dataset_supervised[idx]
 
 
 class CollectedSampler(torch.utils.data.Sampler):
-    def __init__(self, data_source, batch_size, dataset_unsupervised=None):
-        super(CollectedSampler, self).__init__(data_source)
-        self.data_source = data_source
+    def __init__(self, data, batch_size, dataset_unsupervised=None):
+        super(CollectedSampler, self).__init__(data)
+        self.data = data
         self.batch_size = batch_size
         if dataset_unsupervised:
             self.dataset_unsupervised_size = math.floor(len(dataset_unsupervised) / 2) * 2
         else:
             self.dataset_unsupervised_size = 0
-        #self.indices = np.arange(len(data_source))
 
     def __iter__(self):
         if self.batch_size == 1:
-            return iter(np.random.permutation(len(self.data_source)))
+            if self.dataset_unsupervised_size == 0:
+                array = np.random.permutation(len(self.data))
+                array = [[num, None] for num in array] # To indicate that no negative control is used.
+                return iter(array)
+            else:
+                unsupervised_array = np.random.permutation(self.dataset_unsupervised_size)
+                unsupervised_array = [[num, 'unsupervised'] for num in unsupervised_array]
+                supervised_array = np.arange(self.dataset_unsupervised_size, len(self.data))
+                np.random.shuffle(supervised_array)
+                supervised_array = [(num, None) for num in supervised_array]
+                min_size = min(self.dataset_unsupervised_size, len(supervised_array))
+                interleaved_array = []
+                for i in range(0, min_size):
+                    interleaved_array.append(supervised_array[i])
+                    interleaved_array.append(unsupervised_array[i])
+                if len(supervised_array) > min_size:
+                    interleaved_array.extend(supervised_array[min_size:])
+                elif self.dataset_unsupervised_size > min_size:
+                    interleaved_array.extend(unsupervised_array[min_size:])
+                return iter(interleaved_array)
         elif self.batch_size == 2:
             if self.dataset_unsupervised_size == 0:
-                original_array = np.arange(len(self.data_source))
+                original_array = np.arange(len(self.data))
                 positive_array, negative_array = np.split(original_array, 2)
                 np.random.shuffle(positive_array)
+                positive_array = [[num, 'positive'] for num in positive_array]
                 np.random.shuffle(negative_array)
-                shuffled_array = np.empty_like(original_array)
-                shuffled_array[0::2] = positive_array
-                shuffled_array[1::2] = negative_array
+                negative_array = [[num, 'negative'] for num in negative_array]
+                shuffled_array = []
+                for i in range(0, len(positive_array)):
+                    shuffled_array.append(positive_array[i])
+                    shuffled_array.append(negative_array[i])
                 return iter(shuffled_array)
             else:
                 unsupervised_array = np.arange(self.dataset_unsupervised_size)
                 np.random.shuffle(unsupervised_array)
-                supervised_array = np.arange(self.dataset_unsupervised_size, len(self.data_source))
-                np.random.shuffle(supervised_array)
+                unsupervised_array = [[num, 'unsupervised'] for num in unsupervised_array]
+                supervised_array = np.arange(self.dataset_unsupervised_size, len(self.data))
+                positive_array, negative_array = np.split(supervised_array, 2)
+                np.random.shuffle(positive_array)
+                positive_array = [[num, 'positive'] for num in positive_array]
+                np.random.shuffle(negative_array)
+                negative_array = [[num, 'negative'] for num in negative_array]
+                supervised_array = []
+                for i in range(0, len(positive_array)):
+                    supervised_array.append(positive_array[i])
+                    supervised_array.append(negative_array[i])
 
                 min_size = min(self.dataset_unsupervised_size, len(supervised_array))
 
-                shuffled_array = np.empty(len(self.data_source), dtype=int)
-
                 # Interleave the pairs as much as possible
-                shuffled_array[0:2 * min_size:4] = supervised_array[:min_size // 2]
-                shuffled_array[1:2 * min_size:4] = supervised_array[min_size // 2:min_size]
-                shuffled_array[2:2 * min_size:4] = unsupervised_array[:min_size // 2]
-                shuffled_array[3:2 * min_size:4] = unsupervised_array[min_size // 2:min_size]
+                interleaved_array = []
+                for i in range(0, min_size, 2):
+                    interleaved_array.append(supervised_array[i])  # positive
+                    interleaved_array.append(supervised_array[i + 1])  # negative
+                    interleaved_array.append(unsupervised_array[i])
+                    interleaved_array.append(unsupervised_array[i + 1])
 
                 # Append the remaining pairs from the larger dataset
                 if len(supervised_array) > min_size:
-                    remaining_supervised = supervised_array[min_size:]
-                    shuffled_array[2 * min_size:] = remaining_supervised
+                    interleaved_array.extend(supervised_array[min_size:])
                 elif self.dataset_unsupervised_size > min_size:
-                    remaining_unsupervised = unsupervised_array[min_size:]
-                    shuffled_array[2 * min_size:] = remaining_unsupervised
+                    interleaved_array.extend(unsupervised_array[min_size:])
 
-                return iter(shuffled_array)
+                return iter(interleaved_array)
         else:
             raise ValueError("Invalid batch size. We only support 1 or 2.")
 
     def __len__(self):
-        return len(self.data_source)
-
-
-class CollectedDatasetAlt(torch.utils.data.Dataset):
-    """
-    For handling unsupervised learning without dataset pairing.
-    """
-    def __init__(self, dataset, dataset_unsupervised):
-        self.dataset = dataset
-        self.dataset_unsupervised = dataset_unsupervised
-        self.rectified_unsupervised_size = math.floor(len(self.dataset_unsupervised)/2) * 2
-
-    def __len__(self):
-        return self.rectified_unsupervised_size + len(self.dataset)
-
-    def __getitem__(self, idx):
-        if idx < self.rectified_unsupervised_size:
-            return self.dataset_unsupervised[idx]
-        else:
-            idx -= self.rectified_unsupervised_size
-            return self.dataset[idx]
-
-
-class CollectedSamplerAlt(torch.utils.data.Sampler):
-    def __init__(self, data_source):
-        super(CollectedSamplerAlt, self).__init__(data_source)
-        self.data_source = data_source
-
-    def __iter__(self):
-        return iter(np.random.permutation(len(self.data_source)))
-
-    def __len__(self):
-        return len(self.data_source)
+        return len(self.data)
 
 
 def custom_collate(batch):

@@ -73,44 +73,22 @@ def start_work_flow(args):
         desired_num_workers = 0
         persistent_workers = False
     if 'Training' in args.workflow_box:
-        if args.pairing_samples:
-            train_dataset_pos = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
-                                                            args.hw_size, args.d_size, instance_mode,
-                                                            args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
-                                                            args.contour_map_width, 'positive', args.train_key_name)
-            train_dataset_neg = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
-                                                            args.hw_size, args.d_size, instance_mode,
-                                                            args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
-                                                            args.contour_map_width, 'negative', args.train_key_name)
-            label_mean = train_dataset_pos.get_label_mean()
-            if instance_mode: contour_mean = train_dataset_pos.get_contour_mean()
-            if args.enable_unsupervised:
-                unsupervised_train_dataset = DataComponents.UnsupervisedDataset(args.unsupervised_train_dataset_path,
-                                                                                args.augmentation_csv_path, args.unsupervised_train_multiplier,
-                                                                                args.hw_size, args.d_size, args.train_key_name)
-            else:
-                unsupervised_train_dataset = None
-            train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg, unsupervised_train_dataset)
-            sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size, unsupervised_train_dataset)
-            collate_fn = DataComponents.custom_collate
+        train_dataset = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path,
+                                                    args.train_multiplier,
+                                                    args.hw_size, args.d_size, instance_mode,
+                                                    args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
+                                                    args.contour_map_width, args.train_key_name)
+        label_mean = train_dataset.get_label_mean()
+        if instance_mode: contour_mean = train_dataset.get_contour_mean()
+        if args.enable_unsupervised:
+            unsupervised_train_dataset = DataComponents.UnsupervisedDataset(args.unsupervised_train_dataset_path,
+                                                                            args.augmentation_csv_path, args.unsupervised_train_multiplier,
+                                                                            args.hw_size, args.d_size, args.train_key_name)
         else:
-            train_dataset = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path, args.train_multiplier,
-                                                        args.hw_size, args.d_size, instance_mode,
-                                                        args.exclude_edge, args.exclude_edge_size_in,
-                                                        args.exclude_edge_size_out, args.contour_map_width, None, args.train_key_name)
-            label_mean = train_dataset.get_label_mean()
-            if instance_mode: contour_mean = train_dataset.get_contour_mean()
-            if args.enable_unsupervised:
-                unsupervised_train_dataset = DataComponents.UnsupervisedDataset(args.unsupervised_train_dataset_path,
-                                                                                args.augmentation_csv_path,
-                                                                                args.unsupervised_train_multiplier,
-                                                                                args.hw_size, args.d_size, args.train_key_name)
-                train_dataset = DataComponents.CollectedDatasetAlt(train_dataset, unsupervised_train_dataset)
-                sampler = DataComponents.CollectedSamplerAlt(train_dataset)
-                collate_fn = DataComponents.custom_collate
-            else:
-                sampler = None
-                collate_fn = None
+            unsupervised_train_dataset = None
+        train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
+        sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size, unsupervised_train_dataset)
+        collate_fn = DataComponents.custom_collate
         train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
                                   collate_fn=collate_fn, sampler=sampler,
                                   num_workers=desired_num_workers, persistent_workers=persistent_workers)

@@ -251,8 +251,8 @@ class PLModule(pl.LightningModule):
                 # Since each patch have equal number of pixels, it's safe to use their average intersection and union
                 p_dice = epoch_averages[1]/epoch_averages[3]
                 c_dice = epoch_averages[2]/epoch_averages[4]
-                # Check if Pixel Predict Dice > 0.6
-                if p_dice >= 0.6 and self.dice_threshold_reached == False:
+                # Check if Contour Predict Dice > 0.5
+                if c_dice >= 0.5 and self.dice_threshold_reached == False:
                     self.dice_threshold_reached = True
                     print('Starts working on Unsupervised Samples via entropy minimisation...')
                     print('\nIgnore this if you are not using unsupervised learning.')
@@ -339,24 +339,19 @@ class PLModule(pl.LightningModule):
 if __name__ == "__main__":
 
     #val_dataset = DataComponents.ValDataset("Datasets/val", 96, 96, False, "Augmentation Parameters.csv")
-    predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 160, 56, 16, 4, True)
+    predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 160, 56, 16, 4)
     train_dataset_pos = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters.csv",
-                                                    32,
+                                                    64,
                                                     192, 64, False, False, 0,
                                                     0,
-                                                    1, 'positive')
-    train_dataset_neg = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters.csv",
-                                                    32,
-                                                    192, 64, False, False, 0,
-                                                    0,
-                                                    1, 'negative')
+                                                    1)
     train_label_mean = train_dataset_pos.get_label_mean()
     #train_contour_mean = train_dataset_pos.get_contour_mean()
     unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
                                                                     "Augmentation Parameters.csv",
                                                                     64,
                                                                     192, 64)
-    train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg, unsupervised_train_dataset)
+    train_dataset = DataComponents.CollectedDataset(train_dataset_pos, unsupervised_train_dataset)
     #train_dataset = DataComponents.CollectedDataset(train_dataset_pos, train_dataset_neg)
     sampler = DataComponents.CollectedSampler(train_dataset, 2, unsupervised_train_dataset)
     #sampler = DataComponents.CollectedSampler(train_dataset, 2)
@@ -368,9 +363,9 @@ if __name__ == "__main__":
     predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
     #val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
     #model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="{epoch}-{Val_epoch_dice:.2f}", mode="max", save_weights_only=True)
-    arch_args = ('UNetResidualBottleneck', 32, 4, 1, True, train_label_mean, torch.tensor(0.5))
+    arch_args = ('UNetResidualBottleneck', 8, 4, 1, True, train_label_mean, torch.tensor(0.5))
     model = PLModule(arch_args,
-        False, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', False,
+        False, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', True,
         False, False, False, True)
     model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="test", mode="max",
                                                     monitor="Val_epoch_dice", save_weights_only=True, enable_version_counter=False)
