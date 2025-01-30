@@ -195,8 +195,18 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show)
 
 
 def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_csv,
-                            slice_to_show=1, num_copies=6, pairing_samples=False, size=(8, 4.5)):
-    dataset = DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size)
+                            slice_to_show=1, num_copies=6, pairing_samples=False,
+                            segmentation_mode='Semantic', exclude_edge=False, exclude_edge_size_in=0, exclude_edge_size_out=0,
+                            contour_map_width=1, train_key_name='Default'):
+    if segmentation_mode == 'Semantic':
+        instance_mode = False
+        img_each_col = 2
+    else:
+        instance_mode = True
+        img_each_col = 3
+    dataset = DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size,
+                                          instance_mode, exclude_edge, exclude_edge_size_in, exclude_edge_size_out,
+                                          contour_map_width, train_key_name)
     if pairing_samples:
         types = [' - positive', ' - negative']
     else:
@@ -211,26 +221,33 @@ def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_cs
         elif type == '':
             arg = None
         for i in range(0, num_data):
-            # 800 x 450
-            plt.figure(figsize=size)
+            # 900 x 450
+            plt.figure(figsize=(9, 4.5))
             image_name = dataset.file_list[i][0]
             plt.suptitle(f'{image_name + type}')
-            rows = math.floor(math.sqrt(num_copies * 2))
+            rows = math.floor(math.sqrt(num_copies * img_each_col))
             cols = math.ceil(num_copies / rows)
             for k in range(0, num_copies):
                 pair = dataset.__getitem__((i, arg))
                 image = pair[0][:, slice_to_show:slice_to_show+1, :, :].squeeze()
                 label = pair[1][:, slice_to_show:slice_to_show+1, :, :].squeeze()
+                if len(pair) == 3: contour = pair[2][:, slice_to_show:slice_to_show+1, :, :].squeeze()
 
                 # Plot Image
-                plt.subplot(rows, 2 * cols, 2 * k + 1)
+                plt.subplot(rows, img_each_col * cols, img_each_col * k + 1)
                 plt.imshow(image.cpu().numpy(), cmap='gist_gray')
                 plt.axis('off')
 
                 # Plot Label
-                plt.subplot(rows, 2 * cols, 2 * k + 2)
+                plt.subplot(rows, img_each_col * cols, img_each_col * k + 2)
                 plt.imshow(label.cpu().numpy(), cmap='gist_gray')
                 plt.axis('off')
+
+                if len(pair) == 3:
+                    # Plot Contour
+                    plt.subplot(rows, img_each_col * cols, img_each_col * k + 3)
+                    plt.imshow(contour.cpu().numpy(), cmap='gist_gray')
+                    plt.axis('off')
 
             plt.subplots_adjust(wspace=0.1, hspace=0.1)  # Reduce spacing between subplots
             canvas = plt.get_current_fig_manager().canvas
@@ -542,7 +559,9 @@ if __name__ == "__main__":
                                              "under the current patch size and augmentation settings", scale=0)
                     start_button.click(visualise_augmentations,
                                        inputs=[train_dataset_path, hw_size, d_size, augmentation_csv_path, slice_to_show,
-                                               number_copies, pairing_samples],
+                                               number_copies, pairing_samples, segmentation_mode,
+                                               exclude_edge, exclude_edge_size_in, exclude_edge_size_out,
+                                               contour_map_width, train_key_name],
                                        outputs=outputs)
             with gr.Tab("Test Settings"):
                 gr.Markdown("Due to the limitation of the built-in test function. The dice score obtained via the "
@@ -646,7 +665,7 @@ if __name__ == "__main__":
                         num_u_files = 1
                     train_multiplier = calculate_train_multiplier(val_num_patch, num_t_files, workflow_box)
                     unsupervised_train_multiplier = train_multiplier * num_t_files // num_u_files
-                    num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files)
+                    num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files) * batch_size
                     return val_num_patch, num_t_files, num_u_files, train_multiplier, unsupervised_train_multiplier, num_epochs
                 calculate_repeats.click(get_auto_parameters,
                                         [workflow_box, train_dataset_path, val_dataset_path, hw_size, d_size, batch_size, train_steps, enable_unsupervised, unsupervised_train_dataset_path],
@@ -798,7 +817,7 @@ if __name__ == "__main__":
             outputs = gr.Gallery(label="Output Images", preview=True, selected_index=0)
             start_button = gr.Button("Show Visualization")
             start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show], outputs=outputs)
-
+        '''
         with gr.Tab("Augmentations Visualisation"):
             gr.Markdown("Given your Training Dataset and Augmentation CSV, show some examples of augmented images that will be fed into the network.")
             with gr.Row():
@@ -815,7 +834,7 @@ if __name__ == "__main__":
             outputs = gr.Gallery(label="Output Images", format="png", preview=True, selected_index=0)
             start_button = gr.Button("Show Visualization")
             start_button.click(visualise_augmentations, inputs=[train_dataset_path_av, hw_size, d_size,
-                                                                augmentation_csv_path_av, slice_to_show, num_copies], outputs=outputs)
+                                                                augmentation_csv_path_av, slice_to_show, num_copies], outputs=outputs)'''
 
         with gr.Tab("Extras"):
             with gr.Accordion("Output TensorBoard log to Excel"):

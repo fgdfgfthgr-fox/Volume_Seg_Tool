@@ -342,7 +342,7 @@ if __name__ == "__main__":
     predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 160, 56, 16, 4)
     train_dataset_pos = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters.csv",
                                                     64,
-                                                    192, 64, False, False, 0,
+                                                    192, 64, True, False, 0,
                                                     0,
                                                     1)
     train_label_mean = train_dataset_pos.get_label_mean()
@@ -358,27 +358,27 @@ if __name__ == "__main__":
     collate_fn = DataComponents.custom_collate
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=2,
                                                collate_fn=collate_fn, sampler=sampler,
-                                               num_workers=8, pin_memory=True, persistent_workers=True)
+                                               num_workers=0, pin_memory=False, persistent_workers=False)
     meta_info = predict_dataset.__getmetainfo__()
     predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
     #val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
     #model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="{epoch}-{Val_epoch_dice:.2f}", mode="max", save_weights_only=True)
-    arch_args = ('UNetResidualBottleneck', 8, 4, 1, True, train_label_mean, torch.tensor(0.5))
+    arch_args = ('InstanceResidual_Recommended', 8, 4, 3.33, True, train_label_mean, torch.tensor(0.5))
     model = PLModule(arch_args,
         False, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', True,
         False, False, False, True)
-    model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="test", mode="max",
-                                                    monitor="Val_epoch_dice", save_weights_only=True, enable_version_counter=False)
+    '''model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="test", mode="max",
+                                                    monitor="Val_epoch_dice", save_weights_only=True, enable_version_counter=False)'''
     trainer = pl.Trainer(max_epochs=5, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name='test'),
                          accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.3,
-                         precision="bf16-mixed", enable_progress_bar=True, num_sanity_val_steps=0)#, callbacks=[model_checkpoint,])
+                         precision="32", enable_progress_bar=True, num_sanity_val_steps=0)#, callbacks=[model_checkpoint,])
                                                                                                       #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
     # print(subprocess.run("tensorboard --logdir='lightning_logs'", shell=True))
     start_time = time.time()
     trainer.fit(model,
                 #val_dataloaders=val_loader,
                 train_dataloaders=train_loader)
-    model = PLModule.load_from_checkpoint('test.ckpt')
+    #model = PLModule.load_from_checkpoint('test.ckpt')
     '''predictions = trainer.predict(model, predict_loader)
     #del predict_loader, predict_dataset
     DataComponents.predictions_to_final_img(predictions, meta_info, direc='Datasets/result',
