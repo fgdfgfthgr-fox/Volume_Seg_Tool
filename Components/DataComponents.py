@@ -13,7 +13,7 @@ import h5py
 import multiprocessing
 # import scipy
 import pandas as pd
-from multiprocessing import Pool, shared_memory, cpu_count
+from multiprocessing import Pool, shared_memory, cpu_count, Manager
 from scipy.ndimage import label
 from torchvision.datasets.folder import has_file_allowed_extension, IMG_EXTENSIONS
 from . import Augmentations as Aug
@@ -1006,26 +1006,38 @@ def hovernet_map_transform(input_tensor):
     return output
 '''
 
+# Global variables to hold the shared memory objects in workers
+_segmentation_shm = None
+_touching_shm = None
 
-def allocate_pixels(args):
-    # Allocates the lost pixels to the object that has the largest proportion of pixels within the threshold distance
-    batch_indices, segmentation, touching_pixels, shm_name, map_size, distance_threshold, minlength = args
-    shm_segmentation = shared_memory.SharedMemory(name=shm_name)
-    new_segmentation_np = np.ndarray(map_size, dtype=np.int16, buffer=shm_segmentation.buf)
+def pool_initializer(shm_segmentation_name,
+                     shm_touching_name, shm_touching_shape, shm_touching_dtype):
+    global _segmentation_shm, _touching_shm, _touching_shape, _touching_dtype
+    _segmentation_shm = shared_memory.SharedMemory(name=shm_segmentation_name)
+    _touching_shm = shared_memory.SharedMemory(name=shm_touching_name)
+    _touching_shape = shm_touching_shape
+    _touching_dtype = shm_touching_dtype
+
+
+def allocate_pixels_global(batch_indices_and_args):
+    # Unpack batch indices and other args
+    batch_indices, map_size, distance_threshold, minlength = batch_indices_and_args
+    # Instead of re-opening the shared memories, use the global variables.
+    touching_pixels = np.ndarray(_touching_shape, dtype=_touching_dtype, buffer=_touching_shm.buf)
+    new_segmentation_np = np.ndarray(map_size, dtype=np.int16, buffer=_segmentation_shm.buf)
+
     for pixel_idx in batch_indices:
         z, y, x = touching_pixels[pixel_idx, 0], touching_pixels[pixel_idx, 1], touching_pixels[pixel_idx, 2]
-        local_segment = segmentation[
+        local_segment = new_segmentation_np[
                         max(z - distance_threshold, 0):min(z + distance_threshold, map_size[0]),
                         max(y - distance_threshold, 0):min(y + distance_threshold, map_size[1]),
                         max(x - distance_threshold, 0):min(x + distance_threshold, map_size[2])
                         ]
-        # Compute object counts with background count included
-        object_counts = torch.bincount(local_segment.flatten(), minlength=minlength)
-        # If there is any non-background pixel, go with the object with the largest count, else background
+        object_counts = torch.bincount(torch.from_numpy(local_segment).flatten(), minlength=minlength)
         object_counts = object_counts[1:]
         if object_counts.sum() > 0:
             closest_object = torch.argmax(object_counts, dim=0) + 1
-            new_segmentation_np[z,y,x] = closest_object
+            new_segmentation_np[z, y, x] = closest_object.item()
 
 
 def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, pixel_reclaim=True, distance_threshold=1, batch_size=256):
@@ -1080,42 +1092,54 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
         minlength = segmentation.max().item()
         map_size = segmentation.shape
 
-        # Create a shared memory array for the output segmentation
-        shm_segmentation = shared_memory.SharedMemory(create=True, size=segmentation.numel() * np.dtype(np.int16).itemsize)
+        # Create shared memory for segmentation
+        shm_segmentation = shared_memory.SharedMemory(create=True,
+                                                      size=segmentation.numel() * np.dtype(np.int16).itemsize)
         new_segmentation_np = np.ndarray(map_size, dtype=np.int16, buffer=shm_segmentation.buf)
         new_segmentation_np[:] = segmentation.numpy()
+        del segmentation  # Free memory
 
-        batch_indices = [list(range(i, min(i + batch_size, num_touching_pixels))) for i in range(0, num_touching_pixels, batch_size)]
+        # Create shared memory for touching_pixels
+        touching_pixels_np = touching_pixels.numpy()
+        shm_touching = shared_memory.SharedMemory(create=True, size=touching_pixels_np.nbytes)
+        touching_pixels_shared = np.ndarray(touching_pixels_np.shape, dtype=touching_pixels_np.dtype,
+                                            buffer=shm_touching.buf)
+        touching_pixels_shared[:] = touching_pixels_np[:]
+        del touching_pixels, touching_pixels_np  # Free memory
 
-        args = [(batch, segmentation, touching_pixels, shm_segmentation.name, map_size, distance_threshold, minlength) for batch in batch_indices]
+        batch_indices = [list(range(i, min(i + batch_size, num_touching_pixels)))
+                         for i in range(0, num_touching_pixels, batch_size)]
+
+        # Prepare a simplified list of arguments that each worker needs
+        worker_args = [
+            (batch, map_size, distance_threshold, minlength)
+            for batch in batch_indices
+        ]
+
 
         start_time = time.time()
-        with Pool(cpu_count()) as pool:
-            pool.map(allocate_pixels, args)
+        # Create the pool with an initializer that attaches the shared memories
+        with Pool(cpu_count(), initializer=pool_initializer,
+                  initargs=(shm_segmentation.name,
+                            shm_touching.name, touching_pixels_shared.shape, touching_pixels_shared.dtype)) as pool:
+            pool.map(allocate_pixels_global, worker_args)
         elapsed_time = time.time() - start_time
         print(f"Time taken: {elapsed_time}")
-        # Convert the shared memory array back to a PyTorch tensor
-        new_segmentation_np = np.ndarray(map_size, dtype=np.int16, buffer=shm_segmentation.buf)
-        segmentation_result = torch.tensor(new_segmentation_np)
+        # Convert shared memory to tensor
+        segmentation_result = torch.tensor(np.copy(new_segmentation_np))
         # Clean up shared memory
         shm_segmentation.close()
         shm_segmentation.unlink()
+        shm_touching.close()
+        shm_touching.unlink()
         return segmentation_result
     else:
         return segmentation
 
 
-# 这里的函数用于测试各个组件是否能正常运作
 if __name__ == "__main__":
-    # fake_predictions = [torch.randn(4, 512, 512), torch.randn(4, 512, 512)]
-    # predictions_to_final_img(fake_predictions)
-    test_tensor = path_to_tensor("../test_img.tif")
-    print(test_tensor)
-    # print(test_loader.dataset[0][0])
-    # test_tensor = path_to_tensor('Datasets/train/lab/Labels_Jul13ab_nntrain_1.tif', label=True)
-    # print(test_tensor.shape)
-    # test_tensor = composed_transform(test_tensor, 1)
-    # print(test_tensor.shape)
-    # print(test_tensor)
-    # test_array = np.asarray(test_tensor)
-    # im = imageio.volsave('Result.tif', test_array)
+    multiprocessing.set_start_method('spawn', force=True)
+    semantic = torch.tensor(imageio.v3.imread('Datasets/result/Pixels_Mask_bin2_854_20C_IA_1_189.tif'))
+    contour = torch.tensor(imageio.v3.imread('Datasets/result/Contour_Mask_bin2_854_20C_IA_1_189.tif'))
+    instance = instance_segmentation_simple(semantic, contour)
+    imageio.v3.imwrite(uri='Datasets/result/Instance_Mask_bin2_854_20C_IA_1_189.tif', image=np.uint16(instance))
