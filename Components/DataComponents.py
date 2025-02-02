@@ -1,3 +1,4 @@
+import gc
 import math
 import os
 
@@ -12,8 +13,9 @@ import time
 import h5py
 import multiprocessing
 # import scipy
+import tracemalloc
 import pandas as pd
-from multiprocessing import Pool, shared_memory, cpu_count, Manager
+from multiprocessing import Pool, shared_memory, cpu_count
 from scipy.ndimage import label
 from torchvision.datasets.folder import has_file_allowed_extension, IMG_EXTENSIONS
 from . import Augmentations as Aug
@@ -953,8 +955,8 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         imageio.v3.imwrite(uri=f'{direc}/Pixels_{semantic[1]}', image=np.float16(semantic[0].numpy()))
         imageio.v3.imwrite(uri=f'{direc}/Contour_{contour[1]}', image=np.float16(contour[0].numpy()))
         print(f'Computing instance segmentation using contour data for {contour[1]}... Can take a while if the image is big.')
-        instance_array = np.asarray(instance_segmentation_simple(semantic[0], contour[0], pixel_reclaim=pixel_reclaim))
-        imageio.v3.imwrite(uri=f'{direc}/Instance_{contour[1]}', image=np.uint16(instance_array))
+        instance_array = instance_segmentation_simple(semantic[0], contour[0], pixel_reclaim=pixel_reclaim)
+        imageio.v3.imwrite(uri=f'{direc}/Instance_{contour[1]}', image=instance_array)
 
 
 #    for volume in instance_result:
@@ -1024,37 +1026,37 @@ def allocate_pixels_global(batch_indices_and_args):
     batch_indices, map_size, distance_threshold, minlength = batch_indices_and_args
     # Instead of re-opening the shared memories, use the global variables.
     touching_pixels = np.ndarray(_touching_shape, dtype=_touching_dtype, buffer=_touching_shm.buf)
-    new_segmentation_np = np.ndarray(map_size, dtype=np.int16, buffer=_segmentation_shm.buf)
+    segmentation_shared = np.ndarray(map_size, dtype=np.uint16, buffer=_segmentation_shm.buf)
 
     for pixel_idx in batch_indices:
         z, y, x = touching_pixels[pixel_idx, 0], touching_pixels[pixel_idx, 1], touching_pixels[pixel_idx, 2]
-        local_segment = new_segmentation_np[
+        local_segment = segmentation_shared[
                         max(z - distance_threshold, 0):min(z + distance_threshold, map_size[0]),
                         max(y - distance_threshold, 0):min(y + distance_threshold, map_size[1]),
                         max(x - distance_threshold, 0):min(x + distance_threshold, map_size[2])
                         ]
-        object_counts = torch.bincount(torch.from_numpy(local_segment).flatten(), minlength=minlength)
+        object_counts = np.bincount(local_segment.flatten(), minlength=minlength)
         object_counts = object_counts[1:]
         if object_counts.sum() > 0:
-            closest_object = torch.argmax(object_counts, dim=0) + 1
-            new_segmentation_np[z, y, x] = closest_object.item()
+            closest_object = np.argmax(object_counts) + 1
+            segmentation_shared[z, y, x] = closest_object.item()
 
 
-def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, pixel_reclaim=True, distance_threshold=1, batch_size=256):
+def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, pixel_reclaim=True, distance_threshold=1, batch_size=2048):
     """
     Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.
     Pixels in touching areas are assigned to the closest object based on the largest proportion of pixels within 5 pixel distance to the pixel.
 
     Args:
-        semantic_map (np.Array): The input semantic segmented map.
-        contour_map (np.Array): The input contour segmented map.
+        semantic_map (torch.Tensor): The input semantic segmented map.
+        contour_map (torch.Tensor): The input contour segmented map.
         size_threshold (int): The minimal size in pixel of each object. Object smaller than this will be removed.
         pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
         distance_threshold (int): The radius in pixels to search for nearby pixels when allocating. Default: 1.
-        batch_size (int): Batch size for pixel reclaim. Default: 256.
+        batch_size (int): Batch size for pixel reclaim. Default: 2048.
 
     Returns:
-        torch.Tensor: instance segmented map where 0 is background and every other value represent an object.
+        np.Array: uint16 instance segmented map where 0 is background and every other value represent an object.
     """
     semantic_map = torch.where(semantic_map >= 0.5, True, False)
     # Treat contour map with lower threshold to ensure separation
@@ -1063,10 +1065,12 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
     # Find boundary that lies within foreground objects
     touching_map = torch.logical_and(contour_map, semantic_map)
     # Remove touching area between foreground objects
-    new_map = torch.logical_xor(semantic_map, touching_map)
+    segmentation = torch.logical_xor(semantic_map, touching_map)
     del semantic_map, contour_map
+    segmentation = segmentation.numpy().astype(np.uint16, copy=False)
+    gc.collect()
 
-    structure = torch.ByteTensor([
+    structure = np.array([
         [[0, 0, 0],
          [0, 1, 0],
          [0, 0, 0]],
@@ -1076,17 +1080,16 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
         [[0, 0, 0],
          [0, 1, 0],
          [0, 0, 0]]
-    ])
+    ], dtype=np.byte)
     # Connected Component Labelling
-    segmentation, _ = label(new_map.numpy(), structure=structure.numpy(), output=np.int16)
+    label(segmentation, structure=structure, output=segmentation)
     # Remove small segments
     #segmentation = morphology.remove_small_objects(segmentation, min_size=size_threshold, connectivity=structure.numpy())
 
-    del structure, new_map
+    del structure
 
     if pixel_reclaim:
-        segmentation = torch.from_numpy(segmentation)
-        touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.int32)
+        touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.int32).numpy()
         del touching_map
         num_touching_pixels = len(touching_pixels)
         minlength = segmentation.max().item()
@@ -1094,18 +1097,19 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
 
         # Create shared memory for segmentation
         shm_segmentation = shared_memory.SharedMemory(create=True,
-                                                      size=segmentation.numel() * np.dtype(np.int16).itemsize)
-        new_segmentation_np = np.ndarray(map_size, dtype=np.int16, buffer=shm_segmentation.buf)
-        new_segmentation_np[:] = segmentation.numpy()
+                                                      size=segmentation.size * np.dtype(np.int16).itemsize)
+        segmentation_shared = np.ndarray(map_size, dtype=np.int16, buffer=shm_segmentation.buf)
+        segmentation_shared[:] = segmentation
         del segmentation  # Free memory
+        gc.collect()
 
         # Create shared memory for touching_pixels
-        touching_pixels_np = touching_pixels.numpy()
-        shm_touching = shared_memory.SharedMemory(create=True, size=touching_pixels_np.nbytes)
-        touching_pixels_shared = np.ndarray(touching_pixels_np.shape, dtype=touching_pixels_np.dtype,
+        shm_touching = shared_memory.SharedMemory(create=True, size=touching_pixels.nbytes)
+        touching_pixels_shared = np.ndarray(touching_pixels.shape, dtype=touching_pixels.dtype,
                                             buffer=shm_touching.buf)
-        touching_pixels_shared[:] = touching_pixels_np[:]
-        del touching_pixels, touching_pixels_np  # Free memory
+        touching_pixels_shared[:] = touching_pixels[:]
+        del touching_pixels  # Free memory
+        gc.collect()
 
         batch_indices = [list(range(i, min(i + batch_size, num_touching_pixels)))
                          for i in range(0, num_touching_pixels, batch_size)]
@@ -1116,7 +1120,6 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
             for batch in batch_indices
         ]
 
-
         start_time = time.time()
         # Create the pool with an initializer that attaches the shared memories
         with Pool(cpu_count(), initializer=pool_initializer,
@@ -1126,7 +1129,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
         elapsed_time = time.time() - start_time
         print(f"Time taken: {elapsed_time}")
         # Convert shared memory to tensor
-        segmentation_result = torch.tensor(np.copy(new_segmentation_np))
+        segmentation_result = np.copy(segmentation_shared)
         # Clean up shared memory
         shm_segmentation.close()
         shm_segmentation.unlink()
