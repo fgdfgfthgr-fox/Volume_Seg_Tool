@@ -234,10 +234,15 @@ def start_work_flow(args):
                                                     hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                     hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap)
         else:
+            if args.instance_seg_mode:
+                mode = 'watershed'
+            else:
+                mode = 'simple'
             DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=args.result_folder_path,
                                                              hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                              hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                                                            pixel_reclaim=args.pixel_reclaim)
+                                                             segmentation_mode=mode, dynamic=args.dynamic,
+                                                             pixel_reclaim=args.pixel_reclaim)
         end_time = time.time()
         print(f"Converting and saving taken: {end_time - start_time} seconds")
 
@@ -284,6 +289,8 @@ if __name__ == "__main__":
     parser.add_argument("--predict_depth_size", type=int, default=128, help="Depth of each Patch (px) during prediction")
     parser.add_argument("--predict_hw_overlap", type=int, default=8,
                         help="Expansion in Height and Width for each Patch (px) during prediction")
+    parser.add_argument("--watershed_dynamic", type=int, default=10,
+                        help="Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges.")
     parser.add_argument("--predict_depth_overlap", type=int, default=8, help="Expansion in Depth for each Patch (px) during prediction")
     parser.add_argument("--result_folder_path", type=str, default="Datasets/result", help="Result Folder Path")
     parser.add_argument("--enable_mid_visualization", action="store_true", help="Enable Visualization")
@@ -307,6 +314,10 @@ if __name__ == "__main__":
     parser.add_argument("--test_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],
                         default="Fully Labelled", help="Dataset Mode")
     #parser.add_argument("--TTA_xy", action="store_true", help="Enable Test-Time Augmentation for xy dimension")
+    parser.add_argument("--instance_seg_mode", action="store_true",
+                        help="Use a slower and more memory intensive watershed method for seperate touching objects, "
+                             "instead of simple connected component labelling. "
+                             "Will yield result with much less under-segment objects.")
     parser.add_argument("--pixel_reclaim", action="store_true", help="Enable reclaim of lost pixel during the instance segmentation.")
 
     args = parser.parse_args()

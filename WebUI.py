@@ -80,6 +80,7 @@ def start_work_flow(inputs):
            f"--hw_size {inputs[hw_size]} --d_size {inputs[d_size]} "
            f"--predict_hw_size {inputs[predict_hw_size]} --predict_depth_size {inputs[predict_depth_size]} "
            f"--predict_hw_overlap {inputs[predict_hw_overlap]} --predict_depth_overlap {inputs[predict_depth_overlap]} "
+           f"--watershed_dynamic {inputs[watershed_dynamic]} "
            f"--result_folder_path {inputs[result_folder_path]} "
            f"--mid_visualization_input {inputs[mid_visualization_input]} "
            f"--model_architecture {inputs[model_architecture]} --model_channel_count {inputs[model_channel_count]} "
@@ -108,6 +109,8 @@ def start_work_flow(inputs):
         cmd += "--model_se "
     if inputs[find_max_channel_count]:
         cmd += "--find_max_channel_count "
+    if inputs[instance_seg_mode]:
+        cmd += "--instance_seg_mode "
     if inputs[pixel_reclaim]:
         cmd += "--pixel_reclaim "
 
@@ -640,9 +643,14 @@ if __name__ == "__main__":
                                          info="Horizontal And Vertical flip the image; the augmented images are then passed into the model."
                                               " Corresponding reverse transformation then applys to the output probability maps, and those maps get combined together."
                                               " Can improve segmentation accuracy, but will take longer and consume more CPU memory.")'''
+                    instance_seg_mode = gr.Checkbox(label="Use distance transform watershed for instance segmentation",
+                                                    info="Use a slower and more memory intensive watershed method for seperate touching objects, "
+                                                         "instead of simple connected component labelling. "
+                                                         "Will yield result with much less under-segment objects.")
+                    watershed_dynamic = gr.Number(10, label="Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges.")
                     pixel_reclaim = gr.Checkbox(label="Enable Pixel reclaim operation for instance segmentation",
                                                 info="Due to how instance segmentation works, some pixels will be lost when seperating touching objects, "
-                                                     "this settings will try to reclaim those lost pixels, but can take quite some time.")
+                                                     "this settings will try to reclaim some of those lost pixels, but can take quite some time.")
                     #TTA_z = gr.Checkbox(label="Enable Test-Time Augmentation for z dimension", info="Depth Wise flip the image")
             with gr.Row():
                 calculate_repeats = gr.Button(value="Calculate Training Repeats and Epoches!")
@@ -792,6 +800,8 @@ if __name__ == "__main__":
                 val_dataset_mode,
                 test_dataset_mode,
 #                TTA_xy,
+                instance_seg_mode,
+                watershed_dynamic,
                 pixel_reclaim,
 #                TTA_z,
                 }

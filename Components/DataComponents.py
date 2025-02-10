@@ -12,13 +12,14 @@ import random
 import time
 import h5py
 import multiprocessing
-# import scipy
 import tracemalloc
 import pandas as pd
 from multiprocessing import Pool, shared_memory, cpu_count
+import skimage.morphology as morph
 from scipy.ndimage import label
 from torchvision.datasets.folder import has_file_allowed_extension, IMG_EXTENSIONS
 from . import Augmentations as Aug
+from . import MorphologicalFunctions as Morph
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -907,13 +908,13 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
     stitched_volumes = stitch_output_volumes(tensor_list, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
     del tensor_list
     for volume in stitched_volumes:
-        array = np.asarray(volume[0])
-        array = np.where(array >= 0.5, 1, 0)
-        imageio.v3.imwrite(uri=f'{direc}/{volume[1]}', image=np.uint8(array))
+        array = volume[0].numpy()
+        array = np.where(array >= 0.5, 1, 0).astype(np.uint8)
+        imageio.v3.imwrite(uri=f'{direc}/{volume[1]}', image=array)
 
 
 def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16,
-                                      depth_overlap=16, pixel_reclaim=True):
+                                      depth_overlap=16, segmentation_mode='simple', dynamic=10, pixel_reclaim=True):
     """
     Stitch the patches of prediction output from network and save it in the selected directory.\n
     This one is for instance segmentation.
@@ -926,6 +927,8 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         depth_size (int): The depth of the patches. In pixels.
         hw_overlap (int): The additional gain in height and width of the patches. In pixels.
         depth_overlap (int): The additional gain in depth of the patches. In pixels.
+        segmentation_mode (str): If 'simple', will identify objects via simple connected component labelling. If 'watershed', will use a distance transform watershed instead, which is slower but yield much less under-segment.
+        dynamic (int): Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges. Default: 10.
         pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
     """
     tensor_list_p = [
@@ -955,7 +958,7 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         imageio.v3.imwrite(uri=f'{direc}/Pixels_{semantic[1]}', image=np.float16(semantic[0].numpy()))
         imageio.v3.imwrite(uri=f'{direc}/Contour_{contour[1]}', image=np.float16(contour[0].numpy()))
         print(f'Computing instance segmentation using contour data for {contour[1]}... Can take a while if the image is big.')
-        instance_array = instance_segmentation_simple(semantic[0], contour[0], pixel_reclaim=pixel_reclaim)
+        instance_array = instance_segmentation_simple(semantic[0], contour[0], mode=segmentation_mode, dynamic=dynamic, pixel_reclaim=pixel_reclaim)
         imageio.v3.imwrite(uri=f'{direc}/Instance_{contour[1]}', image=instance_array)
 
 
@@ -1042,7 +1045,7 @@ def allocate_pixels_global(batch_indices_and_args):
             segmentation_shared[z, y, x] = closest_object.item()
 
 
-def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, pixel_reclaim=True, distance_threshold=1, batch_size=2048):
+def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, mode='simple', dynamic=10, pixel_reclaim=True, distance_threshold=1, batch_size=2048):
     """
     Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.
     Pixels in touching areas are assigned to the closest object based on the largest proportion of pixels within 5 pixel distance to the pixel.
@@ -1051,6 +1054,8 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
         semantic_map (torch.Tensor): The input semantic segmented map.
         contour_map (torch.Tensor): The input contour segmented map.
         size_threshold (int): The minimal size in pixel of each object. Object smaller than this will be removed.
+        mode (str): If 'simple', will identify objects via simple connected component labelling. If 'watershed', will use a distance transform watershed instead, which is slower but yield much less under-segment.
+        dynamic (int): Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges. Default: 10.
         pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
         distance_threshold (int): The radius in pixels to search for nearby pixels when allocating. Default: 1.
         batch_size (int): Batch size for pixel reclaim. Default: 2048.
@@ -1081,8 +1086,20 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, p
          [0, 1, 0],
          [0, 0, 0]]
     ], dtype=np.byte)
-    # Connected Component Labelling
-    label(segmentation, structure=structure, output=segmentation)
+    if mode == 'simple':
+        label(segmentation, structure=structure, output=segmentation)
+    elif mode == 'watershed':
+        distance_map = Morph.inverter(Morph.chamferdistancetransform3duint16(segmentation))
+        marker = distance_map + dynamic
+        hmin = Morph.geodesicreconstructionbyerosion3d(marker, distance_map)
+        del marker
+        gc.collect()
+        hmin = morph.local_minima(hmin).astype(np.uint16)
+        label(hmin, output=hmin)
+        print("Starts watershed flooding...")
+        segmentation = Morph.watershed_3d(distance_map, markers=hmin, mask=segmentation)
+        del distance_map, hmin
+        gc.collect()
     # Remove small segments
     #segmentation = morphology.remove_small_objects(segmentation, min_size=size_threshold, connectivity=structure.numpy())
 
