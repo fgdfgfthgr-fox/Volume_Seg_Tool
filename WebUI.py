@@ -336,7 +336,7 @@ if __name__ == "__main__":
         with gr.Tab("Main"):
             segmentation_mode = gr.Radio(["Semantic", "Instance"], value="Semantic", label="Segmentation Mode")
             workflow_box = gr.CheckboxGroup(["Training", "Validation", "Test", "Predict"],
-                                            label="Workflows to enable")
+                                            label="Components to enable")
             with gr.Accordion("Workflows Explanation", open=False):
                 gr.Markdown("Training: Train a network using the training dataset.")
                 gr.Markdown("Validation: Use a Validation Dataset to evaluate the segmentation quality during training.")
@@ -806,9 +806,9 @@ if __name__ == "__main__":
 #                TTA_z,
                 }
             with gr.Row():
-                start_button = gr.Button("Start Workflow", elem_id="start_button")
+                start_button = gr.Button("Start!", elem_id="start_button")
                 start_button.click(start_work_flow, inputs=input_dict)
-                stop_button = gr.Button("Stop Workflow", elem_id="stop_button")
+                stop_button = gr.Button("Interrupt!", elem_id="stop_button")
                 #stop_button.click(stop_training_callback)
                 stop_button.click(command_executor.kill_command)
 
