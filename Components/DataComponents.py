@@ -344,8 +344,7 @@ class TrainDataset(torch.utils.data.Dataset):
         self.img_tensors = [path_to_tensor(item[0], key=hdf5_key, label=False) for item in self.file_list]
         if exclude_edge and not instance_mode:
             self.lab_tensors = [
-                Aug.exclude_border_labels(item, exclude_edge_size_in, exclude_edge_size_out).to(torch.float32) for item
-                in self.lab_tensors]
+                Aug.exclude_border_labels(item, exclude_edge_size_in, exclude_edge_size_out) for item in self.lab_tensors]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
         self.hw_size = hw_size
@@ -457,7 +456,7 @@ class ValDataset(torch.utils.data.Dataset):
         self.num_files = len(file_list)
         self.instance_mode = instance_mode
         if instance_mode:
-            tensors_pairs = [(path_to_tensor(item[0], key=hdf5_key, label=False),
+            tensors_pairs = [((path_to_tensor(item[0], key=hdf5_key, label=False)),
                               Aug.binarisation(path_to_tensor(item[1], label=True)),
                               get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in file_list]
         else:

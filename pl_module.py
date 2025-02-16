@@ -234,7 +234,7 @@ class PLModule(pl.LightningModule):
                 c_outputs = apply_augmentation(c_outputs, i)
                 TTA_results.append((p_outputs, c_outputs))
             else:
-                p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs[0], dim=0), dim=0)).to(torch.float16)
+                p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs, dim=0), dim=0)).to(torch.float16)
                 p_outputs = apply_augmentation(p_outputs, i)
                 TTA_results.append(p_outputs)
 

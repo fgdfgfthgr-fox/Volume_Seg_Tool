@@ -257,7 +257,7 @@ if __name__ == "__main__":
     parser.add_argument("--segmentation_mode", choices=["Semantic", "Instance"], default="Semantic",
                         help="Segmentation Mode")
     parser.add_argument("--train_dataset_path", type=str, default="Datasets/train", help="Train Dataset Path")
-    parser.add_argument("--augmentation_csv_path", type=str, default="Augmentation Parameters.csv",
+    parser.add_argument("--augmentation_csv_path", type=str, default="Augmentation Parameters Isotropic.csv",
                         help="Csv File for Data Augmentation Settings")
     parser.add_argument("--train_multiplier", type=int, default=8, help="Train Multiplier (Repeats)")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch Size")

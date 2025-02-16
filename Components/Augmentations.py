@@ -560,3 +560,26 @@ def edge_replicate_pad(input_tensors, padding_percentile=0.1):
         output_tensor = F.pad(output_tensor, [W_crop, W_crop, H_crop, H_crop, D_crop, D_crop], mode='replicate')
         output_tensors.append(output_tensor)
     return output_tensors
+
+
+def middle_z_normalize(input_tensor, z_percentile=0.75):
+    """
+    Normalise image to be between 0 and 1. The lowest 1%
+    However, only the middle chunk along the Z dimension of 3D microscopy images will be used for calculating the mean and
+    standard deviation of image intensity.
+
+    Args:
+        input_tensors (torch.Tensor): Input tensor with a shape of (D, H, W)
+        z_percentile (float): The central percentile of the image which will be used for calculating the mean and standard deviation of image intensity.
+
+    Return:
+        output_tensor (torch.Tensor)
+    """
+    z, x, y = input_tensor.shape
+    low_z, high_z = int((0.5-(z_percentile/2))*z), max(int((0.5+(z_percentile/2))*z), 1)
+    #middle_chunk = input_tensor[low_z:high_z, :, :]
+    low, high = np.percentile(input_tensor[low_z:high_z, :, :], 1), np.percentile(input_tensor[low_z:high_z, :, :], 99)
+    #print(low, high)
+    input_tensor = (input_tensor - low) / (high - low)
+    input_tensor = torch.clamp(input_tensor, 0, 1)
+    return input_tensor
