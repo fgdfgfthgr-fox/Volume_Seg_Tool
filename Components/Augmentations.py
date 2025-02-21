@@ -16,7 +16,6 @@ import torch.multiprocessing as mp
 device = "cuda" if torch.cuda.is_available() else "cpu"
 # Various customize image augmentation implementations specialised in 4 dimensional tensors.
 # (Channel, Depth, Height, Width).
-# The expected range should be between 0 and 1.
 
 
 def sim_low_res(tensor, scale=2):
@@ -53,7 +52,13 @@ def adj_gamma(tensor, gamma, gain=1):
     Returns:
         torch.Tensor: Gamma-adjusted 3D tensor with the same shape as the input.
     """
-    return (tensor ** gamma) * gain
+    min, max = tensor.min(), tensor.max()
+    if min - max == 0:
+        return tensor  # Avoid division by zero; return as-is
+    tensor = (tensor-min)/(max-min)
+    tensor = (tensor ** gamma) * gain
+    tensor = (tensor * (max-min)) + min
+    return tensor
 
 
 def adj_contrast(tensor, contrast):
@@ -67,7 +72,8 @@ def adj_contrast(tensor, contrast):
     Returns:
         torch.Tensor: Contrast-adjusted 3D tensor with the same shape as the input.
     """
-    return (contrast * tensor + (1.0 - contrast) * torch.mean(tensor)).clamp(0, 1)
+    tensor *= contrast
+    return tensor
 
 
 def adj_brightness(tensor, brightness):
@@ -81,7 +87,7 @@ def adj_brightness(tensor, brightness):
     Returns:
         torch.Tensor: Brightness-adjusted 3D tensor with the same shape as the input.
     """
-    return (brightness * tensor).clamp(0, 1)
+    return torch.clamp(brightness + tensor, -4, 4)
 
 #    The sigma is automatically calculated in the way same as torchvision.transforms.functional.gaussian_blur(),
 #    which is sigma = 0.3 * ((kernel_size - 1) * 0.5 - 1) + 0.8\n
@@ -178,7 +184,7 @@ def rotate_4d_tensor(tensor, planes=['xy', 'xz', 'yz'], angles=[0., 0., 0.],
     grid = F.affine_grid(affine_4x4[:3, :].unsqueeze(0), tensor.unsqueeze(0).shape, align_corners=False)
 
     # Apply the grid sample using the specified interpolation
-    rotated = F.grid_sample(tensor.to(torch.float32).unsqueeze(0), grid, mode=interpolation, padding_mode='zeros', align_corners=False)
+    rotated = F.grid_sample(tensor.to(torch.float32).unsqueeze(0), grid, mode=interpolation, padding_mode='reflection', align_corners=False)
 
     return rotated.squeeze(0)
 
@@ -324,9 +330,15 @@ def random_gradient(tensor, range=(0.5, 1.5), gamma=True):
         gradient = gradient.view(1, -1, 1, 1)
         gradient = gradient.flip(dims=(1,))
     if gamma:
-        return tensor ** gradient
+        min, max = tensor.min(), tensor.max()
+        if min - max == 0:
+            return tensor  # Avoid division by zero; return as-is
+        tensor = (tensor - min) / (max - min)
+        tensor = (tensor ** gradient)
+        tensor = (tensor * (max - min)) + min
+        return tensor
     else:
-        return (gradient * tensor + (1.0 - gradient) * tensor.mean()).clamp(0, 1)
+        return torch.clamp(gradient * tensor, -4, 4)
 
 
 def salt_and_pepper_noise(tensor, prob=0.01):
@@ -343,11 +355,11 @@ def salt_and_pepper_noise(tensor, prob=0.01):
 
     # Add salt noise
     salt_mask = torch.rand_like(tensor, device=device) < prob
-    tensor[salt_mask] = 1.0
+    tensor[salt_mask] = tensor.max()
 
     # Add pepper noise
     pepper_mask = torch.rand_like(tensor, device=device) < prob
-    tensor[pepper_mask] = 0.0
+    tensor[pepper_mask] = tensor.min()
 
     return tensor
 
@@ -569,7 +581,7 @@ def middle_z_normalize(input_tensor, z_percentile=0.75):
     standard deviation of image intensity.
 
     Args:
-        input_tensors (torch.Tensor): Input tensor with a shape of (D, H, W)
+        input_tensor (torch.Tensor): Input tensor with a shape of (D, H, W)
         z_percentile (float): The central percentile of the image which will be used for calculating the mean and standard deviation of image intensity.
 
     Return:
@@ -583,3 +595,41 @@ def middle_z_normalize(input_tensor, z_percentile=0.75):
     input_tensor = (input_tensor - low) / (high - low)
     input_tensor = torch.clamp(input_tensor, 0, 1)
     return input_tensor
+
+def gaussian_noise(input_tensor, strength=0.05):
+    """
+    Add gaussian noise to img.
+
+    Args:
+        input_tensor (torch.Tensor): Input tensor with a shape of (D, H, W)
+        strength (float): The intensity of the noise.
+
+    Return:
+        output_tensor (torch.Tensor)
+    """
+    noise = torch.randn_like(input_tensor, dtype=torch.float32)
+    input_tensor = input_tensor + noise * strength
+    input_tensor = torch.clamp(input_tensor, -4, 4)
+    return input_tensor
+
+
+def remove_black_borders(volume):
+    """
+    Remove black borders.
+    """
+    # Sum along the height and width dimensions to find non-black slices along depth
+    non_black_depth = np.any(volume, axis=(1, 2))
+    non_black_height = np.any(volume, axis=(0, 2))
+    non_black_width = np.any(volume, axis=(0, 1))
+
+    # Find the first and last indices where the image is not black
+    depth_start, depth_end = non_black_depth.nonzero()[0][[0, -1]]
+    height_start, height_end = non_black_height.nonzero()[0][[0, -1]]
+    width_start, width_end = non_black_width.nonzero()[0][[0, -1]]
+
+    # Crop the volume using the computed indices
+    volume = volume[depth_start:depth_end + 1,
+                    height_start:height_end + 1,
+                    width_start:width_end + 1]
+
+    return volume

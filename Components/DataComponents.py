@@ -51,9 +51,10 @@ def path_to_tensor(path, label=False, key='default'):
         if img.dtype == np.uint16 or img.dtype == np.uint32:
             img = img.astype(np.int32)
     else:
-        max_value = np.iinfo(img.dtype).max if img.dtype.kind == 'u' else np.finfo(img.dtype).max
-        img = img.astype(np.float32, copy=False)
-        img = np.divide(img, max_value, out=img, dtype=np.float32)
+        img = Aug.remove_black_borders(img)
+        non_zero = img[img!=0]
+        mean, std = np.mean(non_zero, dtype=np.float32), np.std(non_zero, dtype=np.float32) + 1e-8
+        img = (img - mean) / std
     return torch.from_numpy(img)
 
 
@@ -160,14 +161,16 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
         elif augmentation_method == 'Gaussian Blur' and random.random() < prob:
             img_tensor = Aug.gaussian_blur_3d(img_tensor, int(row['Value']),
                                               random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gaussian Noise' and random.random() < prob:
+            img_tensor = Aug.gaussian_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gradient Gamma' and random.random() < prob:
             img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), True)
         elif augmentation_method == 'Gradient Contrast' and random.random() < prob:
             img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), False)
-        elif augmentation_method == 'Adjust Contrast' and random.random() < prob:
-            img_tensor = Aug.adj_contrast(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Adjust Gamma' and random.random() < prob:
             img_tensor = Aug.adj_gamma(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Adjust Contrast' and random.random() < prob:
+            img_tensor = Aug.adj_contrast(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Adjust Brightness' and random.random() < prob:
             img_tensor = Aug.adj_brightness(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Salt And Pepper' and random.random() < prob:
@@ -181,7 +184,7 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
             contour_tensor = Aug.gaussian_blur_3d(contour_tensor, int(row['Value']),
                                                   random.uniform(row['Low Bound'], row['High Bound']))
     if contour_tensor is not None:
-        return img_tensor, lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
+        return img_tensor, lab_tensor, contour_tensor
     else:
         return img_tensor, lab_tensor
 
@@ -246,6 +249,8 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
             img_tensor = img_tensor.flip([1])
         elif augmentation_method == 'Simulate Low Resolution' and random.random() < prob:
             img_tensor = Aug.sim_low_res(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gaussian Noise' and random.random() < prob:
+            img_tensor = Aug.gaussian_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gaussian Blur' and random.random() < prob:
             img_tensor = Aug.gaussian_blur_3d(img_tensor, int(row['Value']),
                                               random.uniform(row['Low Bound'], row['High Bound']))
@@ -253,10 +258,10 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
             img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), True)
         elif augmentation_method == 'Gradient Contrast' and random.random() < prob:
             img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), False)
-        elif augmentation_method == 'Adjust Contrast' and random.random() < prob:
-            img_tensor = Aug.adj_contrast(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Adjust Gamma' and random.random() < prob:
             img_tensor = Aug.adj_gamma(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Adjust Contrast' and random.random() < prob:
+            img_tensor = Aug.adj_contrast(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Adjust Brightness' and random.random() < prob:
             img_tensor = Aug.adj_brightness(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Salt And Pepper' and random.random() < prob:
@@ -717,7 +722,8 @@ class CollectedSampler(torch.utils.data.Sampler):
 
 def custom_collate(batch):
     if len(batch) == 1:
-        return batch[0].unsqueeze(0)
+        batch = [torch.unsqueeze(sample, dim=0) for sample in batch[0]]
+        return batch
     positive_samples = batch[0]
     negative_samples = batch[1]
     batch = [torch.stack((a_i, b_i), dim=0) for a_i, b_i in zip(positive_samples, negative_samples)]

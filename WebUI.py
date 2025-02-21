@@ -8,6 +8,7 @@ import tkinter as tk
 import matplotlib.pyplot as plt
 import numpy as np
 from skimage.draw import ellipsoid_stats
+from torch.distributed.algorithms.ddp_comm_hooks.powerSGD_hook import batched_powerSGD_hook
 
 from Components import DataComponents
 from Components import Metrics
@@ -478,7 +479,7 @@ if __name__ == "__main__":
                 with gr.Row():
                     train_multiplier = gr.Number(None, label="Train Multiplier (Repeats)",
                                                  info="Automatically calculated to aim for 10% steps in validation, 90% in train. "
-                                                      "Limit to a max of 64.",
+                                                      "Limit to a max of 128.",
                                                  interactive=False)
                 with gr.Row():
                     train_length = gr.Radio(["Short", "Medium", "Long", "Custom"], value="Short",
@@ -657,9 +658,9 @@ if __name__ == "__main__":
                 def calculate_train_multiplier(val_num_patch, num_t_files, workflow_box):
                     if 'Validation' in workflow_box:
                         # Aiming to have 10% steps in val, 90% steps in train
-                        return min(round(9 * (val_num_patch / num_t_files)), 64)
+                        return min(round(9 * (val_num_patch / num_t_files)), 128)
                     else:
-                        return math.ceil(64 / num_t_files)
+                        return math.ceil(128 / num_t_files)
 
                 def get_auto_parameters(workflow_box, train_dataset_path, val_dataset_path, hw_size, d_size, batch_size, train_steps, enable_unsupervised, unsupervised_train_dataset_path):
                     if 'Validation' in workflow_box:
@@ -689,25 +690,36 @@ if __name__ == "__main__":
                                                  info="If you are experiencing running out of system memory (Not CUDA memory!) during training, "
                                                       "This option could help by using only 1 thread to do data loading. "
                                                       "Can significantly slow down training if your system have low single core performance.")
+            precision = gr.Dropdown(["32", "16-mixed", "bf16-mixed"], value="32", label="Precision",
+                                    info="fp16 precision could significantly cut the VRAM usage. However if you are not using an Nvidia GPU, it could signficantly slow down the training as well."
+                                         "bf16 is recommended over fp16 if you are using a newer GPU (30 series or newer).")
             with gr.Row():
                 model_architecture = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
                 segmentation_mode.change(update_available_arch, inputs=segmentation_mode, outputs=model_architecture)
-                model_channel_count = gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
+                model_channel_count = gr.Number(8, label="Base Channel Count", precision=0, minimum=4,
                                                 info="Often means the number of output channels in the first encoder block. Determines the size of the network. Preferably a multiple of 8.")
-                find_max_channel_count = gr.Checkbox(label="Automatically find the largest channel count",
-                                                     info="Finds the largest channel count that doesn't result in a "
-                                                          "Out-of-memory error through trials and errors. A slow process. "
-                                                          "Certain graphic cards can be very slow with the largest "
-                                                          "channel count (<0.1it/s), a lower channel count is recommended.", visible=False) # Very buggy currently...
-                def show_hide_model_channel_count(find_max_channel_count):
-                    if find_max_channel_count:
-                        return gr.Number(8, visible=False)
+                gr.Markdown("Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.")
+                find_max_channel_count = gr.Button("Automatically find the largest channel count")
+                def calculate_channel_count(hw_size, d_size, batch_size, precision):
+                    # Reserve around 500 mb
+                    vram_available = torch.cuda.get_device_properties(0).total_memory / (1024**2) - 500
+                    batch_size_multiplier = 1.96 if batch_size == 2 else 1
+                    if precision == '32':
+                        precision_multiplier = 1
+                    elif precision == '16-mixed':
+                        precision_multiplier = 0.54
+                    elif precision == 'bf16-mixed':
+                        precision_multiplier = 0.53
+                    channel_count = (7381.3 * vram_available - 1e7) / ((hw_size**2 * d_size) * batch_size_multiplier * precision_multiplier)
+                    channel_count = math.floor(channel_count/4) * 4
+                    if channel_count == 0:
+                        print('Warning: Could not find a channel count that will fit into your video memory! A default minimal of 4 is selected. Consider reduce your patch size or get a better GPU.')
+                        return 4
                     else:
-                        return gr.Number(8, label="Base Channel Count", precision=0, minimum=1, visible=True,
-                                         info="Often means the number of output channels in the first encoder block. Determines the size of the network.")
-                #find_max_channel_count.change(show_hide_model_channel_count, inputs=find_max_channel_count, outputs=model_channel_count)
+                        return channel_count
+                find_max_channel_count.click(calculate_channel_count, inputs=[hw_size, d_size, batch_size, precision], outputs=model_channel_count)
                 model_se = gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
-                                       info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.")
+                                       info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.", visible=False)
                 def show_hide_model_tab(read_existing_model, segmentation_mode):
                     if read_existing_model:
                         visible = False
@@ -720,19 +732,13 @@ if __name__ == "__main__":
                     options = (gr.Dropdown(archs, label="Model Architecture", visible=visible),
                                gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
                                info="Often means the number of output channels in the first encoder block. Determines the size of the network.", visible=visible),
-                               gr.Checkbox(label="Automatically find the largest channel count",
-                                           info="Finds the largest channel count that doesn't result in a "
-                                                "Out-of-memory error through trials and errors. A slow process. "
-                                                "Certain graphic cards can be very slow with the largest "
-                                                "channel count (<0.1it/s), a lower channel count is recommended.", visible=False),
+                               gr.Button(label="Automatically find the largest channel count",
+                                         info="Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error."),
                                gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
                                info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.", visible=visible))
                     return options
 
                 read_existing_model.change(show_hide_model_tab, inputs=[read_existing_model, segmentation_mode], outputs=[model_architecture, model_channel_count, find_max_channel_count, model_se])
-            precision = gr.Dropdown(["32", "16-mixed", "bf16-mixed"], value="32", label="Precision",
-                                    info="fp16 precision could significantly cut the VRAM usage. However if you are not using an Nvidia GPU, it could signficantly slow down the training as well."
-                                         "bf16 is recommended over fp16 if you are using a newer GPU (30 series or newer).")
             with gr.Accordion("Visualising training progress on the fly"):
                 gr.Markdown("Note: Gradio doesn't support direct display of 3D image. The result are displayed in the tensorboard.")
                 gr.Markdown("Could slow down training process, especially if the image is big.")

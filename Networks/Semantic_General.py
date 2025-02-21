@@ -53,8 +53,8 @@ class UNet(nn.Module):
                 num_conv = 1
             else:
                 num_conv = 2
-            multiplier_h = base_channels * (2 ** i)
-            multiplier_v = base_channels * (2 ** (i+1))
+            multiplier_h = min(base_channels * (2 ** i), 256)
+            multiplier_v = min(base_channels * (2 ** (i+1)), 256)
             if i != depth - 1:
                 if i == 0:
                     if type == 'ResidualBottleneck':
