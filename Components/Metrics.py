@@ -174,7 +174,7 @@ class BinaryMetrics(nn.Module):
         # Huge smooth to prevent loss jump when the ground truth foreground is very low or 0
         union_s = torch.sum(inputs) + torch.sum(targets) + self.smooth
         loss = 1 - (intersection_s / union_s)
-        inputs = torch.where(inputs >= 0.5, 1, 0).to(torch.int8)
+        inputs = torch.where(inputs >= 0.5, True, False)
         intersection = 2 * torch.sum(targets * inputs)
         union = torch.sum(inputs) + torch.sum(targets)
         return intersection, union, loss
@@ -294,7 +294,7 @@ class BinaryMetricsForList(nn.Module):
         false_positives = (inputs*(1-targets)).sum().detach()
         return true_positives, false_negatives, true_negatives, false_positives
 
-    def forward(self, predicts: list[torch.Tensor], target: torch.Tensor, sparse_label=False):
+    def forward(self, predicts: list[torch.Tensor], target: torch.Tensor, weights: list, sparse_label=False):
         """
         Calculate binary classification metrics and loss based on the provided inputs and targets.
 
@@ -303,6 +303,7 @@ class BinaryMetricsForList(nn.Module):
             target (torch.Tensor): The target labels (B, 1, D, H, W).
                 When `sparse_label` is True: 0 for unlabeled, 1 for foreground, 2 for background
                 When `sparse_label` is False: 0.0 for background, 1.0 for foreground
+            weights (list): The weight for each input in the list. Should sum up to 1.
             sparse_label (bool): A flag indicating whether the target labels are sparse (default is False).
             If true, will force to dice loss.
 
@@ -325,7 +326,7 @@ class BinaryMetricsForList(nn.Module):
             bce_losses = [F.binary_cross_entropy_with_logits(predict, target, reduction='none') for predict in predicts]
             pts = [torch.exp(-bce_loss) for bce_loss in bce_losses]
             f_losses = [((1-pt) ** 1.333 * bce_loss).mean() for pt, bce_loss in zip(pts, bce_losses)]
-            f_loss = sum(f_losses) / len(f_losses)
+            f_loss = sum([loss * weights[i] for i, loss in enumerate(f_losses)])
 
             with torch.no_grad():
                 iou_outs = [self.calculate_iou_loss(F.sigmoid(predict), target) for predict in predicts]
@@ -335,10 +336,13 @@ class BinaryMetricsForList(nn.Module):
             return f_loss, intersection, union, tp, fn, tn, fp
         elif self.loss_mode == "dice+bce":
             bce_losses = [F.binary_cross_entropy_with_logits(predict, target, reduction='none').mean() for predict in predicts]
-            bce_loss = sum(bce_losses) / len(bce_losses)
+            bce_loss = sum([loss * weights[i] for i, loss in enumerate(bce_losses)])
             iou_outs = [self.calculate_iou_loss(F.sigmoid(predict), target) for predict in predicts]
-            intersection, union, dice_losses = [sum([scale[i] for scale in iou_outs]) for i in range(3)]
-            dice_loss = dice_losses / len(predicts)
+            for i, iou_out in enumerate(iou_outs):
+                iou_outs[i][0] *= weights[i]
+                iou_outs[i][1] *= weights[i]
+                iou_outs[i][2] *= weights[i]
+            intersection, union, dice_loss = [sum([scale[i] for scale in iou_outs]) for i in range(3)]
             with torch.no_grad():
                 other_metrics = [self.calculate_other_metrices(F.sigmoid(predict), target) for predict in predicts]
                 tp, fn, tn, fp = [sum([scale[i] for scale in other_metrics]) for i in range(4)]

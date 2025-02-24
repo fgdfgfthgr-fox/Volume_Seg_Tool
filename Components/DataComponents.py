@@ -657,7 +657,7 @@ class CollectedSampler(torch.utils.data.Sampler):
                 unsupervised_array = [[num, 'unsupervised'] for num in unsupervised_array]
                 supervised_array = np.arange(self.dataset_unsupervised_size, len(self.data))
                 np.random.shuffle(supervised_array)
-                supervised_array = [(num, None) for num in supervised_array]
+                supervised_array = [[num, None] for num in supervised_array]
                 min_size = min(self.dataset_unsupervised_size, len(supervised_array))
                 interleaved_array = []
                 for i in range(0, min_size):

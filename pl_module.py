@@ -61,12 +61,25 @@ def pick_arch(arch_args):
         return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, label_mean, contour_mean)
 
 
+def weight_sequence(alpha, n):
+
+    # Generate a sequence of weights that decrease exponentially
+    weights = [alpha ** i for i in range(n)]
+
+    # Normalize the weights so that they sum to 1
+    total_weight = sum(weights)
+    sequence = [w / total_weight for w in weights]
+
+    return sequence
+
+
 class PLModule(pl.LightningModule):
     def __init__(self, arch_args, enable_val, enable_mid_visual, mid_visual_image, instance_mode,
                  use_sparse_label_train, use_sparse_label_val, use_sparse_label_test, logging):
         super().__init__()
         self.save_hyperparameters()
         self.network = pick_arch(arch_args)
+        self.p_weights = weight_sequence(0.8, arch_args[2]-1)
         self.enable_val = enable_val
         self.enable_mid_visual = enable_mid_visual
         self.mid_visual_image = mid_visual_image
@@ -79,7 +92,7 @@ class PLModule(pl.LightningModule):
         self.lr = 1e-4 # Not the actual LR since it's automatically computed
         self.pixel_ramp_steps = 2048  # Ramp-up the weight of entropy minimisation during the initial 2048 steps
         self.unsupervised_weight = 0.1
-        self.p_loss_fn = Metrics.BinaryMetricsForList("focal")
+        self.p_loss_fn = Metrics.BinaryMetrics("focal")
         self.c_loss_fn = Metrics.BinaryMetrics("dice+bce")
         if enable_mid_visual:
             self.mid_visual_tensor = DataComponents.path_to_tensor(self.mid_visual_image).unsqueeze(0).unsqueeze(0).to(device)
@@ -128,20 +141,23 @@ class PLModule(pl.LightningModule):
                 img, lab, contour = batch
             else:
                 img = batch[0]
-            p_outputs, c_outputs = self.forward(img)
+            p_outputs, c_output = self.forward(img)
+            p_outputs = [p_output * self.p_weights[i] for i, p_output in enumerate(p_outputs)]
+            p_output = torch.sum(torch.stack(p_outputs), dim=0)
             if self.dice_threshold_reached:
-                sigmoid_p_outputs, sigmoid_c_outputs = [self.entropy_preprocess(scale) for scale in p_outputs], self.entropy_preprocess(c_outputs)
-
-                entropy_loss_p = sum([(-value * torch.log(value)).mean() for value in sigmoid_p_outputs]) / len(sigmoid_p_outputs)
+                #sigmoid_c_output = self.entropy_preprocess(c_output)
+                sigmoid_p_output = self.entropy_preprocess(p_output)
+                entropy_loss_p = (-sigmoid_p_output * torch.log(sigmoid_p_output)).mean()
+                #entropy_loss_p = sum([(-value * torch.log(value)).mean() for value in sigmoid_p_outputs]) / len(sigmoid_p_outputs)
 
                 entropy = entropy_loss_p #+ entropy_loss_c
                 entropy_loss = entropy * pixel_ramp_weight
             else:
-                entropy_loss = torch.tensor(0.0, requires_grad=False)
                 entropy = torch.tensor(0.0, requires_grad=False)
+                entropy_loss = torch.tensor(0.0, requires_grad=False)
             if type == 'Supervised':
-                p_loss, p_i, p_u, p_tp, p_fn, p_tn, p_fp = self.p_loss_fn(p_outputs, lab, False)
-                c_loss, c_i, c_u, c_tp, c_fn, c_tn, c_fp = self.c_loss_fn(c_outputs, contour, False)
+                p_loss, p_i, p_u, p_tp, p_fn, p_tn, p_fp = self.p_loss_fn(p_output, lab, False)
+                c_loss, c_i, c_u, c_tp, c_fn, c_tn, c_fp = self.c_loss_fn(c_output, contour, False)
                 supervised_loss = p_loss + c_loss
                 loss = supervised_loss + entropy_loss
 
@@ -154,15 +170,17 @@ class PLModule(pl.LightningModule):
             else:
                 img = batch[0]
             outputs = self.forward(img)
+            outputs = [output * self.p_weights[i] for i, output in enumerate(outputs)]
+            output = torch.sum(torch.stack(outputs), dim=0)
             if self.dice_threshold_reached:
-                sigmoid_outputs = [self.entropy_preprocess(scale) for scale in outputs]
-                entropy = sum([(-value * torch.log(value)).mean() for value in sigmoid_outputs]) / len(sigmoid_outputs)
+                sigmoid_outputs = self.entropy_preprocess(output)
+                entropy = (-sigmoid_outputs * torch.log(sigmoid_outputs)).mean()
                 entropy_loss = entropy * pixel_ramp_weight
             else:
-                entropy_loss = torch.tensor(0.0, requires_grad=False)
                 entropy = torch.tensor(0.0, requires_grad=False)
+                entropy_loss = torch.tensor(0.0, requires_grad=False)
             if type == 'Supervised':
-                supervised_loss, i, u, tp, fn, tn, fp = self.p_loss_fn(outputs, lab, sparse)
+                supervised_loss, i, u, tp, fn, tn, fp = self.p_loss_fn(output, lab, sparse)
                 loss = supervised_loss + entropy_loss
                 return loss, i, u, tp, fn, tn, fp, entropy
             else:
@@ -231,13 +249,17 @@ class PLModule(pl.LightningModule):
             outputs = self.forward(aug_batch)
 
             if isinstance(outputs, tuple):
-                p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs[0], dim=0), dim=0)).to(torch.float16)
+                p_outputs = [p_output * self.p_weights[i] for i, p_output in enumerate(outputs[0])]
+                p_outputs = torch.sigmoid(torch.sum(torch.stack(p_outputs), dim=0)).to(torch.float16)
+                #p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs[0], dim=0), dim=0)).to(torch.float16)
                 c_outputs = torch.sigmoid(outputs[1]).to(torch.float16)
                 p_outputs = apply_augmentation(p_outputs, i)
                 c_outputs = apply_augmentation(c_outputs, i)
                 TTA_results.append((p_outputs, c_outputs))
             else:
-                p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs, dim=0), dim=0)).to(torch.float16)
+                p_outputs = [p_output * self.p_weights[i] for i, p_output in enumerate(outputs)]
+                p_outputs = torch.sigmoid(torch.sum(torch.stack(p_outputs), dim=0)).to(torch.float16)
+                #p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs, dim=0), dim=0)).to(torch.float16)
                 p_outputs = apply_augmentation(p_outputs, i)
                 TTA_results.append(p_outputs)
 
@@ -341,12 +363,12 @@ class PLModule(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    #tracemalloc.start()
-    #snap1 = tracemalloc.take_snapshot()
-    sizes = [(256, 52, 4)]
-    channel_counts = [4, 8, 16]
-    precisions = ['32', '16-mixed']
-    batch_sizes = [1, 2]
+    tracemalloc.start()
+    snap1 = tracemalloc.take_snapshot()
+    sizes = [(128, 26, 4)]
+    channel_counts = [16]
+    precisions = ['bf16-true']
+    batch_sizes = [2]
     for size in sizes:
         for channel_count in channel_counts:
             for precision in precisions:
@@ -360,19 +382,19 @@ if __name__ == "__main__":
                                                                 1)
                     train_label_mean = train_dataset.get_label_mean()
                     train_contour_mean = torch.tensor(0.5)
-                    #unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
-                    #                                                                "Augmentation Parameters.csv",
-                    #                                                                64,
-                    #                                                                128, 26)
-                    train_dataset = DataComponents.CollectedDataset(train_dataset)
-                    sampler = DataComponents.CollectedSampler(train_dataset, batch_size)
+                    unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
+                                                                                    "Augmentation Parameters Anisotropic.csv",
+                                                                                    64,
+                                                                                    size[0], size[1])
+                    train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
+                    sampler = DataComponents.CollectedSampler(train_dataset, batch_size, unsupervised_train_dataset)
                     collate_fn = DataComponents.custom_collate
                     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,
                                                                collate_fn=collate_fn, sampler=sampler,
-                                                               num_workers=6, pin_memory=False, persistent_workers=True)
+                                                               num_workers=15, pin_memory=False, persistent_workers=True)
                     #meta_info = predict_dataset.__getmetainfo__()
                     #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
+                    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=4)
 
                     callbacks = []
                     model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="",
@@ -388,20 +410,20 @@ if __name__ == "__main__":
                                     False, False, False, True)
                     '''model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="test", mode="max",
                                                                     monitor="Val_epoch_dice", save_weights_only=True, enable_version_counter=False)'''
-                    trainer = pl.Trainer(max_epochs=10, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{size}-{channel_count}-{precision}-{batch_size}'),
+                    trainer = pl.Trainer(max_epochs=50, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{size}-{channel_count}-{precision}-{batch_size}'),
                                          accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
                                          precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
                                                                                                                       #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
                     # print(subprocess.run("tensorboard --logdir='lightning_logs'", shell=True))
-                    #snap2 = tracemalloc.take_snapshot()
+                    snap2 = tracemalloc.take_snapshot()
+                    top_stats = snap2.compare_to(snap1, 'lineno')
+                    for stat in top_stats[:20]:
+                        print(stat)
                     #start_time = time.time()
                     trainer.fit(model,
                                 val_dataloaders=val_loader,
                                 train_dataloaders=train_loader)
                     torch.cuda.empty_cache()
-    #top_stats = snap2.compare_to(snap1, 'lineno')
-    #for stat in top_stats[:20]:
-    #    print(stat)
     #model = PLModule.load_from_checkpoint('test.ckpt')
     '''predictions = trainer.predict(model, predict_loader)
     #del predict_loader, predict_dataset

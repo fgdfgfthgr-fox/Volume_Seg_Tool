@@ -702,7 +702,7 @@ if __name__ == "__main__":
                 find_max_channel_count = gr.Button("Automatically find the largest channel count")
                 def calculate_channel_count(hw_size, d_size, batch_size, precision):
                     # Reserve around 500 mb
-                    vram_available = torch.cuda.get_device_properties(0).total_memory / (1024**2) - 500
+                    vram_available = (torch.cuda.get_device_properties(0).total_memory / (1024**2)) - 500
                     batch_size_multiplier = 1.96 if batch_size == 2 else 1
                     if precision == '32':
                         precision_multiplier = 1
@@ -711,9 +711,9 @@ if __name__ == "__main__":
                     elif precision == 'bf16-mixed':
                         precision_multiplier = 0.53
                     channel_count = (7381.3 * vram_available - 1e7) / ((hw_size**2 * d_size) * batch_size_multiplier * precision_multiplier)
-                    channel_count = math.floor(channel_count/4) * 4
+                    channel_count = max(math.floor(channel_count/4) * 4, 64)
                     if channel_count == 0:
-                        print('Warning: Could not find a channel count that will fit into your video memory! A default minimal of 4 is selected. Consider reduce your patch size or get a better GPU.')
+                        gr.Warning('Warning: Could not find a channel count that will fit into your video memory! A default minimal of 4 is selected. Consider reduce your patch size or get a better GPU.')
                         return 4
                     else:
                         return channel_count
@@ -732,8 +732,6 @@ if __name__ == "__main__":
                     options = (gr.Dropdown(archs, label="Model Architecture", visible=visible),
                                gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
                                info="Often means the number of output channels in the first encoder block. Determines the size of the network.", visible=visible),
-                               gr.Button(label="Automatically find the largest channel count",
-                                         info="Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error."),
                                gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
                                info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.", visible=visible))
                     return options
