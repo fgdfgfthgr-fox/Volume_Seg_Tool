@@ -1,10 +1,10 @@
 import os
+import gc
 import time
 import threading
 import argparse
 import subprocess
 import webbrowser
-from gc import callbacks
 
 import lightning.pytorch as pl
 import torch
@@ -67,7 +67,7 @@ def start_work_flow(args):
     label_mean = torch.tensor(0.5)
     contour_mean = torch.tensor(0.5)
     if not args.memory_saving_mode:
-        desired_num_workers = min(os.cpu_count()//2, 16)
+        desired_num_workers = min(max((os.cpu_count()//2)-1, 1), 16)
         persistent_workers = True
     else:
         desired_num_workers = 0
@@ -96,7 +96,7 @@ def start_work_flow(args):
         if 'Validation' in args.workflow_box:
             val_dataset = DataComponents.ValDataset(args.val_dataset_path, args.hw_size, args.d_size, instance_mode,
                                                     args.augmentation_csv_path, args.contour_map_width, args.val_key_name)
-            val_loader = DataLoader(dataset=val_dataset, batch_size=args.batch_size,
+            val_loader = DataLoader(dataset=val_dataset, batch_size=1,
                                     #num_workers=12, persistent_workers=True, pin_memory=True)
                                     num_workers=0, pin_memory=True)
             del val_dataset
@@ -150,6 +150,7 @@ def start_work_flow(args):
     else:
         arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio,
                          args.model_se, args.enable_unsupervised, label_mean, contour_mean)'''
+    gc.collect()
     arch_args = (args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio,
                  args.model_se, label_mean, contour_mean)
     if ('Sparsely Labelled' in args.train_dataset_mode) or (args.exclude_edge):
@@ -210,6 +211,7 @@ def start_work_flow(args):
         model = PLModule.load_from_checkpoint(f"{args.save_model_path}/{args.save_model_name}.ckpt")
         end_time = time.time()
         print(f"Training Taken: {end_time - start_time} seconds")
+        gc.collect()
     if 'Test' in args.workflow_box:
         trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=logger, accelerator="gpu")
         trainer.test(model, dataloaders=test_loader)
@@ -241,7 +243,7 @@ def start_work_flow(args):
             DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=args.result_folder_path,
                                                              hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
                                                              hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                                                             segmentation_mode=mode, dynamic=args.dynamic,
+                                                             segmentation_mode=mode, dynamic=args.watershed_dynamic,
                                                              pixel_reclaim=args.pixel_reclaim)
         end_time = time.time()
         print(f"Converting and saving taken: {end_time - start_time} seconds")
@@ -315,7 +317,7 @@ if __name__ == "__main__":
                         default="Fully Labelled", help="Dataset Mode")
     #parser.add_argument("--TTA_xy", action="store_true", help="Enable Test-Time Augmentation for xy dimension")
     parser.add_argument("--instance_seg_mode", action="store_true",
-                        help="Use a slower and more memory intensive watershed method for seperate touching objects, "
+                        help="Use a slower and more memory intensive watershed method for separate touching objects, "
                              "instead of simple connected component labelling. "
                              "Will yield result with much less under-segment objects.")
     parser.add_argument("--pixel_reclaim", action="store_true", help="Enable reclaim of lost pixel during the instance segmentation.")

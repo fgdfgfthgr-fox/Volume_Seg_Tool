@@ -191,7 +191,7 @@ def rotate_4d_tensor(tensor, planes=['xy', 'xz', 'yz'], angles=[0., 0., 0.],
 
 def custom_rand_crop_rotate(tensors, depth, height, width,
                             angle_range=((0, 360), (0, 360), (0, 360)),
-                            planes=['xy'], interpolations=('bilinear', 'nearest'),# fill_values=(0, 0),
+                            planes=['xy'], interpolations=('bilinear', 'nearest'),  # fill_values=(0, 0),
                             ensure_bothground=True, max_attempts=50, minimal_foreground=0.01, minimal_background=0.02):
     """
     Randomly crop then rotate a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least 1% foreground object.\n
@@ -230,13 +230,13 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         d_pad = max(0, depth - d)
         h_pad = max(0, height - h)
         w_pad = max(0, width - w)
-        padded_tensors = []
+        padded = []
         for tensor in tensors:
             # Pad the tensor if needed
-            tensor = F.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
-            padded_tensors.append(tensor)
+            tensor = torch.nn.functional.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
+            padded.append(tensor)
     else:
-        padded_tensors = tensors
+        padded = tensors
 
     def rotation(tensors):
         if len(planes) == 0:
@@ -258,8 +258,8 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         cropped_tensors = []
         for tensor in tensors:
             cropped_tensor = tensor[:, d_offset:d_offset + depth,
-                                    h_offset:h_offset + height,
-                                    w_offset:w_offset + width]
+                                                    h_offset:h_offset + height,
+                                                    w_offset:w_offset + width].to(torch.float32, copy=False)
             cropped_tensors.append(cropped_tensor)
         return cropped_tensors
 
@@ -267,7 +267,7 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         attempts = 0
         while attempts < max_attempts:
             attempts += 1
-            cropped_tensors = cropping(padded_tensors)
+            cropped_tensors = cropping(padded)
             if len(planes) != 0:
                 rotated_tensors = rotation(cropped_tensors)
             else:
@@ -279,11 +279,11 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         # If no suitable crop is found after max_attempts, raise a warning
         print(f"Random clop failed: No suitable crop with desired threshold found after {max_attempts} attempts. Will "
               f"return a random crop.")
-        return cropping(padded_tensors)
+        return cropping(padded)
     else:
-        cropped_tensors = cropping(padded_tensors)
+        cropped_tensors = cropping(padded)
         rotated_tensors = rotation(cropped_tensors)
-        return cropping(rotated_tensors)
+        return rotated_tensors
 
 
 def random_gradient(tensor, range=(0.5, 1.5), gamma=True):
@@ -364,19 +364,18 @@ def salt_and_pepper_noise(tensor, prob=0.01):
     return tensor
 
 
-def exclude_border_labels(tensor, inward, outward):
+def exclude_border_labels(array, inward, outward):
     """
     Exclude the borders of the objects in the label tensor. Also transform it to sparsely annotated form.
 
     Args:
-        tensor (torch.Tensor): Input tensor of shape (D,H,W). 0 for background, 1 for foreground
+        array (np.Array): Input tensor of shape (D,H,W). 0 for background, 1 for foreground
         inward (int): Size of morphological erosion.
         outward (int):  Size of morphological dilation.
 
     Returns:
         torch.Tensor: transformed Tensor. 0 for unlabeled (excluded label), 1 for foreground, 2 for background
     """
-    array = tensor.numpy()
 
     structuring_element = np.ones((3, 3, 3), dtype=np.int8)
     # Erosion
@@ -394,17 +393,17 @@ def exclude_border_labels(tensor, inward, outward):
     # Identify excluded regions and set their values to 0
     excluded_regions = (eroded_tensor == 0) & (dilated_tensor == 1)
 
-    transformed_tensor = torch.full_like(tensor, 2)
-    transformed_tensor[tensor == 1] = 1  # Set foreground to 1
-    transformed_tensor[excluded_regions] = 0  # Set excluded regions to 0
-    return transformed_tensor
+    transformed_array = np.full_like(array, 2)
+    transformed_array[array == 1] = 1  # Set foreground to 1
+    transformed_array[excluded_regions] = 0  # Set excluded regions to 0
+    return transformed_array
 
 
 def binarisation(tensor):
     """
     A quick and dirty way to convert an instance labelled tensor to a semantic labelled tensor.
     """
-    tensor = torch.clamp(tensor, 0, 1)
+    tensor = np.clip(tensor, 0, 1).astype(np.bool_)
     return tensor
 
 
@@ -412,7 +411,7 @@ def binary_dilation_torch(input, structure=None, iterations=1, mask=None,
                           output=None):
     """
     Multidimensional binary dilation with the given structuring element.
-    Similar to scipy.ndimage.binary_erosion but is for Pytorch Tensors.
+    Similar to scipy.ndimage.binary_dilation but is for Pytorch Tensors.
 
     Parameters
     ----------
@@ -468,13 +467,13 @@ def binary_dilation_torch(input, structure=None, iterations=1, mask=None,
     return input if output is None else input.copy_(output)
 
 
-def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1):
+def instance_contour_transform(input_array, contour_inward=0, contour_outward=1):
     """
     Transform an instance segmented map into a contour map.\n
     The contour is generated using morphological erosion and dilation.
 
     Args:
-        input_tensor (torch.Tensor): The input instance segmented map with a shape of (D, H, W).
+        input_array (np.Array): The input instance segmented map with a shape of (D, H, W).
                                      0 is background and every other value is a distinct object.
         contour_inward (int): Size of morphological erosion. No longer used.
         contour_outward (int): Size of morphological dilation.
@@ -482,27 +481,28 @@ def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1
     Returns:
         torch.Tensor: Contour map where 0 are background or inside of objects while 1 are the boundaries.
     """
-    input_tensor = input_tensor
-    unique_values = torch.unique(input_tensor)
-    transformed_tensor = torch.zeros_like(input_tensor, dtype=torch.bool)
+    input_array = input_array
+    unique_values = np.unique(input_array)
+    transformed_tensor = np.zeros_like(input_array, dtype=np.bool_)
+    structure = np.ones((3, 3, 3), dtype=transformed_tensor.dtype)
     def process_object(value):
         if value == 0:
             return  # Skip background
 
         # Create a binary mask for the current object
-        object_mask = (input_tensor == value)
+        object_mask = (input_array == value)
 
         # Calculate bounding box for the object
-        non_zero_indices = torch.nonzero(object_mask, as_tuple=True)
-        min_indices = torch.min(non_zero_indices[0]), torch.min(non_zero_indices[1]), torch.min(non_zero_indices[2])
-        max_indices = torch.max(non_zero_indices[0]), torch.max(non_zero_indices[1]), torch.max(non_zero_indices[2])
+        non_zero_indices = np.nonzero(object_mask)
+        min_indices = np.min(non_zero_indices[0]), np.min(non_zero_indices[1]), np.min(non_zero_indices[2])
+        max_indices = np.max(non_zero_indices[0]), np.max(non_zero_indices[1]), np.max(non_zero_indices[2])
 
         # Add padding for dilation
         pad = contour_outward
-        min_indices = torch.clamp(torch.tensor([min_indices[0] - pad, min_indices[1] - pad, min_indices[2] - pad]), 0)
-        max_indices = torch.clamp(torch.tensor([max_indices[0] + pad+1, max_indices[1] + pad+1, max_indices[2] + pad+1]),
-                                  None,
-                                  torch.tensor([input_tensor.shape[0], input_tensor.shape[1], input_tensor.shape[2]]))
+        min_indices = np.clip(np.array([min_indices[0] - pad, min_indices[1] - pad, min_indices[2] - pad]), 0, None)
+        max_indices = np.clip(np.array([max_indices[0] + pad+1, max_indices[1] + pad+1, max_indices[2] + pad+1]),
+                              None,
+                              np.array([input_array.shape[0], input_array.shape[1], input_array.shape[2]]))
 
         # Crop the map according to the bounding box
         cropped_object = object_mask[min_indices[0]:max_indices[0],
@@ -510,7 +510,7 @@ def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1
                                      min_indices[2]:max_indices[2]]
 
         # Perform dilation on the cropped object
-        dilated_object = binary_dilation_torch(cropped_object, iterations=contour_outward)
+        dilated_object = scipy.ndimage.binary_dilation(cropped_object, iterations=contour_outward, structure=structure)
 
         # Mark boundary area as one
         excluded_regions = (cropped_object == 0) & (dilated_object == 1)
@@ -521,7 +521,6 @@ def instance_contour_transform(input_tensor, contour_inward=0, contour_outward=1
 
     # Use joblib to parallelize the loop
     Parallel(backend='threading', n_jobs=-1)(delayed(process_object)(value) for value in unique_values)
-    transformed_tensor = transformed_tensor.to(torch.uint8)
     return transformed_tensor
 
 
@@ -613,23 +612,28 @@ def gaussian_noise(input_tensor, strength=0.05):
     return input_tensor
 
 
-def remove_black_borders(volume):
+def remove_black_borders(volumes):
     """
     Remove black borders.
     """
+    non_list = False
+    if not isinstance(volumes, list):
+        volumes = (volumes, )
+        non_list = True
     # Sum along the height and width dimensions to find non-black slices along depth
-    non_black_depth = np.any(volume, axis=(1, 2))
-    non_black_height = np.any(volume, axis=(0, 2))
-    non_black_width = np.any(volume, axis=(0, 1))
+    non_black_depth = np.any(volumes[0], axis=(1, 2))
+    non_black_height = np.any(volumes[0], axis=(0, 2))
+    non_black_width = np.any(volumes[0], axis=(0, 1))
 
     # Find the first and last indices where the image is not black
     depth_start, depth_end = non_black_depth.nonzero()[0][[0, -1]]
     height_start, height_end = non_black_height.nonzero()[0][[0, -1]]
     width_start, width_end = non_black_width.nonzero()[0][[0, -1]]
 
-    # Crop the volume using the computed indices
-    volume = volume[depth_start:depth_end + 1,
-                    height_start:height_end + 1,
-                    width_start:width_end + 1]
-
-    return volume
+    # Crop the volumes using the computed indices
+    volumes = [volume[depth_start:depth_end + 1,
+                      height_start:height_end + 1,
+                      width_start:width_end + 1] for volume in volumes]
+    if non_list:
+        return volumes[0]
+    return volumes

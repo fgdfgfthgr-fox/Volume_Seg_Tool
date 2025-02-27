@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import torch.nn as nn
 from Networks import *
-from Components.DataComponents import path_to_tensor
+from Components.DataComponents import path_to_array
 from pl_module import pick_arch
 import time
 
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     INPUT = 'Datasets/mid_visualiser/image.tif'
 
     model = V_N_PLModule.load_from_checkpoint(EXISTING_NETWORK_NAME).to('cpu')
-    test_tensor = path_to_tensor(INPUT).unsqueeze(0).unsqueeze(0)  # Shape of (1, 1, 128, 256, 256)
+    test_tensor = path_to_array(INPUT).unsqueeze(0).unsqueeze(0)  # Shape of (1, 1, 128, 256, 256)
     # Set the model to evaluation mode
     # model.eval()
 

@@ -95,7 +95,7 @@ class PLModule(pl.LightningModule):
         self.p_loss_fn = Metrics.BinaryMetrics("focal")
         self.c_loss_fn = Metrics.BinaryMetrics("dice+bce")
         if enable_mid_visual:
-            self.mid_visual_tensor = DataComponents.path_to_tensor(self.mid_visual_image).unsqueeze(0).unsqueeze(0).to(device)
+            self.mid_visual_tensor = torch.from_numpy(DataComponents.path_to_array(self.mid_visual_image)).unsqueeze(0).unsqueeze(0).to(device)
 
         self.dice_threshold_reached = False
         self.starting_step = None
@@ -297,7 +297,8 @@ class PLModule(pl.LightningModule):
                                                   self.current_epoch)
                 self.logger.experiment.add_scalar(f"{prefix}/Contour Specificity", c_specificity,
                                                   self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Entropy", epoch_averages[13], self.current_epoch)
+                if epoch_averages[13] != 0:
+                    self.logger.experiment.add_scalar(f"{prefix}/Entropy", epoch_averages[13], self.current_epoch)
                 self.log(f"{prefix}_epoch_dice", p_dice+c_dice, logger=False)
             else:
                 dice = epoch_averages[1]/epoch_averages[2]
@@ -363,17 +364,16 @@ class PLModule(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    tracemalloc.start()
-    snap1 = tracemalloc.take_snapshot()
-    sizes = [(128, 26, 4)]
-    channel_counts = [16]
-    precisions = ['bf16-true']
+    #tracemalloc.start()
+    #snap1 = tracemalloc.take_snapshot()
+    sizes = [(152, 44, 4), (192, 56, 5)]
+    channel_counts = [4, 8, 16]
+    precisions = ['bf16-mixed', '32']
     batch_sizes = [2]
     for size in sizes:
         for channel_count in channel_counts:
             for precision in precisions:
                 for batch_size in batch_sizes:
-                    val_dataset = DataComponents.ValDataset("Datasets/val", size[0], size[1], True, "Augmentation Parameters.csv")
                     #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
                     train_dataset = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters Anisotropic.csv",
                                                                 64,
@@ -391,10 +391,11 @@ if __name__ == "__main__":
                     collate_fn = DataComponents.custom_collate
                     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,
                                                                collate_fn=collate_fn, sampler=sampler,
-                                                               num_workers=15, pin_memory=False, persistent_workers=True)
+                                                               num_workers=0)#, pin_memory=False, persistent_workers=True)
                     #meta_info = predict_dataset.__getmetainfo__()
                     #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=4)
+                    val_dataset = DataComponents.ValDataset("Datasets/val", size[0], size[1], True, "Augmentation Parameters Anisotropic.csv")
+                    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
 
                     callbacks = []
                     model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="",
@@ -404,21 +405,21 @@ if __name__ == "__main__":
                     callbacks.append(LearningRateMonitor(logging_interval='epoch'))
                     callbacks.append(model_checkpoint_last)
                     callbacks.append(swa_callback)
-                    arch_args = ('InstanceResidual_Recommended', channel_count, size[2], 5, True, train_label_mean, train_contour_mean)
+                    arch_args = ('InstanceResidual_Recommended', channel_count, size[2], 3.33, True, train_label_mean, train_contour_mean)
                     model = PLModule(arch_args,
-                                    False, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', True,
+                                    True, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', True,
                                     False, False, False, True)
                     '''model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="test", mode="max",
                                                                     monitor="Val_epoch_dice", save_weights_only=True, enable_version_counter=False)'''
-                    trainer = pl.Trainer(max_epochs=50, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{size}-{channel_count}-{precision}-{batch_size}'),
+                    trainer = pl.Trainer(max_epochs=5, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{size}-{channel_count}-{precision}-{batch_size}'),
                                          accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
                                          precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
                                                                                                                       #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
                     # print(subprocess.run("tensorboard --logdir='lightning_logs'", shell=True))
-                    snap2 = tracemalloc.take_snapshot()
-                    top_stats = snap2.compare_to(snap1, 'lineno')
-                    for stat in top_stats[:20]:
-                        print(stat)
+                    #snap2 = tracemalloc.take_snapshot()
+                    #top_stats = snap2.compare_to(snap1, 'lineno')
+                    #for stat in top_stats[:20]:
+                    #    print(stat)
                     #start_time = time.time()
                     trainer.fit(model,
                                 val_dataloaders=val_loader,

@@ -14,6 +14,7 @@ import h5py
 import multiprocessing
 import tracemalloc
 import pandas as pd
+import pyarrow as pa
 from multiprocessing import Pool, shared_memory, cpu_count
 import skimage.morphology as morph
 from scipy.ndimage import label
@@ -29,7 +30,7 @@ def get_label_fname(fname):
 
 
 
-def path_to_tensor(path, label=False, key='default'):
+def path_to_array(path, label=False, key='default'):
     """
     Transform a path to an image file into a Pytorch tensor. Can support other image format but usually tif is the only one that can store 3d information.
 
@@ -48,14 +49,24 @@ def path_to_tensor(path, label=False, key='default'):
         # ToTensor()对16位图不方便，因此才用这招
         img = imageio.v3.imread(path)
     if label:
-        if img.dtype == np.uint16 or img.dtype == np.uint32:
-            img = img.astype(np.int32)
+        img_max = img.max()
+        if len(np.unique(img)) <= 2:
+            new_dtype = np.bool_
+        elif img_max <= np.iinfo(np.uint8).max:
+            new_dtype = np.uint8
+        elif img_max <= np.iinfo(np.uint16).max:
+            new_dtype = np.uint16
+        else: # I don't think anyone will use more than the maximum value of uint32...
+            new_dtype = np.uint32
+        img = img.astype(new_dtype, copy=False)
     else:
-        img = Aug.remove_black_borders(img)
+        #img = Aug.remove_black_borders(img)
         non_zero = img[img!=0]
         mean, std = np.mean(non_zero, dtype=np.float32), np.std(non_zero, dtype=np.float32) + 1e-8
-        img = (img - mean) / std
-    return torch.from_numpy(img)
+        img = img.astype(np.float32)
+        img -= mean
+        np.divide(img, std, img)
+    return img
 
 
 def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
@@ -65,9 +76,9 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
     Can have an optional contour tensor processed as well.
 
     Args:
-        img_tensor (torch.Tensor): Image tensor. Should be float32.
-        lab_tensor (torch.Tensor): Label tensor, should be the same shape as img_tensor.
-        contour_tensor (torch.Tensor or None): Optional Contour tensor, should be the same shape as img_tensor.
+        img_tensor (np.Array): Image tensor, should be float32.
+        lab_tensor (np.Array): Label tensor, should be the same shape as img_tensor. Bool.
+        contour_tensor (torch.Tensor or None): Optional Contour tensor, should be the same shape as img_tensor. Bool.
         augmentation_params (DataFrame): The DataFrame which the augmentation parameters will be used from.
         hw_size (int): The height and width of each generated patch.
         d_size (int): The depth of each generated patch.
@@ -194,7 +205,7 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
         Apply Image Augmentations to an image tensor using the augmentation parameters from a DataFrame.
 
         Args:
-            img_tensor (torch.Tensor): Image tensor. Should be float32.
+            img_tensor (torch.Tensor) Image tensor, should be float32.
             augmentation_params (DataFrame): The DataFrame which the augmentation parameters will be used from.
             hw_size (int): The height and width of each generated patch.
             d_size (int): The depth of each generated patch.
@@ -339,17 +350,17 @@ class TrainDataset(torch.utils.data.Dataset):
                  exclude_edge=False, exclude_edge_size_in=1, exclude_edge_size_out=1, contour_map_width=1,
                  hdf5_key='Default'):
         # Get a list of file paths for images and labels
-        self.file_list = make_dataset_tv(images_dir)
+        self.file_list = np.array(make_dataset_tv(images_dir))
         self.num_files = len(self.file_list)
         self.instance_mode = instance_mode
-        if instance_mode:
-            self.contour_tensors = [get_contour_maps(item, 'generated_contour_maps', contour_map_width) for item in
-                                    self.file_list]
-        self.lab_tensors = [Aug.binarisation(path_to_tensor(item[1], key=hdf5_key, label=True)) for item in self.file_list]
-        self.img_tensors = [path_to_tensor(item[0], key=hdf5_key, label=False) for item in self.file_list]
+        def place_holder(a): return a
+        fc = place_holder
         if exclude_edge and not instance_mode:
-            self.lab_tensors = [
-                Aug.exclude_border_labels(item, exclude_edge_size_in, exclude_edge_size_out) for item in self.lab_tensors]
+            fc = Aug.exclude_border_labels
+        if instance_mode:
+            self.contour_tensors = [torch.from_numpy(get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in self.file_list]
+        self.lab_tensors = [torch.from_numpy(fc(Aug.binarisation(path_to_array(item[1], key=hdf5_key, label=True)))) for item in self.file_list]
+        self.img_tensors = [torch.from_numpy(path_to_array(item[0], key=hdf5_key, label=False)) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
         self.hw_size = hw_size
@@ -384,27 +395,27 @@ class TrainDataset(torch.utils.data.Dataset):
             img_tensor, lab_tensor, contour_tensor = apply_aug(img_tensor, lab_tensor, contour_tensor,
                                                                self.augmentation_params, self.hw_size, self.d_size,
                                                                foreground_threshold, background_threshold)
-            return img_tensor, lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
+            return img_tensor, lab_tensor, contour_tensor
         else:
             img_tensor, lab_tensor = apply_aug(img_tensor, lab_tensor, None,
                                                self.augmentation_params, self.hw_size, self.d_size,
                                                foreground_threshold, background_threshold)
-            return img_tensor, lab_tensor.to(torch.float32)
+            return img_tensor, lab_tensor
 
     def get_label_mean(self):
         numels = 0
         sum = 0
-        for tensor in self.lab_tensors:
-            numels += tensor.numel()
-            sum += tensor.sum()
-        return sum/numels
+        for array in self.lab_tensors:
+            numels += array.dim()
+            sum += array.sum()
+        return sum / numels
 
     def get_contour_mean(self):
         numels = 0
         sum = 0
-        for tensor in self.contour_tensors:
-            numels += tensor.numel()
-            sum += tensor.sum()
+        for array in self.contour_tensors:
+            numels += array.dim()
+            sum += array.sum()
         return sum / numels
 
 
@@ -421,9 +432,9 @@ class UnsupervisedDataset(torch.utils.data.Dataset):
         key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
     def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64, hdf5_key='Default'):
-        self.file_list = make_dataset_predict(images_dir)
+        self.file_list = np.array(make_dataset_predict(images_dir))
         self.num_files = len(self.file_list)
-        self.img_tensors = [path_to_tensor(item, key=hdf5_key, label=False) for item in self.file_list]
+        self.img_tensors = [torch.from_numpy(path_to_array(item, key=hdf5_key, label=False)) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
         self.hw_size = hw_size
@@ -457,20 +468,20 @@ class ValDataset(torch.utils.data.Dataset):
 
     def __init__(self, images_dir, hw_size, d_size, instance_mode, augmentation_csv, contour_map_width=1, hdf5_key='Default'):
         # Get a list of file paths for images and labels
-        file_list = make_dataset_tv(images_dir)
+        file_list = np.array(make_dataset_tv(images_dir))
         self.num_files = len(file_list)
         self.instance_mode = instance_mode
         if instance_mode:
-            tensors_pairs = [((path_to_tensor(item[0], key=hdf5_key, label=False)),
-                              Aug.binarisation(path_to_tensor(item[1], label=True)),
-                              get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in file_list]
+            tensor_pairs = [((path_to_array(item[0], key=hdf5_key, label=False)),
+                             Aug.binarisation(path_to_array(item[1], label=True)),
+                             get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in file_list]
         else:
-            tensors_pairs = [(path_to_tensor(item[0], key=hdf5_key, label=False),
-                              Aug.binarisation(path_to_tensor(item[1], label=True))) for item in file_list]
-        self.chopped_tensor_pairs = []
+            tensor_pairs = [(path_to_array(item[0], key=hdf5_key, label=False),
+                            Aug.binarisation(path_to_array(item[1], label=True))) for item in file_list]
+        self.chopped_array_pairs = []
         # augmentation_params = pd.read_csv(augmentation_csv)
         # Crop the tensors, so they are the standard shape specified in the augmentation csv.
-        for pairs in tensors_pairs:
+        for pairs in tensor_pairs:
             depth, height, width = pairs[0].shape
             depth_multiplier = math.ceil(depth / d_size)
             height_multiplier = math.ceil(height / hw_size)
@@ -503,29 +514,29 @@ class ValDataset(torch.utils.data.Dataset):
                         else:
                             width_start = 0
                         width_end = width_start + hw_size
-                        cropped_img = pairs[0][depth_start:depth_end, height_start:height_end,
-                                      width_start:width_end]
-                        cropped_lab = pairs[1][depth_start:depth_end, height_start:height_end,
-                                      width_start:width_end].to(torch.float32)
+                        cropped_img = torch.from_numpy(pairs[0][depth_start:depth_end, height_start:height_end,
+                                                                width_start:width_end])
+                        cropped_lab = torch.from_numpy(pairs[1][depth_start:depth_end, height_start:height_end,
+                                                                width_start:width_end])
                         if instance_mode:
-                            cropped_contour = pairs[2][depth_start:depth_end,
-                                              height_start:height_end,
-                                              width_start:width_end]
-                            self.chopped_tensor_pairs.append((cropped_img, cropped_lab, cropped_contour))
+                            cropped_contour = torch.from_numpy(pairs[2][depth_start:depth_end,
+                                                                        height_start:height_end,
+                                                                        width_start:width_end])
+                            self.chopped_array_pairs.append((cropped_img, cropped_lab, cropped_contour))
                         else:
-                            self.chopped_tensor_pairs.append((cropped_img, cropped_lab))
+                            self.chopped_array_pairs.append((cropped_img, cropped_lab))
         super().__init__()
 
     def __len__(self):
         return self.num_files * self.total_multiplier
 
     def __getitem__(self, idx):
-        img_tensor, lab_tensor = self.chopped_tensor_pairs[idx][0][None, :], self.chopped_tensor_pairs[idx][1][None, :]
+        img_tensor, lab_tensor = self.chopped_array_pairs[idx][0][None, :], self.chopped_array_pairs[idx][1][None, :].to(torch.float32)
         if self.instance_mode:
-            contour_tensor = self.chopped_tensor_pairs[idx][2][None, :]
-            return img_tensor, lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
+            contour_tensor = self.chopped_array_pairs[idx][2][None, :].to(torch.float32)
+            return img_tensor, lab_tensor, contour_tensor
         else:
-            return img_tensor, lab_tensor.to(torch.float32)
+            return img_tensor, lab_tensor
 
 
 class Predict_Dataset(torch.utils.data.Dataset):
@@ -553,7 +564,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
             file = self.file_list[leave_out_idx]
             self.file_list = [file]
         for file in self.file_list:
-            image = path_to_tensor(file, key=hdf5_key, label=False)[None, :]
+            image = path_to_array(file, key=hdf5_key, label=False)[None, :]
             shape = image.shape
             depth = shape[1]
             height = shape[2]
@@ -565,10 +576,10 @@ class Predict_Dataset(torch.utils.data.Dataset):
             height_multiplier = math.ceil(height / hw_size)
             width_multiplier = math.ceil(width / hw_size)
             # Padding and cropping
-            paddings = (hw_overlap, hw_overlap,
-                        hw_overlap, hw_overlap,
-                        depth_overlap, depth_overlap)
-            image = F.pad(image, paddings, mode="replicate")
+            paddings = ((depth_overlap, depth_overlap),
+                        (hw_overlap, hw_overlap),
+                        (hw_overlap, hw_overlap))
+            image = np.pad(image, paddings, mode="symmetric")
             # Loop through each depth, height, and width index
             for depth_idx in range(depth_multiplier):
                 for height_idx in range(height_multiplier):
@@ -598,7 +609,7 @@ class Predict_Dataset(torch.utils.data.Dataset):
                                       depth_start:depth_end,
                                       height_start:height_end,
                                       width_start:width_end]
-                        self.patches_list.append(patch)
+                        self.patches_list.append(torch.from_numpy(patch))
             self.meta_list.append((file_name, shape))
         super().__init__()
 
@@ -741,12 +752,11 @@ def get_contour_maps(file_name, folder_path, contour_map_width):
     contour_img_path = os.path.join(folder_path, contour_img_name)
     if not os.path.exists(contour_img_path):
         print(f'Generating contour map for {img_name}... Can take a while if there are lots of objects.')
-        contour_img = Aug.instance_contour_transform(path_to_tensor(img_path, label=True), contour_outward=contour_map_width)
-        array = np.asarray(contour_img)
-        imageio.v3.imwrite(uri=f'{contour_img_path}', image=np.uint8(array))
+        contour_img = Aug.instance_contour_transform(path_to_array(img_path, label=True), contour_outward=contour_map_width)
+        imageio.v3.imwrite(uri=f'{contour_img_path}', image=contour_img)
         print(f'Saved {contour_img_name}')
     else:
-        contour_img = path_to_tensor(contour_img_path, label=True)
+        contour_img = path_to_array(contour_img_path, label=True)
         print(
             f'Loaded previously saved {contour_img_name}. Remember to delete old one if you made change to the label!')
     return contour_img
@@ -757,13 +767,13 @@ class CrossValidationDataset(torch.utils.data.Dataset):
         self.file_list = make_dataset_tv(images_dir)
         self.num_files = len(self.file_list)
         self.leave_out = self.file_list.pop(leave_out_index)
-        self.img_tensors = [path_to_tensor(item[0], label=False) for item in self.file_list]
-        self.lab_tensors = [path_to_tensor(item[1], label=True) for item in self.file_list]
+        self.img_tensors = [path_to_array(item[0], label=False) for item in self.file_list]
+        self.lab_tensors = [path_to_array(item[1], label=True) for item in self.file_list]
         self.train_multiplier = train_multiplier
 
-        self.leave_out_img = path_to_tensor(self.leave_out[0], label=False)[None, :]
+        self.leave_out_img = path_to_array(self.leave_out[0], label=False)[None, :]
         leave_out_img_name = os.path.basename(self.leave_out[0])
-        self.leave_out_label = path_to_tensor(self.leave_out[1], label=True)[None, :]
+        self.leave_out_label = path_to_array(self.leave_out[1], label=True)[None, :]
         self.mode = mode
         self.augmentation_params = pd.read_csv(augmentation_csv)
 

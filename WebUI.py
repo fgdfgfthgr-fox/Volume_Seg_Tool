@@ -121,7 +121,7 @@ def start_work_flow(inputs):
 def visualisation_activations(existing_model_path, example_image, slice_to_show):
     model = V_N_PLModule.load_from_checkpoint(existing_model_path).to('cpu')
     figure_list = []
-    tensor = DataComponents.path_to_tensor(example_image).unsqueeze(0).unsqueeze(0)
+    tensor = DataComponents.path_to_array(example_image).unsqueeze(0).unsqueeze(0)
     # Pass the test tensor through the model
     with torch.no_grad():
         model(tensor)
@@ -315,8 +315,8 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised):
 
 
 def get_stats_between_maps(predicted_path, groundtruth_path):
-    ground_truth = DataComponents.path_to_tensor(groundtruth_path, label=True)
-    predicted = DataComponents.path_to_tensor(predicted_path, label=True)
+    ground_truth = DataComponents.path_to_array(groundtruth_path, label=True)
+    predicted = DataComponents.path_to_array(predicted_path, label=True)
     ground_truth, predicted = torch.clamp(ground_truth, 0, 1), torch.clamp(predicted, 0, 1)
     intersection = 2 * torch.sum(ground_truth * predicted) + 0.001
     union = torch.sum(predicted) + torch.sum(ground_truth) + 0.001
@@ -645,7 +645,7 @@ if __name__ == "__main__":
                                               " Corresponding reverse transformation then applys to the output probability maps, and those maps get combined together."
                                               " Can improve segmentation accuracy, but will take longer and consume more CPU memory.")'''
                     instance_seg_mode = gr.Checkbox(label="Use distance transform watershed for instance segmentation",
-                                                    info="Use a slower and more memory intensive watershed method for seperate touching objects, "
+                                                    info="Use a slower and more memory intensive watershed method for separate touching objects, "
                                                          "instead of simple connected component labelling. "
                                                          "Will yield result with much less under-segment objects.")
                     watershed_dynamic = gr.Number(10, label="Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges.")
@@ -700,7 +700,7 @@ if __name__ == "__main__":
                                                 info="Often means the number of output channels in the first encoder block. Determines the size of the network. Preferably a multiple of 8.")
                 gr.Markdown("Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.")
                 find_max_channel_count = gr.Button("Automatically find the largest channel count")
-                def calculate_channel_count(hw_size, d_size, batch_size, precision):
+                def calculate_channel_count(hw_size, d_size, batch_size, precision, dk):
                     # Reserve around 500 mb
                     vram_available = (torch.cuda.get_device_properties(0).total_memory / (1024**2)) - 500
                     batch_size_multiplier = 1.96 if batch_size == 2 else 1
@@ -710,14 +710,15 @@ if __name__ == "__main__":
                         precision_multiplier = 0.54
                     elif precision == 'bf16-mixed':
                         precision_multiplier = 0.53
-                    channel_count = (7381.3 * vram_available - 1e7) / ((hw_size**2 * d_size) * batch_size_multiplier * precision_multiplier)
-                    channel_count = max(math.floor(channel_count/4) * 4, 64)
+                    dk_multiplier = (1-(dk-2)*0.1)
+                    channel_count = (7385 * vram_available - 1e7) / ((hw_size**2 * d_size) * batch_size_multiplier * precision_multiplier * dk_multiplier)
+                    channel_count = min(math.floor(channel_count/4) * 4, 64)
                     if channel_count == 0:
                         gr.Warning('Warning: Could not find a channel count that will fit into your video memory! A default minimal of 4 is selected. Consider reduce your patch size or get a better GPU.')
                         return 4
                     else:
                         return channel_count
-                find_max_channel_count.click(calculate_channel_count, inputs=[hw_size, d_size, batch_size, precision], outputs=model_channel_count)
+                find_max_channel_count.click(calculate_channel_count, inputs=[hw_size, d_size, batch_size, precision, dk], outputs=model_channel_count)
                 model_se = gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
                                        info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.", visible=False)
                 def show_hide_model_tab(read_existing_model, segmentation_mode):
