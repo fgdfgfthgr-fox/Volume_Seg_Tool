@@ -375,7 +375,7 @@ if __name__ == "__main__":
             for precision in precisions:
                 for batch_size in batch_sizes:
                     #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
-                    train_dataset = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters Anisotropic.csv",
+                    '''train_dataset = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters Anisotropic.csv",
                                                                 64,
                                                                 size[0], size[1], True, False, 0,
                                                                 0,
@@ -409,8 +409,6 @@ if __name__ == "__main__":
                     model = PLModule(arch_args,
                                     True, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', True,
                                     False, False, False, True)
-                    '''model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath="", filename="test", mode="max",
-                                                                    monitor="Val_epoch_dice", save_weights_only=True, enable_version_counter=False)'''
                     trainer = pl.Trainer(max_epochs=5, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{size}-{channel_count}-{precision}-{batch_size}'),
                                          accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
                                          precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
@@ -424,7 +422,20 @@ if __name__ == "__main__":
                     trainer.fit(model,
                                 val_dataloaders=val_loader,
                                 train_dataloaders=train_loader)
-                    torch.cuda.empty_cache()
+                    torch.cuda.empty_cache()'''
+                    model = PLModule.load_from_checkpoint("'results'/Kasthuri_connectomic_largefov.ckpt")
+                    trainer = pl.Trainer(precision=precision, enable_progress_bar=True, logger=False, accelerator="gpu")
+                    predict_dataset = DataComponents.Predict_Dataset('Datasets/predict',
+                                                                     hw_size=160, depth_size=48,
+                                                                     hw_overlap=16, depth_overlap=4)
+                    predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+                    meta_info = predict_dataset.__getmetainfo__()
+                    start_time = time.time()
+                    predictions = trainer.predict(model, predict_loader)
+                    end_time = time.time()
+                    DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',
+                                                                     hw_size=160, depth_size=48,
+                                                                     hw_overlap=16, depth_overlap=4, segmentation_mode='watershed')
     #model = PLModule.load_from_checkpoint('test.ckpt')
     '''predictions = trainer.predict(model, predict_loader)
     #del predict_loader, predict_dataset
@@ -439,15 +450,7 @@ if __name__ == "__main__":
 '''
     '''
     torch.save(model.state_dict(), 'placeholder.pth')
-    trainer = pl.Trainer(precision="32", enable_progress_bar=True, logger=False, accelerator="gpu")
-    predict_dataset = DataComponents.Predict_Dataset('Datasets/predict',
-                                                     hw_size=256, depth_size=64,
-                                                     hw_overlap=32, depth_overlap=8)
-    predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-    meta_info = predict_dataset.__getmetainfo__()
-    start_time = time.time()
-    predictions = trainer.predict(model, predict_loader)
-    end_time = time.time()
+    
     elapsed_time = end_time - start_time
     print(f"Elapsed time: {elapsed_time} seconds")
     DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',

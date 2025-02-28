@@ -576,7 +576,8 @@ class Predict_Dataset(torch.utils.data.Dataset):
             height_multiplier = math.ceil(height / hw_size)
             width_multiplier = math.ceil(width / hw_size)
             # Padding and cropping
-            paddings = ((depth_overlap, depth_overlap),
+            paddings = ((0, 0),
+                        (depth_overlap, depth_overlap),
                         (hw_overlap, hw_overlap),
                         (hw_overlap, hw_overlap))
             image = np.pad(image, paddings, mode="symmetric")
@@ -1104,7 +1105,8 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
     if mode == 'simple':
         label(segmentation, structure=structure, output=segmentation)
     elif mode == 'watershed':
-        distance_map = Morph.inverter(Morph.chamferdistancetransform3duint16(segmentation))
+        distance_map = Morph.chamferdistancetransform3duint16(segmentation)
+        distance_map = Morph.inverter(distance_map)
         marker = distance_map + dynamic
         hmin = Morph.geodesicreconstructionbyerosion3d(marker, distance_map)
         del marker
@@ -1159,7 +1161,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
                             shm_touching.name, touching_pixels_shared.shape, touching_pixels_shared.dtype)) as pool:
             pool.map(allocate_pixels_global, worker_args)
         elapsed_time = time.time() - start_time
-        print(f"Time taken: {elapsed_time}")
+        print(f"Time taken for pixel reclaim: {elapsed_time}")
         # Convert shared memory to tensor
         segmentation_result = np.copy(segmentation_shared)
         # Clean up shared memory

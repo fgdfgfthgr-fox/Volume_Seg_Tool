@@ -59,43 +59,44 @@ def _backward_scan_c6(marker, mask, result, mod_if):
 
 
 def chamferdistancetransform3duint16(img):
-    result = np.where(img > 0, np.iinfo(np.uint16).max, 0).astype(np.uint16)
+    result = np.where(img > 0, np.uint16(np.iinfo(np.uint16).max), np.uint16(0))
     result = _forward_scan_cham_c6(img, result)
     result = _backward_scan_cham_c6(img, result)
     return result
 
-# Define the Borgefors weights and offsets
-offsets = [
-    (1, 0, 0, 3),
-    (0, 1, 0, 3),
-    (0, 0, 1, 3),
-    (-1, 0, 0, 3),
-    (0, -1, 0, 3),
-    (0, 0, -1, 3),
-    (1, 1, 0, 4),
-    (1, -1, 0, 4),
-    (-1, 1, 0, 4),
-    (-1, -1, 0, 4),
-    (1, 0, 1, 4),
-    (1, 0, -1, 4),
-    (-1, 0, 1, 4),
-    (-1, 0, -1, 4),
-    (0, 1, 1, 4),
-    (0, 1, -1, 4),
-    (0, -1, 1, 4),
-    (0, -1, -1, 4),
-    (1, 1, 1, 5),
-    (1, 1, -1, 5),
-    (1, -1, 1, 5),
-    (1, -1, -1, 5),
-    (-1, -1, 1, 5),
-    (-1, 1, 1, 5),
-    (-1, 1, -1, 5),
-    (-1, -1, -1, 5),
-]
 
 @njit
 def _forward_scan_cham_c6(img, result):
+    # Define the Borgefors weights and offsets
+    offsets = [
+        (1, 0, 0, 3),
+        (0, 1, 0, 3),
+        (0, 0, 1, 3),
+        (-1, 0, 0, 3),
+        (0, -1, 0, 3),
+        (0, 0, -1, 3),
+        (1, 1, 0, 4),
+        (1, -1, 0, 4),
+        (-1, 1, 0, 4),
+        (-1, -1, 0, 4),
+        (1, 0, 1, 4),
+        (1, 0, -1, 4),
+        (-1, 0, 1, 4),
+        (-1, 0, -1, 4),
+        (0, 1, 1, 4),
+        (0, 1, -1, 4),
+        (0, -1, 1, 4),
+        (0, -1, -1, 4),
+        (1, 1, 1, 5),
+        (1, 1, -1, 5),
+        (1, -1, 1, 5),
+        (1, -1, -1, 5),
+        (-1, -1, 1, 5),
+        (-1, 1, 1, 5),
+        (-1, 1, -1, 5),
+        (-1, -1, -1, 5),
+    ]
+
     for z in range(img.shape[0]):
         for y in range(img.shape[1]):
             for x in range(img.shape[2]):
@@ -124,6 +125,36 @@ def _forward_scan_cham_c6(img, result):
 
 @njit
 def _backward_scan_cham_c6(img, result):
+    # Define the Borgefors weights and offsets
+    offsets = [
+        (1, 0, 0, 3),
+        (0, 1, 0, 3),
+        (0, 0, 1, 3),
+        (-1, 0, 0, 3),
+        (0, -1, 0, 3),
+        (0, 0, -1, 3),
+        (1, 1, 0, 4),
+        (1, -1, 0, 4),
+        (-1, 1, 0, 4),
+        (-1, -1, 0, 4),
+        (1, 0, 1, 4),
+        (1, 0, -1, 4),
+        (-1, 0, 1, 4),
+        (-1, 0, -1, 4),
+        (0, 1, 1, 4),
+        (0, 1, -1, 4),
+        (0, -1, 1, 4),
+        (0, -1, -1, 4),
+        (1, 1, 1, 5),
+        (1, 1, -1, 5),
+        (1, -1, 1, 5),
+        (1, -1, -1, 5),
+        (-1, -1, 1, 5),
+        (-1, 1, 1, 5),
+        (-1, 1, -1, 5),
+        (-1, -1, -1, 5),
+    ]
+
     for z in range(img.shape[0] - 1, -1, -1):
         for y in range(img.shape[1] - 1, -1, -1):
             for x in range(img.shape[2] - 1, -1, -1):

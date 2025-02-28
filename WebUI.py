@@ -698,7 +698,7 @@ if __name__ == "__main__":
                 segmentation_mode.change(update_available_arch, inputs=segmentation_mode, outputs=model_architecture)
                 model_channel_count = gr.Number(8, label="Base Channel Count", precision=0, minimum=4,
                                                 info="Often means the number of output channels in the first encoder block. Determines the size of the network. Preferably a multiple of 8.")
-                gr.Markdown("Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.")
+                find = gr.Markdown("Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.")
                 find_max_channel_count = gr.Button("Automatically find the largest channel count")
                 def calculate_channel_count(hw_size, d_size, batch_size, precision, dk):
                     # Reserve around 500 mb
@@ -733,11 +733,12 @@ if __name__ == "__main__":
                     options = (gr.Dropdown(archs, label="Model Architecture", visible=visible),
                                gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
                                info="Often means the number of output channels in the first encoder block. Determines the size of the network.", visible=visible),
-                               gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
-                               info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.", visible=visible))
+                               gr.Markdown(
+                                   "Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.", visible=visible),
+                               gr.Button("Automatically find the largest channel count", visible=visible))
                     return options
 
-                read_existing_model.change(show_hide_model_tab, inputs=[read_existing_model, segmentation_mode], outputs=[model_architecture, model_channel_count, find_max_channel_count, model_se])
+                read_existing_model.change(show_hide_model_tab, inputs=[read_existing_model, segmentation_mode], outputs=[model_architecture, model_channel_count, find, find_max_channel_count])
             with gr.Accordion("Visualising training progress on the fly"):
                 gr.Markdown("Note: Gradio doesn't support direct display of 3D image. The result are displayed in the tensorboard.")
                 gr.Markdown("Could slow down training process, especially if the image is big.")
