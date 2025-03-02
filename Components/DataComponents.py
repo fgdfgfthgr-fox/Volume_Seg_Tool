@@ -63,7 +63,8 @@ def path_to_array(path, label=False, key='default'):
         #img = Aug.remove_black_borders(img)
         non_zero = img[img!=0]
         mean, std = np.mean(non_zero, dtype=np.float32), np.std(non_zero, dtype=np.float32) + 1e-8
-        img = img.astype(np.float32)
+        # Take less memory than img = (img - mean) / std
+        img = img.astype(np.float32, copy=False)
         img -= mean
         np.divide(img, std, img)
     return img
@@ -187,11 +188,11 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
         elif augmentation_method == 'Salt And Pepper' and random.random() < prob:
             img_tensor = Aug.salt_and_pepper_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Label Blur' and random.random() < prob:
-            lab_tensor = lab_tensor.to(torch.float32)
+            lab_tensor = lab_tensor
             lab_tensor = Aug.gaussian_blur_3d(lab_tensor, int(row['Value']),
                                               random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Contour Blur' and random.random() < prob and contour_tensor is not None:
-            contour_tensor = contour_tensor.to(torch.float32)
+            contour_tensor = contour_tensor
             contour_tensor = Aug.gaussian_blur_3d(contour_tensor, int(row['Value']),
                                                   random.uniform(row['Low Bound'], row['High Bound']))
     if contour_tensor is not None:
@@ -925,7 +926,7 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
     del tensor_list
     for volume in stitched_volumes:
         array = volume[0].numpy()
-        array = np.where(array >= 0.5, 1, 0).astype(np.uint8)
+        array = np.where(array >= 0.5, np.uint8(1), np.uint8(0))
         imageio.v3.imwrite(uri=f'{direc}/{volume[1]}', image=array)
 
 
@@ -1118,12 +1119,12 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
         del distance_map, hmin
         gc.collect()
     # Remove small segments
-    #segmentation = morphology.remove_small_objects(segmentation, min_size=size_threshold, connectivity=structure.numpy())
+    morph.remove_small_objects(segmentation, min_size=size_threshold, connectivity=structure, out=segmentation)
 
     del structure
 
     if pixel_reclaim:
-        touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.int32).numpy()
+        touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.uint16).numpy()
         del touching_map
         num_touching_pixels = len(touching_pixels)
         minlength = segmentation.max().item()
@@ -1131,8 +1132,8 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
 
         # Create shared memory for segmentation
         shm_segmentation = shared_memory.SharedMemory(create=True,
-                                                      size=segmentation.size * np.dtype(np.int16).itemsize)
-        segmentation_shared = np.ndarray(map_size, dtype=np.int16, buffer=shm_segmentation.buf)
+                                                      size=segmentation.size * np.dtype(np.uint16).itemsize)
+        segmentation_shared = np.ndarray(map_size, dtype=np.uint16, buffer=shm_segmentation.buf)
         segmentation_shared[:] = segmentation
         del segmentation  # Free memory
         gc.collect()
