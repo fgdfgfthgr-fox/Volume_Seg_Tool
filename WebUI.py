@@ -314,22 +314,27 @@ def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised):
     return model_class(base_channels, depth, z_to_xy_ratio, model_type, se, unsupervised)
 
 
-def get_stats_between_maps(predicted_path, groundtruth_path):
+def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_threshold):
     ground_truth = DataComponents.path_to_array(groundtruth_path, label=True)
     predicted = DataComponents.path_to_array(predicted_path, label=True)
-    ground_truth, predicted = torch.clamp(ground_truth, 0, 1), torch.clamp(predicted, 0, 1)
-    intersection = 2 * torch.sum(ground_truth * predicted) + 0.001
-    union = torch.sum(predicted) + torch.sum(ground_truth) + 0.001
-    tp = (predicted*ground_truth).sum()
-    fn = ((1-predicted)*ground_truth).sum()
-    tn = ((1-predicted)*(1-ground_truth)).sum()
-    fp = (predicted*(1-ground_truth)).sum()
-    dice = intersection/union
-    sensitivity = tp/(tp+fn)
-    specificity = tn/(tn+fp)
-    fpr = fp/(fp+tn)
-    fnr = fn/(fn+tp)
-    return dice.item(), sensitivity.item(), specificity.item(), fpr.item(), fnr.item()
+    if stat_mode == 'Semantic':
+        ground_truth, predicted = torch.clamp(ground_truth, 0, 1), torch.clamp(predicted, 0, 1)
+        intersection = 2 * torch.sum(ground_truth * predicted) + 0.001
+        union = torch.sum(predicted) + torch.sum(ground_truth) + 0.001
+        tp = (predicted*ground_truth).sum()
+        fn = ((1-predicted)*ground_truth).sum()
+        tn = ((1-predicted)*(1-ground_truth)).sum()
+        fp = (predicted*(1-ground_truth)).sum()
+        dice = intersection/union
+        sensitivity = tp/(tp+fn)
+        specificity = tn/(tn+fp)
+        fpr = fp/(fp+tn)
+        fnr = fn/(fn+tp)
+        out = (dice.item(), sensitivity.item(), specificity.item(), fpr.item(), fnr.item())
+    elif stat_mode == 'Instance':
+        tpr, fpr, fnr, precision, recall = Metrics.instance_segmentation_metrics(torch.from_numpy(predicted), torch.from_numpy(ground_truth), iou_threshold)
+        out = (tpr.item(), fpr.item(), fnr.item(), precision.item(), recall.item())
+    return out
 
 
 if __name__ == "__main__":
@@ -868,6 +873,29 @@ if __name__ == "__main__":
                 save_button = gr.Button("Output TensorBoard log to Excel")
                 save_button.click(tensorboard_to_excel, inputs=[tensorboard_path_e, save_log_name, save_log_path])
             with gr.Accordion("Calculate statistics between the predicted labels and ground truth labels"):
+                def switch_stat_output(stat_mode):
+                    if stat_mode == 'Instance':
+                        stats = (gr.Number(interactive=False, label="True Positive Rate"),
+                                 gr.Number(interactive=False, label="False Positive Rate"),
+                                 gr.Number(interactive=False, label="False Negative Rate"),
+                                 gr.Number(interactive=False, label="Precision"),
+                                 gr.Number(interactive=False, label="Recall"),)
+                    else:
+                        stats = (gr.Number(interactive=False, label="Dice Score"),
+                                 gr.Number(interactive=False, label="Sensitivity (True Positive Rate)"),
+                                 gr.Number(interactive=False, label="Specificity (True Negative Rate)"),
+                                 gr.Number(interactive=False, label="False Positive Rate"),
+                                 gr.Number(interactive=False, label="False Negative Rate"),)
+                    return stats
+                def switch_stat_input(stat_mode):
+                    if stat_mode == 'Instance':
+                        visible = True
+                    else:
+                        visible = False
+                    return gr.Number(0.5, interactive=True, label="IOU threshold", visible=visible)
+                stat_mode = gr.Radio(["Semantic", "Instance"], value="Semantic", label="Mode")
+                gr.Markdown('Calculate instance segmentation metrics is hard and VST uses your GPU to accelerate the process. It would be painfully slow if you are using a CPU! '
+                            'And still not fast if you are have a GPU...')
                 with gr.Row():
                     predicted_img_path = gr.Textbox(label='Path to the predicted image')
                     file_button = gr.Button(document_symbol, scale=0)
@@ -877,13 +905,17 @@ if __name__ == "__main__":
                     file_button = gr.Button(document_symbol, scale=0)
                     file_button.click(open_file, outputs=ground_truth_img_path)
                 with gr.Row():
+                    iou_threshold = gr.Number(0.5, interactive=True, label="IOU threshold", visible=False)
+                with gr.Row():
                     dice = gr.Number(interactive=False, label="Dice Score")
                     sensitivity = gr.Number(interactive=False, label="Sensitivity (True Positive Rate)")
                     specificity = gr.Number(interactive=False, label="Specificity (True Negative Rate)")
                     fpr = gr.Number(interactive=False, label="False Positive Rate")
                     fnr = gr.Number(interactive=False, label="False Negative Rate")
+                stat_mode.change(switch_stat_output, inputs=stat_mode, outputs=[dice, sensitivity, specificity, fpr, fnr])
+                stat_mode.change(switch_stat_input, inputs=stat_mode, outputs=iou_threshold)
                 start_button = gr.Button("Get statistics!")
-                start_button.click(get_stats_between_maps, inputs=[predicted_img_path, ground_truth_img_path],
-                                   outputs=[dice, sensitivity, specificity, fpr, fnr])
+                start_button.click(get_stats_between_maps, inputs=[stat_mode, predicted_img_path, ground_truth_img_path, iou_threshold],
+                                    outputs=[dice, sensitivity, specificity, fpr, fnr])
 
     WebUI.launch(inbrowser=True)

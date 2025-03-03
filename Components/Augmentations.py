@@ -403,7 +403,8 @@ def binarisation(tensor):
     """
     A quick and dirty way to convert an instance labelled tensor to a semantic labelled tensor.
     """
-    tensor = np.clip(tensor, 0, 1).astype(np.bool_)
+    #tensor = np.clip(tensor, 0, 1).astype(np.bool_)
+    tensor = np.where(tensor>=1, np.bool_(True), np.bool_(False))
     return tensor
 
 

@@ -1118,7 +1118,6 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
         segmentation = Morph.watershed_3d(distance_map, markers=hmin, mask=segmentation)
         del distance_map, hmin
         gc.collect()
-    # Remove small segments
     morph.remove_small_objects(segmentation, min_size=size_threshold, connectivity=structure, out=segmentation)
 
     del structure
@@ -1170,8 +1169,28 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
         shm_segmentation.unlink()
         shm_touching.close()
         shm_touching.unlink()
+        img_max = segmentation_result.max()
+        if len(np.unique(segmentation_result)) <= 2:
+            new_dtype = np.bool_
+        elif img_max <= np.iinfo(np.uint8).max:
+            new_dtype = np.uint8
+        elif img_max <= np.iinfo(np.uint16).max:
+            new_dtype = np.uint16
+        else:
+            new_dtype = np.uint32
+        segmentation_result = segmentation_result.astype(new_dtype, copy=False)
         return segmentation_result
     else:
+        img_max = segmentation.max()
+        if len(np.unique(segmentation)) <= 2:
+            new_dtype = np.bool_
+        elif img_max <= np.iinfo(np.uint8).max:
+            new_dtype = np.uint8
+        elif img_max <= np.iinfo(np.uint16).max:
+            new_dtype = np.uint16
+        else:
+            new_dtype = np.uint32
+        segmentation = segmentation.astype(new_dtype, copy=False)
         return segmentation
 
 
