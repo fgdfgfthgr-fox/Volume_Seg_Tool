@@ -556,7 +556,7 @@ if __name__ == "__main__":
                                          minimum=1)
                 segmentation_mode.change(fn=change_contour_map_width_value, inputs=segmentation_mode, outputs=contour_map_width)
                 with gr.Row():
-                    augmentation_csv_path = gr.Textbox('Augmentation Parameters Isotropic.csv', scale=2,
+                    augmentation_csv_path = gr.Textbox('Augmentation Parameters Anisotropic.csv', scale=2,
                                                        label="Csv File for Data Augmentation Settings")
                     file_button = gr.Button(document_symbol, scale=0)
                     file_button.click(open_file, outputs=augmentation_csv_path)
