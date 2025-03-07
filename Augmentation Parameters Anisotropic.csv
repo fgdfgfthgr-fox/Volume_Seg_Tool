@@ -7,7 +7,7 @@ Edge Replicate Pad,0.0,0,0,0.05
 Vertical Flip,0.5,,,
 Horizontal Flip,0.5,,,
 Depth Flip,0.5,,,
-Simulate Low Resolution,0.33,1.05,2,
+Simulate Low Resolution,0.33,0.5,0.9,
 Gaussian Noise,0.75,0.01,0.3,
 Gaussian Blur,0.33,0.5,1.5,3
 Gradient Gamma,0.5,0.8,1.2,
