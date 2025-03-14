@@ -75,7 +75,7 @@ class UNet(nn.Module):
                     else:
                         depth_factor = 2**i
                         xy_factor = max(1, 2**(i - self.special_layers))
-                    setattr(self, f'rescale{i}', nn.Upsample(scale_factor=(depth_factor, xy_factor, xy_factor), mode='trilinear', align_corners=True))
+                    setattr(self, f'rescale{i}', nn.Upsample(scale_factor=(depth_factor, xy_factor, xy_factor), mode='trilinear', align_corners=False))
                 if se: setattr(self, f'encode_se{i}', scSE(multiplier_h))
                 if se: setattr(self, f'decode_se{i}', scSE(multiplier_h))
                 setattr(self, f'down{i}', nn.Sequential(nn.Conv3d(multiplier_h, multiplier_v, scale_down_kernel_size[i], scale_down[i], padding_down[i]),

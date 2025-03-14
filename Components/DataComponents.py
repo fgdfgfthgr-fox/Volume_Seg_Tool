@@ -170,11 +170,11 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
                 contour_tensor = contour_tensor.flip([1])
         elif augmentation_method == 'Simulate Low Resolution' and random.random() < prob:
             img_tensor = Aug.sim_low_res(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gaussian Noise' and random.random() < prob:
+            img_tensor = Aug.gaussian_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gaussian Blur' and random.random() < prob:
             img_tensor = Aug.gaussian_blur_3d(img_tensor, int(row['Value']),
                                               random.uniform(row['Low Bound'], row['High Bound']))
-        elif augmentation_method == 'Gaussian Noise' and random.random() < prob:
-            img_tensor = Aug.gaussian_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gradient Gamma' and random.random() < prob:
             img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), True)
         elif augmentation_method == 'Gradient Contrast' and random.random() < prob:

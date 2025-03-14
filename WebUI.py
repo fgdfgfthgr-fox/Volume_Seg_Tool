@@ -318,7 +318,7 @@ def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_thre
     ground_truth = DataComponents.path_to_array(groundtruth_path, label=True)
     predicted = DataComponents.path_to_array(predicted_path, label=True)
     if stat_mode == 'Semantic':
-        ground_truth, predicted = torch.clamp(ground_truth, 0, 1), torch.clamp(predicted, 0, 1)
+        ground_truth, predicted = torch.clamp(torch.from_numpy(ground_truth), 0, 1), torch.clamp(torch.from_numpy(predicted), 0, 1)
         intersection = 2 * torch.sum(ground_truth * predicted) + 0.001
         union = torch.sum(predicted) + torch.sum(ground_truth) + 0.001
         tp = (predicted*ground_truth).sum()
@@ -895,7 +895,7 @@ if __name__ == "__main__":
                     return gr.Number(0.5, interactive=True, label="IOU threshold", visible=visible)
                 stat_mode = gr.Radio(["Semantic", "Instance"], value="Semantic", label="Mode")
                 gr.Markdown('Calculate instance segmentation metrics is hard and VST uses your GPU to accelerate the process. It would be painfully slow if you are using a CPU! '
-                            'And still not fast if you are have a GPU...')
+                            'And still not fast if you do have a GPU...')
                 with gr.Row():
                     predicted_img_path = gr.Textbox(label='Path to the predicted image')
                     file_button = gr.Button(document_symbol, scale=0)

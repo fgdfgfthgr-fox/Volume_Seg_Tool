@@ -11,6 +11,7 @@ from joblib import Parallel, delayed
 
 from scipy.ndimage import distance_transform_edt
 import torch.multiprocessing as mp
+from .Perlin3d import generate_perlin_noise_3d
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -596,22 +597,39 @@ def middle_z_normalize(input_tensor, z_percentile=0.75):
     input_tensor = torch.clamp(input_tensor, 0, 1)
     return input_tensor
 
-def gaussian_noise(input_tensor, strength=0.05):
+def gaussian_noise(input_tensor, strength=0.05, octaves=3):
     """
-    Add gaussian noise to img.
+    Add gaussian noise of different resolutions to the tensor.
 
     Args:
-        input_tensor (torch.Tensor): Input tensor with a shape of (D, H, W)
+        input_tensor (torch.Tensor): Input tensor with a shape of (C, D, H, W)
         strength (float): The intensity of the noise.
+        octaves (int): Will generate this many additional low-res noises and interpolate them to target shape before combining.
 
     Return:
         output_tensor (torch.Tensor)
     """
-    noise = torch.randn_like(input_tensor, dtype=torch.float32)
-    input_tensor = input_tensor + noise * strength
+    origin_shape = input_tensor.shape
+    noises = torch.zeros_like(input_tensor, dtype=torch.float32)
+    for octave in range(0, octaves):
+        # Since we are only dealing with images of single channel, don't worry the channel dim got downscaled as well.
+        shape = [max(int(shape / 2**octave), 1) for shape in origin_shape]
+        noise = (torch.randn(shape, dtype=torch.float32) * random.uniform(0.5, 1.5) * (0.5**octave) * strength).unsqueeze(0)
+        noises += F.interpolate(noise, origin_shape[1:], mode='trilinear', align_corners=False).squeeze(0)
+    input_tensor += noises
     input_tensor = torch.clamp(input_tensor, -4, 4)
     return input_tensor
 
+def perlin_noise(input_tensor, strength, max_res):
+    shapes = input_tensor.shape
+    xy_to_z_ratio = shapes[1]/shapes[0]
+    res = random.randint(2, max_res)
+    ress = ((max(int(res/xy_to_z_ratio), 2)), res, res)
+    noise = generate_perlin_noise_3d([shape for shape in shapes], ress)
+    noise *= strength
+    input_tensor += noise
+    input_tensor = torch.clamp(input_tensor, -4, 4)
+    return input_tensor
 
 def remove_black_borders(volumes):
     """
