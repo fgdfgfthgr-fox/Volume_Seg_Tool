@@ -287,59 +287,59 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         return rotated_tensors
 
 
-def random_gradient(tensor, range=(0.5, 1.5), gamma=True):
+def random_gradient(tensor, e_range=(0.5, 1.5), mode='gamma'):
     """
-    Apply random gamma or contrast adjustment to a PyTorch tensor, with a gradient pattern.
+    Apply random gamma or contrast or brightness adjustment to a PyTorch tensor, with a gradient pattern.
 
     Args:
         tensor (torch.Tensor): Input image tensor of shape [channel, depth, height, width].
         range (tuple): Range for random contrast adjustment.
-        gamma (bool): If true, will adjust image gamma, else contrast.
+        mode (str): 'gamma' or 'contrast' or 'brightness'.
 
     Returns:
         torch.Tensor: Adjusted image tensor.
     """
 
-    # Check if the input tensor has the correct shape
-    if tensor.ndim != 4:
-        raise ValueError("Input tensor must have shape [channel, depth, height, width]")
-    random_range = random.uniform(range[0], 1.0), random.uniform(1.0, range[1])
+    a, b = random.uniform(e_range[0], e_range[1]), random.uniform(e_range[0], e_range[1])
+    low, high = min(a, b), max(a, b)
 
     # Generate a random side (left, right, top, bottom, front, back) for the gradient effect
     gradient_side = torch.randint(0, 6, size=(1,))
 
     # Generate a gradient tensor for gamma adjustment based on the selected side
     if gradient_side == 0:  # Left side
-        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[3])
+        gradient = torch.linspace(low, high, tensor.shape[3])
         gradient = gradient.view(1, 1, 1, -1)
     elif gradient_side == 1:  # Right side
-        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[3])
+        gradient = torch.linspace(low, high, tensor.shape[3])
         gradient = gradient.view(1, 1, 1, -1)
         gradient = gradient.flip(dims=(3,))
     elif gradient_side == 2:  # Top side
-        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[2])
+        gradient = torch.linspace(low, high, tensor.shape[2])
         gradient = gradient.view(1, 1, -1, 1)
     elif gradient_side == 3:  # Bottom side
-        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[2])
+        gradient = torch.linspace(low, high, tensor.shape[2])
         gradient = gradient.view(1, 1, -1, 1)
         gradient = gradient.flip(dims=(2,))
     elif gradient_side == 4:  # Front side
-        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[1])
+        gradient = torch.linspace(low, high, tensor.shape[1])
         gradient = gradient.view(1, -1, 1, 1)
     else:  # Back side
-        gradient = torch.linspace(random_range[0], random_range[1], tensor.shape[1])
+        gradient = torch.linspace(low, high, tensor.shape[1])
         gradient = gradient.view(1, -1, 1, 1)
         gradient = gradient.flip(dims=(1,))
-    if gamma:
-        min, max = tensor.min(), tensor.max()
-        if min - max == 0:
+    if mode == 'gamma':
+        tensor_min, tensor_max = tensor.min(), tensor.max()
+        if tensor_max - tensor_min == 0:
             return tensor  # Avoid division by zero; return as-is
-        tensor = (tensor - min) / (max - min)
+        tensor = (tensor - tensor_min) / (tensor_max - tensor_min)
         tensor = (tensor ** gradient)
-        tensor = (tensor * (max - min)) + min
+        tensor = (tensor * (tensor_max - tensor_min)) + tensor_min
         return tensor
-    else:
+    elif mode == 'contrast':
         return torch.clamp(gradient * tensor, -4, 4)
+    elif mode == 'brightness':
+        return torch.clamp(gradient + tensor, -4, 4)
 
 
 def salt_and_pepper_noise(tensor, prob=0.01):

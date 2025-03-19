@@ -176,9 +176,11 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
             img_tensor = Aug.gaussian_blur_3d(img_tensor, int(row['Value']),
                                               random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Gradient Gamma' and random.random() < prob:
-            img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), True)
+            img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), 'gamma')
         elif augmentation_method == 'Gradient Contrast' and random.random() < prob:
-            img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), False)
+            img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), 'contrast')
+        elif augmentation_method == 'Gradient Brightness' and random.random() < prob:
+            img_tensor = Aug.random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), 'brightness')
         elif augmentation_method == 'Adjust Gamma' and random.random() < prob:
             img_tensor = Aug.adj_gamma(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Adjust Contrast' and random.random() < prob:

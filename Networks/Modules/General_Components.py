@@ -188,3 +188,33 @@ class FeatureFusionModule(nn.Module):
         fused_features = [self.activation(f) for f in fused_features]
 
         return fused_features
+
+
+class DyT(nn.Module):
+    def __init__(self, num_features, dim=1):
+        """
+        Dynamic Tanh (DyT) layer
+
+        Args:
+            num_features (int): Number of features/channels (same as corresponding normalization layer)
+            dim (int, optional): Dimension along which to apply parameters.
+                                Default: 1 (channel dimension for Conv layers)
+        """
+        super().__init__()
+        self.num_features = num_features
+        self.dim = dim
+
+        # Learnable parameters
+        self.alpha = nn.Parameter(torch.tensor(0.5))  # scalar
+        self.gamma = nn.Parameter(torch.ones(num_features))  # per-channel vector
+        self.beta = nn.Parameter(torch.zeros(num_features))  # per-channel vector
+
+    def forward(self, x):
+        # Reshape gamma and beta to match input dimensions
+        shape = [1] * x.ndim
+        shape[self.dim] = self.num_features
+        gamma = self.gamma.view(*shape)
+        beta = self.beta.view(*shape)
+
+        # Apply dynamic tanh transformation
+        return gamma * torch.tanh(self.alpha * x) + beta
