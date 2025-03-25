@@ -11,7 +11,7 @@ Simulate Low Resolution,0.33,0.5,0.9,
 Gaussian Noise,0.75,0.05,0.5,
 Gaussian Blur,0.33,0.5,1.5,3
 Gradient Gamma,1,0.6,1.4,
-Gradient Contrast,1,0.2,1.4,
+Gradient Contrast,1,0.6,1.4,
 Gradient Brightness,1,-0.5,0.5,
 Adjust Gamma,0,0.5,1.5,
 Adjust Contrast,0,0.5,1.5,

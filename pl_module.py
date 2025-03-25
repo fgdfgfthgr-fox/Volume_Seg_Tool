@@ -12,6 +12,7 @@ from Components import Metrics
 from Components.AdEMAMix import AdEMAMix
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
+from lightning.pytorch.utilities import grad_norm
 from lightning.pytorch.callbacks import LearningRateFinder
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks import StochasticWeightAveraging
@@ -272,12 +273,13 @@ class PLModule(pl.LightningModule):
     def log_metrics(self, prefix, metrics_list):
         if metrics_list:
             epoch_averages = torch.stack([torch.tensor(metrics) for metrics in metrics_list]).nanmean(dim=0)
+            required_prefix = 'Val' if self.enable_val else 'Train'
             if self.instance_mode:
                 # Since each patch have equal number of pixels, it's safe to use their average intersection and union
                 p_dice = epoch_averages[1]/epoch_averages[3]
                 c_dice = epoch_averages[2]/epoch_averages[4]
-                # Check if Contour Predict Dice > 0.5
-                if c_dice >= 0.5 and self.dice_threshold_reached == False:
+                # Check if Contour Predict Dice >= 0.5
+                if c_dice >= 0.5 and self.dice_threshold_reached == False and prefix == required_prefix:
                     self.dice_threshold_reached = True
                     print('Starts working on Unsupervised Samples via entropy minimisation...')
                     print('\nIgnore this if you are not using unsupervised learning.')
@@ -302,8 +304,8 @@ class PLModule(pl.LightningModule):
                 self.log(f"{prefix}_epoch_dice", p_dice+c_dice, logger=False)
             else:
                 dice = epoch_averages[1]/epoch_averages[2]
-                # Check if Dice > 0.6
-                if dice >= 0.6 and self.dice_threshold_reached == False:
+                # Check if Dice >= 0.8
+                if dice >= 0.8 and self.dice_threshold_reached == False and prefix == required_prefix:
                     self.dice_threshold_reached = True
                     print('\nStarts working on Unsupervised Samples via entropy minimisation...\n')
                     print('\nIgnore this if you are not using unsupervised learning.\n')
@@ -358,9 +360,9 @@ class PLModule(pl.LightningModule):
             self.log_metrics("Test", self.test_metrics)
             self.test_metrics.clear()
 
-    #def on_before_optimizer_step(self, optimizer):
-    #    norms = grad_norm(self.model, norm_type=2)
-    #    self.log_dict(norms, logger=True)
+    '''def on_before_optimizer_step(self, optimizer):
+        norms = grad_norm(self.network, norm_type=2)
+        self.log_dict(norms, logger=True)'''
 
 
 if __name__ == "__main__":

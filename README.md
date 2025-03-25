@@ -4,7 +4,9 @@ This repository holds the script for Volume Segmentation Tool and its Gradio-bas
 
 Paper is under review, coming soon...
 
-Supporting Operating Systems includes: Windows and Linux and macOS.
+Supporting Operating Systems includes: Windows and Linux.
+
+(macOS is supported in theory, however some necessary PyTorch operations needed is not yet supported on MPS backend. Nothing I can do here)
 
 ## About the Tool
 

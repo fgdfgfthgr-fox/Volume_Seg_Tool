@@ -67,7 +67,7 @@ def start_work_flow(args):
     label_mean = torch.tensor(0.5)
     contour_mean = torch.tensor(0.5)
     if not args.memory_saving_mode:
-        desired_num_workers = min(max((os.cpu_count()//2)-1, 1), 16)
+        desired_num_workers = min(max((os.cpu_count()//2)-1, 1), 32)
         persistent_workers = True
     else:
         desired_num_workers = 0

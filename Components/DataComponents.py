@@ -14,7 +14,6 @@ import h5py
 import multiprocessing
 import tracemalloc
 import pandas as pd
-import pyarrow as pa
 from multiprocessing import Pool, shared_memory, cpu_count
 import skimage.morphology as morph
 from scipy.ndimage import label
