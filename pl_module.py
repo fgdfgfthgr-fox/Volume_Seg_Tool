@@ -107,9 +107,9 @@ class PLModule(pl.LightningModule):
     def compute_ramp_up_weight(self, ramp_steps):
         # Check if the dice score threshold has been reached
         if not self.dice_threshold_reached:
-            return 0.0  # No ramp-up until dice score exceeds 0.5
+            return 0.0  # No ramp-up until dice score exceeds threshold
 
-        # Get the current global step and compute the ramp-up weight if dice > 0.5
+        # Get the current global step and compute the ramp-up weight
         if self.starting_step is None:
             self.starting_step = self.global_step
         current_step = self.global_step - self.starting_step
@@ -124,7 +124,7 @@ class PLModule(pl.LightningModule):
 
     def configure_optimizers(self):
         fused = True if device == "cuda" else False
-        optimizer = AdEMAMix(self.parameters(), lr=self.lr, weight_decay=0.001)
+        optimizer = AdEMAMix(self.parameters(), lr=self.lr)#, weight_decay=0.001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                                factor=0.5, patience=50,
                                                                threshold_mode='rel',
@@ -278,8 +278,8 @@ class PLModule(pl.LightningModule):
                 # Since each patch have equal number of pixels, it's safe to use their average intersection and union
                 p_dice = epoch_averages[1]/epoch_averages[3]
                 c_dice = epoch_averages[2]/epoch_averages[4]
-                # Check if Contour Predict Dice >= 0.5
-                if c_dice >= 0.5 and self.dice_threshold_reached == False and prefix == required_prefix:
+                # Check if Contour Predict Dice >= 0.6
+                if c_dice >= 0.6 and self.dice_threshold_reached == False and prefix == required_prefix:
                     self.dice_threshold_reached = True
                     print('Starts working on Unsupervised Samples via entropy minimisation...')
                     print('\nIgnore this if you are not using unsupervised learning.')
@@ -304,8 +304,8 @@ class PLModule(pl.LightningModule):
                 self.log(f"{prefix}_epoch_dice", p_dice+c_dice, logger=False)
             else:
                 dice = epoch_averages[1]/epoch_averages[2]
-                # Check if Dice >= 0.8
-                if dice >= 0.8 and self.dice_threshold_reached == False and prefix == required_prefix:
+                # Check if Dice >= 0.85
+                if ((dice >= 0.85 and required_prefix == 'Train') or (dice >= 0.8 and required_prefix == 'Val')) and required_prefix == prefix and self.dice_threshold_reached == False:
                     self.dice_threshold_reached = True
                     print('\nStarts working on Unsupervised Samples via entropy minimisation...\n')
                     print('\nIgnore this if you are not using unsupervised learning.\n')

@@ -189,11 +189,9 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
         elif augmentation_method == 'Salt And Pepper' and random.random() < prob:
             img_tensor = Aug.salt_and_pepper_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Label Blur' and random.random() < prob:
-            lab_tensor = lab_tensor
             lab_tensor = Aug.gaussian_blur_3d(lab_tensor, int(row['Value']),
                                               random.uniform(row['Low Bound'], row['High Bound']))
         elif augmentation_method == 'Contour Blur' and random.random() < prob and contour_tensor is not None:
-            contour_tensor = contour_tensor
             contour_tensor = Aug.gaussian_blur_3d(contour_tensor, int(row['Value']),
                                                   random.uniform(row['Low Bound'], row['High Bound']))
     if contour_tensor is not None:

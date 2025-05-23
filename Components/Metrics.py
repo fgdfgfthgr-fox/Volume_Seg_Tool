@@ -441,6 +441,8 @@ def instance_segmentation_metrics(pred_map, gt_map, iou_threshold):
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0
 
+    del pred_map, gt_map
+
     return tpr.cpu(), fpr.cpu(), fnr.cpu(), precision.cpu(), recall.cpu()
 
 

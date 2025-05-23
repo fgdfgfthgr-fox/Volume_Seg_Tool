@@ -1,3 +1,4 @@
+import gc
 import os
 import math
 
@@ -334,6 +335,9 @@ def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_thre
     elif stat_mode == 'Instance':
         tpr, fpr, fnr, precision, recall = Metrics.instance_segmentation_metrics(torch.from_numpy(predicted), torch.from_numpy(ground_truth), iou_threshold)
         out = (tpr.item(), fpr.item(), fnr.item(), precision.item(), recall.item())
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
     return out
 
 
