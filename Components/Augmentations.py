@@ -597,6 +597,7 @@ def middle_z_normalize(input_tensor, z_percentile=0.75):
     input_tensor = torch.clamp(input_tensor, 0, 1)
     return input_tensor
 
+
 def gaussian_noise(input_tensor, strength=0.05, octaves=3):
     """
     Add gaussian noise of different resolutions to the tensor.
@@ -620,6 +621,7 @@ def gaussian_noise(input_tensor, strength=0.05, octaves=3):
     input_tensor = torch.clamp(input_tensor, -4, 4)
     return input_tensor
 
+
 def perlin_noise(input_tensor, strength, max_res):
     shapes = input_tensor.shape
     xy_to_z_ratio = shapes[1]/shapes[0]
@@ -630,6 +632,7 @@ def perlin_noise(input_tensor, strength, max_res):
     input_tensor += noise
     input_tensor = torch.clamp(input_tensor, -4, 4)
     return input_tensor
+
 
 def remove_black_borders(volumes):
     """

@@ -340,7 +340,8 @@ class PLModule(pl.LightningModule):
                 if self.instance_mode:
                     p_outputs, c_outputs = self.forward(self.mid_visual_tensor)
                     sigmoid_p_outputs, sigmoid_c_outputs = [self.entropy_preprocess(scale) for scale in p_outputs], self.entropy_preprocess(c_outputs)
-                    mid_visual_pixel = torch.mean(torch.stack(sigmoid_p_outputs, dim=0), dim=0)
+                    mid_visual_pixel = [output * self.p_weights[i] for i, output in enumerate(sigmoid_p_outputs)]
+                    mid_visual_pixel = torch.sum(torch.stack(mid_visual_pixel), dim=0)
                     mid_visual_pixel = mid_visual_pixel[:, :, 0:1, :, :].squeeze([0, 1])
                     mid_visual_contour = sigmoid_c_outputs[:, :, 0:1, :, :].squeeze([0, 1])
                     self.logger.experiment.add_image(f'Model Output/Pixel', mid_visual_pixel, self.current_epoch)
@@ -348,7 +349,8 @@ class PLModule(pl.LightningModule):
                     pass
                 else:
                     outputs = self.forward(self.mid_visual_tensor)
-                    mid_visual_result = torch.mean(torch.stack(outputs, dim=0), dim=0)
+                    mid_visual_result = [output * self.p_weights[i] for i, output in enumerate(outputs)]
+                    mid_visual_result = torch.sum(torch.stack(mid_visual_result), dim=0)
                     mid_visual_result = torch.sigmoid(mid_visual_result[:, :, 0:1, :, :].squeeze([0, 1]))
                     self.logger.experiment.add_image(f'Model Output', mid_visual_result, self.current_epoch)
         sch = self.lr_schedulers()
