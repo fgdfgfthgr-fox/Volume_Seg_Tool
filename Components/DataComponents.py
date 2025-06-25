@@ -29,14 +29,16 @@ def get_label_fname(fname):
 
 
 
-def path_to_array(path, label=False, key='default'):
+def path_to_array(path, label=False, key='default', norm_strategy='std'):
     """
     Transform a path to an image file into a Pytorch tensor. Can support other image format but usually tif is the only one that can store 3d information.
 
     Args:
         path (str): Path to the image file.
-        label (bool): If false, the output will be a float32 tensor range from 0 to 1. Default: False.
+        label (bool): If false, the output will be normalized. Default: False.
         key (str): If trying to load from a hdf5 file, will load the File object with this name.
+        norm_strategy (str): The strategy used to normalize the image (when isn't a label).
+        Can be 'std' to minus by mean then divide by std. Or 'n1tp1' to put it between negative and positive one. Default: 'std'.
 
     Returns:
         torch.Tensor: transformed Tensor.
@@ -59,13 +61,23 @@ def path_to_array(path, label=False, key='default'):
             new_dtype = np.uint32
         img = img.astype(new_dtype, copy=False)
     else:
-        #img = Aug.remove_black_borders(img)
-        non_zero = img[img!=0]
-        mean, std = np.mean(non_zero, dtype=np.float32), np.std(non_zero, dtype=np.float32) + 1e-8
-        # Take less memory than img = (img - mean) / std
-        img = img.astype(np.float32, copy=False)
-        img -= mean
-        np.divide(img, std, img)
+        non_zero = img[img != 0]
+        if norm_strategy == 'std':
+            mean, std = np.mean(non_zero, dtype=np.float32), np.std(non_zero, dtype=np.float32) + 1e-8
+            # Take less memory than img = (img - mean) / std
+            img = img.astype(np.float32, copy=False)
+            img -= mean
+            np.divide(img, std, img)
+        elif norm_strategy == 'n1tp1':
+            img = img.astype(np.float32, copy=False)
+            q1, q99 = np.percentile(non_zero, [1, 99])
+            # To 0 and 1
+            img -= q1
+            img /= (q99-q1)
+            np.clip(img, 0, 1, img)
+            # To -1 and 1
+            img -= 0.5
+            img *= 2
     return img
 
 

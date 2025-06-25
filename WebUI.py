@@ -56,6 +56,25 @@ def count_num_image_files(dataset_path, exclude_labels=True):
     return count
 
 
+def classify_gpu_type(name):
+    name_lower = name.lower()
+    nvidia_keywords = ['nvidia', 'geforce', 'quadro', 'tesla', 'titan', 'rtx']
+    amd_discrete_keywords = ['radeon rx', 'radeon pro', 'radeon r9', 'radeon r7',
+                             'vega frontier', 'mi100', 'mi200', 'mi250', 'mi300']
+    amd_integrated_keywords = ['radeon vega', 'radeon graphics', 'graphics']
+    intel_keywords = ['intel', 'uhd', 'iris', 'hd graphics']
+
+    if any(kw in name_lower for kw in nvidia_keywords):
+        return 'discrete'
+    if any(kw in name_lower for kw in intel_keywords):
+        return 'integrated'
+    if any(kw in name_lower for kw in amd_discrete_keywords):
+        return 'discrete'
+    if any(kw in name_lower for kw in amd_integrated_keywords):
+        return 'integrated'
+    return 'discrete'
+
+
 def start_work_flow(inputs):
     workflow_box_n = " ".join(inputs[workflow_box])
     existing_model_path_n = f'"{inputs[existing_model_path]}"' if inputs[existing_model_path] else ""
@@ -699,9 +718,53 @@ if __name__ == "__main__":
                                                  info="If you are experiencing running out of system memory (Not CUDA memory!) during training, "
                                                       "This option could help by using only 1 thread to do data loading. "
                                                       "Can significantly slow down training if your system have low single core performance.")
-            precision = gr.Dropdown(["32", "16-mixed", "bf16-mixed"], value="32", label="Precision",
-                                    info="fp16 precision could significantly cut the VRAM usage. However if you are not using an Nvidia GPU, it could signficantly slow down the training as well."
-                                         "bf16 is recommended over fp16 if you are using a newer GPU (30 series or newer).")
+            with gr.Row():
+                precision = gr.Dropdown(["32", "16-mixed", "bf16-mixed"], value="32", label="Precision",
+                                        info="fp16 precision could significantly cut the VRAM usage. However if you are not using an Nvidia GPU, it could signficantly slow down the training as well."
+                                             "bf16 is recommended over fp16 if you are using a newer GPU.")
+                auto_precision_button = gr.Button("Find suitable precision based on your GPU")
+                def auto_precision():
+                    if not torch.cuda.is_available():
+                        gr.Warning('Warning: No GPU detected! Will default to fp32 and training will be SLOW (if happen at all)!')
+                        return '32'
+                    devices = []
+                    for i in range(torch.cuda.device_count()):
+                        name = torch.cuda.get_device_name(i)
+                        gpu_type = classify_gpu_type(name)
+                        devices.append((name, gpu_type, i))
+                    devices.sort(key=lambda x: (0 if x[1] == 'discrete' else 1, x[2]))
+                    main_device = devices[0]
+                    main_name, _, main_index = main_device
+                    if any(kw in main_name.lower() for kw in ['nvidia', 'geforce', 'quadro', 'tesla', 'titan', 'rtx']):
+                        capability = torch.cuda.get_device_capability(main_index)
+                        compute_capability = capability[0] + capability[1] / 10.0
+                        if compute_capability >= 8.0:
+                            gr.Info(f'Newer Nvidia GPU detected: {main_name}!')
+                            return 'bf16-mixed'
+                        elif compute_capability >= 7.0:
+                            gr.Info(f'Older Nvidia GPU detected: {main_name}!')
+                            return '16-mixed'
+                        else:
+                            gr.Warning(f'Really old Nvidia GPU detected: {main_name}, defaulting to fp32.')
+                            return '32'
+                    elif 'amd' in main_name.lower() or 'radeon' in main_name.lower():
+                        if ('radeon rx 7' in main_name.lower() or
+                                'rdna 3' in main_name.lower() or
+                                'mi200' in main_name.lower() or
+                                'mi250' in main_name.lower() or
+                                'mi300' in main_name.lower()):
+                            gr.Info(f'Newer AMD GPU detected: {main_name}!')
+                            return 'bf16-mixed'
+                        elif 'mi100' in main_name.lower():
+                            gr.Info(f'MI100 GPU detected!')
+                            return '16-mixed'
+                        else:
+                            gr.Warning(f'Really old AMD GPU detected: {main_name}, defaulting to fp32. If you are using a newer GPU after 2025 and this show up, please tell me in the GitHub repository.')
+                            return '32'
+                    else:
+                        gr.Warning(f"Unsupported GPU brand: {main_name}, defaulting to fp32.")
+                        return '32'
+                auto_precision_button.click(auto_precision, outputs=precision)
             with gr.Row():
                 model_architecture = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
                 segmentation_mode.change(update_available_arch, inputs=segmentation_mode, outputs=model_architecture)
