@@ -91,7 +91,7 @@ def run_pip(command, desc=None, live=True):
 
 def prepare_environment():
     torch_index_url = os.environ.get('TORCH_INDEX_URL', "https://download.pytorch.org/whl/cu118")
-    torch_command = os.environ.get('TORCH_COMMAND', f"pip install torch==2.4.1 torchvision --extra-index-url {torch_index_url}")
+    torch_command = os.environ.get('TORCH_COMMAND', f"pip install torch==2.7.1 torchvision --extra-index-url {torch_index_url}")
     requirements_file = os.environ.get('REQS_FILE', "requirements.txt")
 
     #print(f"Python {sys.version}")

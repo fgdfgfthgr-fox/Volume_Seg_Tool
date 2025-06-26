@@ -6,7 +6,7 @@ pyimagej==1.4.1
 scikit-image==0.21.0
 matplotlib==3.8.0
 lightning==2.3.3
-gradio==5.5.0
+gradio==5.32.2
 h5py==3.12.1
 scipy==1.11.2
 tensorboard==2.15.1
