@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.init as I
 import math
 from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, scSE, AttentionBlock
 
@@ -66,8 +67,8 @@ class UNet(nn.Module):
                     setattr(self, f'decode{i}', BasicBlock(decode_multiplier_v, multiplier_h, kernel_sizes_conv, num_conv=num_conv, norm=False))
                     setattr(self, f'p_out{i}', nn.Conv3d(multiplier_h, 1, kernel_size=1))
                 else:
-                    setattr(self, f'encode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
-                    setattr(self, f'decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv, norm=False))
+                    setattr(self, f'encode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv, res_type=res_type))
+                    setattr(self, f'decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv, norm=False, res_type=res_type))
                     setattr(self, f'p_out{i}', nn.Conv3d(multiplier_h, 1, kernel_size=1))
                     if self.special_layers > 0:
                         depth_factor = max(1, 2**(i - self.special_layers))
@@ -78,9 +79,9 @@ class UNet(nn.Module):
                     setattr(self, f'rescale{i}', nn.Upsample(scale_factor=(depth_factor, xy_factor, xy_factor), mode='trilinear', align_corners=False))
                 if se: setattr(self, f'encode_se{i}', scSE(multiplier_h))
                 if se: setattr(self, f'decode_se{i}', scSE(multiplier_h))
-                setattr(self, f'down{i}', nn.Sequential(nn.Conv3d(multiplier_h, multiplier_v, scale_down_kernel_size[i], scale_down[i], padding_down[i]),
-                                                        nn.InstanceNorm3d(multiplier_v),
-                                                        nn.SiLU(inplace=True)))
+                setattr(self, f'down{i}', nn.Sequential(nn.Conv3d(multiplier_h, multiplier_v, scale_down_kernel_size[i], scale_down[i], padding_down[i]),))
+                                                        #nn.InstanceNorm3d(multiplier_v),
+                                                        #nn.SiLU(inplace=True)))
                 setattr(self, f'deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, scale_down_kernel_size[i], scale_down[i], padding_down[i]))
                 '''if unsupervised:
                     setattr(self, f'u_deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
@@ -150,3 +151,23 @@ class UNet(nn.Module):
             return [self.semantic_decode(bottleneck, encode_features), self.unsupervised_decode(bottleneck)]
         else:
             raise ValueError("Invalid data type. Should be either '0'(normal) or '1'(unsupervised) or '2'(both).")'''
+
+
+
+def init_weights(m):
+    if isinstance(m, nn.Conv2d):
+        # LeakyReLU everywhere → use Kaiming with a = 0.01 (default of LeakyReLU)
+        I.kaiming_normal_(m.weight, a=0.01, mode='fan_in', nonlinearity='leaky_relu')
+        if m.bias is not None:
+            I.zeros_(m.bias)
+
+    elif isinstance(m, nn.Linear):
+        if m.out_features == 4:
+            # FINAL EMBEDDING LAYER: orthogonal with gain to set Var=0.5
+            # orthogonal gives Var=1.0 in each dim → rescale by sqrt(0.5)
+            I.orthogonal_(m.weight, gain=math.sqrt(0.5))
+            I.zeros_(m.bias)
+        else:
+            # All the intermediate fcs feeding LeakyReLU
+            I.kaiming_normal_(m.weight, a=0.01, mode='fan_in', nonlinearity='leaky_relu')
+            I.zeros_(m.bias)

@@ -21,7 +21,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def sim_low_res(tensor, scale=2):
     """
-    Simulate low resolution by down-sampling using nearest-neighbor interpolation and then up-sampling using cubic 
+    Simulate low resolution by down-sampling using nearest-neighbor interpolation and then up-sampling using cubic/linear
     interpolation.
 
     Args:
@@ -89,9 +89,6 @@ def adj_brightness(tensor, brightness):
         torch.Tensor: Brightness-adjusted 3D tensor with the same shape as the input.
     """
     return torch.clamp(brightness + tensor, -4, 4)
-
-#    The sigma is automatically calculated in the way same as torchvision.transforms.functional.gaussian_blur(),
-#    which is sigma = 0.3 * ((kernel_size - 1) * 0.5 - 1) + 0.8\n
 
 
 def gaussian_blur_3d(tensor, kernel_size=3, sigma=0.8):
@@ -195,7 +192,7 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
                             planes=['xy'], interpolations=('bilinear', 'nearest'),  # fill_values=(0, 0),
                             ensure_bothground=True, max_attempts=50, minimal_foreground=0.01, minimal_background=0.02):
     """
-    Randomly crop then rotate a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least 1% foreground object.\n
+    Randomly crop then rotate a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least some foreground object.\n
     Whether it contains foreground object is determined by the second tensor in the list,
     pixels with values larger or equal to 1 are considered foreground.\n
     If no foreground object is found after max_attempts attempts, it will output a warning message and crop a random volume.
@@ -211,7 +208,7 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         ensure_bothground (bool): If True, will try to ensure that the output contains both foreground and background objects according to the settings below. (default: True)
         max_attempts (int): Maximum number of attempts to find a crop with at least 1% foreground object (default: 50).
         minimal_foreground (float): Proportion of desired minimal foreground pixels (default: 0.01).
-        minimal_background (float): Proportion of desired minimal background pixels (default: 0.01).
+        minimal_background (float): Proportion of desired minimal background pixels (default: 0.02).
 
     Returns:
         List of cropped tensors or just the cropped tensor itself.

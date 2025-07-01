@@ -441,23 +441,3 @@ if __name__ == "__main__":
                                                                      hw_size=160, depth_size=48,
                                                                      hw_overlap=16, depth_overlap=4, segmentation_mode='watershed')
     #model = PLModule.load_from_checkpoint('test.ckpt')
-    '''predictions = trainer.predict(model, predict_loader)
-    #del predict_loader, predict_dataset
-    DataComponents.predictions_to_final_img(predictions, meta_info, direc='Datasets/result',
-                                            hw_size=232, depth_size=24,
-                                            hw_overlap=12,
-                                            depth_overlap=4,
-                                            TTA_hw=True)
-    #end_time = time.time()
-    #elapsed_time = end_time - start_time
-    #print(f"Elapsed time: {elapsed_time} seconds")
-'''
-    '''
-    torch.save(model.state_dict(), 'placeholder.pth')
-    
-    elapsed_time = end_time - start_time
-    print(f"Elapsed time: {elapsed_time} seconds")
-    DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',
-                                                     hw_size=256, depth_size=64,
-                                                     hw_overlap=32, depth_overlap=8)
-'''

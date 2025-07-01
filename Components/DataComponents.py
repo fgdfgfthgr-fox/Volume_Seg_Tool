@@ -12,7 +12,6 @@ import random
 import time
 import h5py
 import multiprocessing
-import tracemalloc
 import pandas as pd
 from multiprocessing import Pool, shared_memory, cpu_count
 import skimage.morphology as morph
@@ -301,7 +300,7 @@ def make_dataset_tv(image_dir, extensions=(".tif", ".tiff", ".hdf5")):
 
     Args:
         image_dir (str): Path to the directory where images are stored.
-        extensions: I honestly don't know about this too, I guess it isolate image files?
+        extensions: Acceptable image formats.
 
     Returns:
         Example[('Datasets\\train\\testimg1.tif', 'Datasets\\train\\Labels_testimg1.tif'),
@@ -324,7 +323,7 @@ def make_dataset_predict(image_dir, extensions=(".tif", ".tiff", ".hdf5")):
 
     Args:
         image_dir (str): Path to the directory where images are stored.
-        extensions: I honestly don't know about this too, I guess it isolate image files?
+        extensions: Acceptable image formats.
 
     Returns:
         Example['Datasets\\predict\\testpic1.tif',
@@ -777,82 +776,6 @@ def get_contour_maps(file_name, folder_path, contour_map_width):
     return contour_img
 
 
-class CrossValidationDataset(torch.utils.data.Dataset):
-    def __init__(self, images_dir, augmentation_csv, hw_size, d_size, leave_out_index=0, mode='Train', train_multiplier=1):
-        self.file_list = make_dataset_tv(images_dir)
-        self.num_files = len(self.file_list)
-        self.leave_out = self.file_list.pop(leave_out_index)
-        self.img_tensors = [path_to_array(item[0], label=False) for item in self.file_list]
-        self.lab_tensors = [path_to_array(item[1], label=True) for item in self.file_list]
-        self.train_multiplier = train_multiplier
-
-        self.leave_out_img = path_to_array(self.leave_out[0], label=False)[None, :]
-        leave_out_img_name = os.path.basename(self.leave_out[0])
-        self.leave_out_label = path_to_array(self.leave_out[1], label=True)[None, :]
-        self.mode = mode
-        self.augmentation_params = pd.read_csv(augmentation_csv)
-
-        unused, self.depth, self.height, self.width = self.leave_out_img.shape
-        depth_multiplier = math.ceil(self.depth / d_size)
-        height_multiplier = math.ceil(self.height / hw_size)
-        width_multiplier = math.ceil(self.width / hw_size)
-        self.total_multiplier = depth_multiplier * height_multiplier * width_multiplier
-        self.leave_out_list = []
-        self.meta_list = []
-        # Loop through each depth, height, and width index
-        for depth_idx in range(depth_multiplier):
-            for height_idx in range(height_multiplier):
-                for width_idx in range(width_multiplier):
-                    # Calculate the start and end indices for depth, height, and width
-                    if depth_multiplier > 1:
-                        depth_start = math.floor(
-                            (d_size - ((d_size * depth_multiplier - self.depth) / (depth_multiplier - 1))) * depth_idx)
-                    else:
-                        depth_start = 0
-                    depth_end = depth_start + hw_size
-                    if height_multiplier > 1:
-                        height_start = math.floor((hw_size - (
-                                    (hw_size * height_multiplier - self.height) / (height_multiplier - 1))) * height_idx)
-                    else:
-                        height_start = 0
-                    height_end = height_start + hw_size
-                    if width_multiplier > 1:
-                        width_start = math.floor(
-                            (hw_size - ((hw_size * width_multiplier - self.width) / (width_multiplier - 1))) * width_idx)
-                    else:
-                        width_start = 0
-                    width_end = width_start + hw_size
-                    cropped_img = self.leave_out_img[:, depth_start:depth_end, height_start:height_end,
-                                  width_start:width_end]
-                    cropped_lab = self.leave_out_label[:, depth_start:depth_end, height_start:height_end,
-                                  width_start:width_end]
-                    self.leave_out_list.append((cropped_img, cropped_lab))
-        self.meta_list.append((leave_out_img_name, self.leave_out_img.shape))
-        super().__init__()
-
-    def __len__(self):
-        if self.mode == 'Train':
-            return (self.num_files - 1) * self.train_multiplier
-        else:
-            return self.total_multiplier
-
-    def __getitem__(self, idx):
-        if self.mode == 'Train':
-            idx = math.floor(idx / self.train_multiplier)
-            img_tensor, lab_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :]
-            img_tensor, lab_tensor = apply_aug(img_tensor, lab_tensor, self.augmentation_params)
-            return img_tensor, lab_tensor
-        elif self.mode == 'Val':
-            img_tensor, lab_tensor = self.leave_out_list[idx][0], self.leave_out_list[idx][1]
-            return img_tensor, lab_tensor
-        else:
-            img_tensor = self.leave_out_list[idx][0][None, :]
-            return img_tensor
-
-    def __getmetainfo__(self):
-        return self.meta_list
-
-
 def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
     """
     Stitch the patches of output volumes and reconstruct the original image tensor(s).
@@ -978,12 +901,6 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
     del tensor_list_p
     stitched_volumes_c = stitch_output_volumes(tensor_list_c, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
     del tensor_list_c
-    #    for volume in stitched_volumes_p:
-    #        array = np.asarray(volume[0])
-    #        imageio.v3.imwrite(uri=f'{direc}/Pixels_{volume[1]}', image=np.uint8(array))
-    #    for volume in stitched_volumes_c:
-    #        array = np.asarray(volume[0])
-    #        imageio.v3.imwrite(uri=f'{direc}/Contour_{volume[1]}', image=np.float32(array))
     for semantic, contour in zip(stitched_volumes_p, stitched_volumes_c):
         imageio.v3.imwrite(uri=f'{direc}/Pixels_{semantic[1]}', image=np.float16(semantic[0].numpy()))
         imageio.v3.imwrite(uri=f'{direc}/Contour_{contour[1]}', image=np.float16(contour[0].numpy()))
@@ -991,55 +908,6 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         instance_array = instance_segmentation_simple(semantic[0], contour[0], mode=segmentation_mode, dynamic=dynamic, pixel_reclaim=pixel_reclaim)
         imageio.v3.imwrite(uri=f'{direc}/Instance_{contour[1]}', image=instance_array)
 
-
-#    for volume in instance_result:
-#        array = np.asarray(volume)
-#        imageio.v3.imwrite(uri=f'{direc}/Instance_1', image=np.uint8(array))
-
-
-'''
-def hovernet_map_transform(input_tensor):
-    # Identify unique objects in the tensor
-    unique_values = torch.unique(input_tensor)
-
-    # Create new tensors to store the result
-    result_tensor_h = torch.zeros_like(input_tensor, dtype=torch.float32)
-    result_tensor_v = torch.zeros_like(input_tensor, dtype=torch.float32)
-    result_tensor_d = torch.zeros_like(input_tensor, dtype=torch.float32)
-
-    for value in unique_values:
-        if value == 0:
-            continue  # Skip background
-
-        # Create a binary mask for the current object
-        object_mask = (input_tensor == value).float()
-
-        if (object_mask > 0).sum().item() <= 10:
-            continue  # Sanity Check
-
-        # Calculate center of mass
-        mass_center = torch.stack(torch.where(object_mask)).float().mean(dim=1)
-
-        # Calculate distances from the center of mass
-        horizontal_distance = torch.arange(object_mask.shape[2], dtype=torch.float32) - mass_center[2]
-        vertical_distance = torch.arange(object_mask.shape[1], dtype=torch.float32) - mass_center[1]
-        depth_distance = torch.arange(object_mask.shape[0], dtype=torch.float32) - mass_center[0]
-
-        h_patch = object_mask * horizontal_distance.unsqueeze(0).unsqueeze(0)
-        h_patch = h_patch / torch.max(torch.abs(h_patch)) if torch.max(torch.abs(h_patch)) > 0 else h_patch
-        v_patch = object_mask * vertical_distance.unsqueeze(1).unsqueeze(0)
-        v_patch = v_patch / torch.max(torch.abs(v_patch)) if torch.max(torch.abs(v_patch)) > 0 else v_patch
-        d_patch = object_mask * depth_distance.unsqueeze(1).unsqueeze(1)
-        d_patch = d_patch / torch.max(torch.abs(d_patch)) if torch.max(torch.abs(d_patch)) > 0 else d_patch
-
-        # Assign new values based on distances
-        result_tensor_h += h_patch
-        result_tensor_v += v_patch
-        result_tensor_d += d_patch
-
-    output = torch.stack((result_tensor_d, result_tensor_v, result_tensor_h), 0)
-    return output
-'''
 
 # Global variables to hold the shared memory objects in workers
 _segmentation_shm = None

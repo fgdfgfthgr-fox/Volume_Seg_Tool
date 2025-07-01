@@ -97,48 +97,6 @@ def compute_sdf(img_gt, out_shape):
 
     return gt_sdf
 
-class BDLoss(nn.Module):
-    def __init__(self, **_):
-        """
-        compute boundary loss
-        only compute the loss of foreground
-        ref: https://github.com/LIVIAETS/surface-loss/blob/108bd9892adca476e6cdf424124bc6268707498e/losses.py#L74
-        """
-        super(BDLoss, self).__init__()
-        # self.do_bg = do_bg
-
-    def forward(self, inputs, labels, **_):
-        """
-        net_output: (batch_size, class, x,y,z)
-        target: ground truth, shape: (batch_size, 1, x,y,z)
-        bound: precomputed distance map, shape (batch_size, class, x,y,z)
-        """
-        with torch.no_grad():
-            if len(inputs.shape) != len(labels.shape):
-                labels = labels.view((labels.shape[0], 1, *labels.shape[1:]))
-
-            if all([i == j for i, j in zip(inputs.shape, labels.shape)]):
-                # if this is the case then gt is probably already a one hot encoding
-                y_onehot = labels
-            else:
-                labels = labels.long()
-                y_onehot = torch.zeros(inputs.shape)
-                if inputs.device.type == "cuda":
-                    y_onehot = y_onehot.cuda(inputs.device.index)
-                y_onehot.scatter_(1, labels, 1)
-            gt_sdf = compute_sdf(y_onehot.cpu().numpy(), inputs.shape)
-
-        phi = torch.from_numpy(gt_sdf)
-        if phi.device != inputs.device:
-            phi = phi.to(inputs.device).type(torch.float32)
-        # pred = net_output[:, 1:, ...].type(torch.float32)
-        # phi = phi[:,1:, ...].type(torch.float32)
-
-        multipled = torch.einsum("bcxyz,bcxyz->bcxyz", inputs[:, 1:, ...], phi[:, 1:, ...])
-        bd_loss = multipled.mean()
-
-        return bd_loss
-
 
 class BinaryMetrics(nn.Module):
     def __init__(self, loss_mode: str, smooth=1024):
@@ -534,8 +492,3 @@ VInfo = maxScore;
 
     VInfo = ij.py.run_script(Language_extension, macroVInfo).getOutput('VInfo')
     return VInfo
-
-# test_ground = torch.as_tensor(imageio.v3.imread("/mnt/7018F20D48B6C548/PycharmProjects/Deeplearning/CV/train-labels.tif"))
-# test_predicted = torch.as_tensor(imageio.v3.imread("/mnt/7018F20D48B6C548/PycharmProjects/Deeplearning/CV/train-labels_distorted.tif"))
-# vrand = getvinfo('/home/fgdfgfthgr/Programmes/Fiji.app', test_ground, test_predicted)
-# print(vrand)

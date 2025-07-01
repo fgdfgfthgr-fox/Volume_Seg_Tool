@@ -1,10 +1,12 @@
+import math
 import torch
 import torch.nn as nn
 
 
 class ResBasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), num_conv=2, norm=True):
+    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), num_conv=2, norm=True, res_type='act_last'):
         super().__init__()
+        self.res_type = res_type
         padding = tuple((k - 1) // 2 for k in kernel_size)
         layers = []
         if in_channels == out_channels:
@@ -19,10 +21,10 @@ class ResBasicBlock(nn.Module):
             if i != num_conv - 1:
                 layers.append(nn.SiLU(inplace=True))
         self.operations = nn.Sequential(*layers)
-        self.silu = nn.SiLU(inplace=True)
+        self.act = nn.SiLU(inplace=True)
 
     def forward(self, x):
-        return self.silu(self.mapping(x) + self.operations(x))
+        return self.act(self.mapping(x) + self.operations(x))
 
 
 class ResBottleneckBlock(nn.Module):
@@ -47,10 +49,10 @@ class ResBottleneckBlock(nn.Module):
             self.bn = nn.InstanceNorm3d(middle_channel)
         else:
             self.bn = nn.Identity()
-        self.silu = nn.SiLU(inplace=True)
+        self.act = nn.SiLU(inplace=True)
 
     def forward(self, x):
-        b_x = self.silu(self.bn(self.conv_down(x)))
+        b_x = self.act(self.bn(self.conv_down(x)))
         b_x = self.convs(b_x)
         b_x = self.conv_up(b_x)
         return x + b_x
