@@ -2,7 +2,7 @@
 
 This repository holds the script for Volume Segmentation Tool and its Gradio-based Webui.
 
-Paper is under review, coming soon...
+Paper is available now: [A generalist deep-learning volume segmentation tool for volume electron microscopy of biological samples](https://www.sciencedirect.com/science/article/pii/S1047847725000498)
 
 Supporting Operating Systems includes: Windows and Linux.
 
