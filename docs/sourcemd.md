@@ -4,7 +4,7 @@ Paper is available at: [A generalist deep-learning volume segmentation tool for 
 
 Supporting Operating Systems includes: Windows and Linux.
 
-## Download Link (latest release: 0.9.0): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.9.0/VST.Release.v0.9.0.zip)
+## Download Link (latest release: 0.9.1): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.9.1/VST.Release.v0.9.1.zip)
 
 ## About the Tool
 
