@@ -67,8 +67,8 @@ class UNet(nn.Module):
                     setattr(self, f'decode{i}', BasicBlock(decode_multiplier_v, multiplier_h, kernel_sizes_conv, num_conv=num_conv, norm=False))
                     setattr(self, f'p_out{i}', nn.Conv3d(multiplier_h, 1, kernel_size=1))
                 else:
-                    setattr(self, f'encode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv, res_type=res_type))
-                    setattr(self, f'decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv, norm=False, res_type=res_type))
+                    setattr(self, f'encode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
+                    setattr(self, f'decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv, norm=False))
                     setattr(self, f'p_out{i}', nn.Conv3d(multiplier_h, 1, kernel_size=1))
                     if self.special_layers > 0:
                         depth_factor = max(1, 2**(i - self.special_layers))

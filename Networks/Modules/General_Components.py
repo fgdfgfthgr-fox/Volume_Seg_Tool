@@ -4,9 +4,8 @@ import torch.nn as nn
 
 
 class ResBasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), num_conv=2, norm=True, res_type='act_last'):
+    def __init__(self, in_channels, out_channels, kernel_size=(3,3,3), num_conv=2, norm=True):
         super().__init__()
-        self.res_type = res_type
         padding = tuple((k - 1) // 2 for k in kernel_size)
         layers = []
         if in_channels == out_channels:
