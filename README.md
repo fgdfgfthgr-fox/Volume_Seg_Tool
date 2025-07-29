@@ -4,6 +4,8 @@ This repository holds the script for Volume Segmentation Tool and its Gradio-bas
 
 Paper is available now: [A generalist deep-learning volume segmentation tool for volume electron microscopy of biological samples](https://www.sciencedirect.com/science/article/pii/S1047847725000498)
 
+VST is also available with [SBGrid](https://sbgrid.org/software/titles/vst)!
+
 Supporting Operating Systems includes: Windows and Linux.
 
 (macOS is supported in theory, however some necessary PyTorch operations needed is not yet supported on MPS backend. Nothing I can do here)
