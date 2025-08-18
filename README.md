@@ -8,7 +8,7 @@ VST is also available with [SBGrid](https://sbgrid.org/software/titles/vst)!
 
 Supporting Operating Systems includes: Windows and Linux.
 
-(macOS is supported in theory, however some necessary PyTorch operations needed is not yet supported on MPS backend. Nothing I can do here)
+(macOS is supported in theory, however some necessary PyTorch operations needed is not yet supported on MPS backend. Nothing I can do here.)
 
 ## About the Tool
 
@@ -34,6 +34,7 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/) or [nnUNet](ht
   - Isotropic & anisotropic images
   - Adaptive network type, size and depth
   - Support AMD GPU (only under Linux)
+  - Support large dataset - even larger than your system memory
 - Easy to use
   - One click installation script
   - Graphical User Interface

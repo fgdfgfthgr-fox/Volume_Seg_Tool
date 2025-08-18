@@ -6,7 +6,7 @@ VST is also available with [SBGrid](https://sbgrid.org/software/titles/vst)!
 
 Supporting Operating Systems includes: Windows and Linux.
 
-## Download Link (latest release: 0.9.1): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.9.1/VST.Release.v0.9.1.zip)
+## Download Link (latest release: 0.9.2): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.9.2/VST.Release.v0.9.2.zip)
 
 ## About the Tool
 
@@ -31,6 +31,7 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/) or [nnUNet](ht
   - Isotropic & anisotropic images
   - Adaptive network type, size and depth
   - Support AMD GPU (only under Linux)
+  - Support large dataset - even larger than your system memory
 - Easy to use
   - One click installation script
   - Graphical User Interface
