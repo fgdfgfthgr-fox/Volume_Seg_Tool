@@ -8,8 +8,6 @@ import gradio as gr
 import tkinter as tk
 import matplotlib.pyplot as plt
 import numpy as np
-from skimage.draw import ellipsoid_stats
-from torch.distributed.algorithms.ddp_comm_hooks.powerSGD_hook import batched_powerSGD_hook
 
 from Components import DataComponents
 from Components import Metrics
@@ -17,7 +15,7 @@ from tkinter import filedialog
 from Networks import *
 from Visualise_Network import V_N_PLModule
 from read_tensorboard import read_all_tensorboard_event_files, write_to_excel
-from torchvision.datasets.folder import has_file_allowed_extension, IMG_EXTENSIONS
+from torchvision.datasets.folder import has_file_allowed_extension
 from command_executor import CommandExecutor
 
 document_symbol = '\U0001F4C4'
@@ -49,7 +47,7 @@ def count_num_image_files(dataset_path, exclude_labels=True):
     count = 0
     files = os.listdir(dataset_path)
     for fname in sorted(files):
-        if has_file_allowed_extension(fname, IMG_EXTENSIONS):
+        if has_file_allowed_extension(fname, (".tif", ".tiff", ".mrc", ".h5", ".hdf5")):
             count += 1
             if exclude_labels and "Labels_" in fname:
                 count -= 1
@@ -107,7 +105,7 @@ def start_work_flow(inputs):
            f"--model_architecture {inputs[model_architecture]} --model_channel_count {inputs[model_channel_count]} "
            f"--model_depth {inputs[model_depth]} --z_to_xy_ratio {inputs[z_to_xy_ratio]} "
            f"--train_dataset_mode {train_dataset_mode_n} "
-           f"--exclude_edge_size_in {inputs[exclude_edge_size_in]} --exclude_edge_size_out {inputs[exclude_edge_size_out]} "
+           #f"--exclude_edge_size_in {inputs[exclude_edge_size_in]} --exclude_edge_size_out {inputs[exclude_edge_size_out]} "
            f"--contour_map_width {inputs[contour_map_width]} "
            f"--val_dataset_mode {val_dataset_mode_n} --test_dataset_mode {test_dataset_mode_n} ")
     if inputs[pairing_samples]:
@@ -120,12 +118,18 @@ def start_work_flow(inputs):
         cmd += "--memory_saving_mode "
     if inputs[read_existing_model]:
         cmd += "--read_existing_model "
-    if inputs[exclude_edge]:
-        cmd += "--exclude_edge "
+    '''if inputs[exclude_edge]:
+        cmd += "--exclude_edge "'''
     if inputs[enable_mid_visualization]:
         cmd += "--enable_mid_visualization "
-    '''if inputs[TTA_xy]:
-        cmd += "--TTA_xy "'''
+    if inputs[train_offload]:
+        cmd += "--train_offload "
+    if inputs[val_offload]:
+        cmd += "--val_offload "
+    if inputs[test_offload]:
+        cmd += "--test_offload "
+    if inputs[predict_offload]:
+        cmd += "--predict_offload "
     if inputs[model_se]:
         cmd += "--model_se "
     if inputs[find_max_channel_count]:
@@ -220,7 +224,7 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show)
 
 def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_csv,
                             slice_to_show=1, num_copies=6, pairing_samples=False,
-                            segmentation_mode='Semantic', exclude_edge=False, exclude_edge_size_in=0, exclude_edge_size_out=0,
+                            segmentation_mode='Semantic',
                             contour_map_width=1, train_key_name='Default'):
     if segmentation_mode == 'Semantic':
         instance_mode = False
@@ -229,8 +233,7 @@ def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_cs
         instance_mode = True
         img_each_col = 3
     dataset = DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size,
-                                          instance_mode, exclude_edge, exclude_edge_size_in, exclude_edge_size_out,
-                                          contour_map_width, train_key_name)
+                                          instance_mode, contour_map_width, train_key_name)
     if pairing_samples:
         types = [' - positive', ' - negative']
     else:
@@ -247,7 +250,7 @@ def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_cs
         for i in range(0, num_data):
             # 900 x 450
             plt.figure(figsize=(9, 4.5))
-            image_name = dataset.file_list[i][0]
+            image_name = str(dataset.file_list[i][0])
             plt.suptitle(f'{image_name + type}')
             rows = math.floor(math.sqrt(num_copies * img_each_col))
             cols = math.ceil(num_copies / rows)
@@ -292,46 +295,15 @@ def tensorboard_to_excel(log_path, save_log_name, save_log_path):
     print(f"Data from all TensorBoard event files in {log_path} has been merged and written to {save_log_name}.")
 
 
-available_architectures_semantic = [#'HalfUNetBasic',
-                                    #'HalfUNetGhost',
-                                    #'HalfUNetResidual',
-                                    #'HalfUNetResidualBottleneck',
-                                    'UNetResidual_Recommended',
-                                    'UNetBasic',
-                                    'UNetResidualBottleneck',
-                                    #'SegNet',
-                                    #'Tiniest'
-                                    #'SingleTopLayer'
-                                    ]
-available_architectures_instance = ['InstanceResidual_Recommended',
-                                    'InstanceBasic',
-                                    'InstanceResidualBottleneck',]
+available_architectures = ['UNetResidual_Recommended',
+                           'UNetBasic']
 
 
 def update_available_arch(radio_value):
-    if radio_value == 'Semantic':
-        return gr.Dropdown(available_architectures_semantic, label="Model Architecture", value="UNetResidual_Recommended")
-    else:
-        return gr.Dropdown(available_architectures_instance, label="Model Architecture", value="InstanceResidual_Recommended")
-
-
-def pick_arch(arch, base_channels, depth, z_to_xy_ratio, se, unsupervised):
-    model_classes = {
-        "HalfUNetBasic": (Semantic_HalfUNets.HalfUNet, 'Basic'),
-        "HalfUNetGhost": (Semantic_HalfUNets.HalfUNet, 'Ghost'),
-        "HalfUNetResidual": (Semantic_HalfUNets.HalfUNet, 'Residual'),
-        "HalfUNetResidualBottleneck": (Semantic_HalfUNets.HalfUNet, 'ResidualBottleneck'),
-        "UNetBasic": (Semantic_General.UNet, 'Basic'),
-        "UNetResidual_Recommended": (Semantic_General.UNet, 'Residual'),
-        "UNetResidualBottleneck": (Semantic_General.UNet, 'ResidualBottleneck'),
-        "SegNet": (Semantic_SegNets.Auto, 'Auto'),
-        "InstanceBasic": (Instance_General.UNet, 'Basic'),
-        "InstanceResidual_Recommended": (Instance_General.UNet, 'Residual'),
-        "InstanceResidualBottleneck": (Instance_General.UNet, 'ResidualBottleneck')
-    }
-
-    model_class, model_type = model_classes[arch]
-    return model_class(base_channels, depth, z_to_xy_ratio, model_type, se, unsupervised)
+    #if radio_value == 'Semantic':
+        #return gr.Dropdown(available_architectures_semantic, label="Model Architecture", value="UNetResidual_Recommended")
+    #else:
+    return gr.Dropdown(available_architectures, label="Model Architecture", value="UNetResidual_Recommended")
 
 
 def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_threshold):
@@ -376,13 +348,13 @@ if __name__ == "__main__":
                 gr.Markdown("Necessary questions regarding the dataset in order to compute some hyperparameters.")
                 gr.Markdown("Should always be filled.")
                 with gr.Row():
-                    question1 = gr.Number(32,
-                                          label="Size to spot feature",
-                                          info="Given a square shaped 2d patch randomly taken from your dataset,"
-                                                " what's the minimum side length (in pixels) you would need to tell"
-                                                " and segment the cellular structure of interest from the patch? "
-                                                "\nIs used to compute the network's patch size, aka field of view.",
-                                          precision=0)
+                    size_to_spot = gr.Number(32,
+                                             label="Size to spot feature",
+                                             info="Given a square shaped 2d patch randomly taken from your dataset,"
+                                               " what's the minimum side length (in pixels) you (as a human) would need to tell"
+                                               " and segment the cellular structure of interest from the patch? "
+                                               "\nIs used to compute the network's patch size, aka field of view.",
+                                             precision=0)
                     z_to_xy_ratio = gr.Number(1.0, label="Z-resolution to XY-resolution ratio",
                                               info="The ratio of the z-resolution of the images in the dataset to their xy-resolution. "
                                                    "We assume xy has the same resolution.")
@@ -422,8 +394,8 @@ if __name__ == "__main__":
                         d_precision = round(2 ** (model_depth - 1 - dk))
                         d_size = d_precision * max(round((hw_estimate / z_to_xy_ratio) / d_precision), 1)
                         return hw_size, model_depth, d_size, dk
-                    question1.change(calculate_dhw_size, inputs=[question1, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
-                    z_to_xy_ratio.change(calculate_dhw_size, inputs=[question1, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
+                    size_to_spot.change(calculate_dhw_size, inputs=[size_to_spot, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
+                    z_to_xy_ratio.change(calculate_dhw_size, inputs=[size_to_spot, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
                 with gr.Row():
                     enable_unsupervised = gr.Checkbox(scale=0, label="Enable Unsupervised Learning",
                                                       info="Allow using unlabelled data to enhance performance.")
@@ -451,26 +423,34 @@ if __name__ == "__main__":
             with gr.Tab("Validation Settings"):
                 with gr.Row():
                     val_key_name = gr.Textbox('Default', label="hdf5 dataset name",
-                                              info='If you are using hdf5 type image (instead of tif), you need to provide its '
-                                                   'dataset name.')
+                                              info='If you are using hdf5 type image, you need to provide its '
+                                                   'data set name so VST could extract the correct data from it.')
+                with gr.Row():
+                    val_offload = gr.Checkbox(label="Offload validation dataset to disk",
+                                              info="Instead of having all the validation data in memory, offload them to"
+                                                   " your disk and load only the parts in need. Can reduce memory use."
+                                                   " At the expense of your disk space and potentially slower training."
+                                                   "\nAllows datasets that are larger than your memory. Each individual"
+                                                   " file still needs to be smaller, though.")
                 with gr.Row():
                     val_dataset_path = gr.Textbox('Datasets/val', scale=2, label="Validation Dataset Path")
                     folder_button = gr.Button(document_symbol, scale=0)
                     folder_button.click(open_folder, outputs=val_dataset_path)
 
                     def calculate_val_num_patch(val_dataset_path, hw_size, d_size):
+                        print('Calculating the number of patches for validation set!')
                         file_list = DataComponents.make_dataset_tv(val_dataset_path)
                         counter = 0
                         for file in file_list:
-                            file = file[0]
-                            depth, height, width = imageio.v3.imread(file).shape
+                            file = DataComponents.multiple_loader(file[0], val_key_name)
+                            depth, height, width = file.shape
                             depth_multiplier = max(math.ceil(depth / d_size), 1)
                             height_multiplier = max(math.ceil(height / hw_size), 1)
                             width_multiplier = max(math.ceil(width / hw_size), 1)
                             total = depth_multiplier * height_multiplier * width_multiplier
                             counter += total
                         return counter
-                    val_num_patch = gr.Number(1,
+                    val_num_patch = gr.Number(None,
                                               label="Number of patches in validation set, automatically computed",
                                               precision=0, minimum=0, interactive=False)
                 val_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
@@ -478,8 +458,15 @@ if __name__ == "__main__":
             with gr.Tab("Training Settings"):
                 with gr.Row():
                     train_key_name = gr.Textbox('Default', label="hdf5 dataset name",
-                                                info='If you are using hdf5 type image (instead of tif), you need to provide its '
+                                                info='If you are using hdf5 type image, you need to provide its '
                                                      'dataset name.')
+                with gr.Row():
+                    train_offload = gr.Checkbox(label="Offload training dataset to disk",
+                                                info="Instead of having all the training data (including unsupervised) in memory,"
+                                                     " offload them to your disk and load only the parts in need. Can reduce memory use."
+                                                     " At the expense of your disk space and potentially slower training."
+                                                     "\nAllows datasets that are larger than your memory. Each individual"
+                                                     " file still needs to be smaller, though.")
                 with gr.Row():
                     train_dataset_path = gr.Textbox('Datasets/train', scale=2, label="Train Dataset Path")
                     folder_button = gr.Button(document_symbol, scale=0)
@@ -488,7 +475,9 @@ if __name__ == "__main__":
                     batch_size = gr.Number(1, label="Batch Size", precision=0, minimum=1, interactive=False,
                                            info="Number of training patch to feed into the network at once.")
                     pairing_samples = gr.Checkbox(label="Pairing positive and negative samples",
-                                                  info="Tick this if your training data contain large area without any foreground object.")
+                                                  info="Tick this if your training data contain large area without any foreground object,"
+                                                       "or large area without any background object."
+                                                       "\nIf in doubt, tick it.")
                     def change_batch_size(choice):
                         if choice: bs = 2
                         else: bs = 1
@@ -501,7 +490,7 @@ if __name__ == "__main__":
                 with gr.Accordion("When do you need to pair positive and negative sample", open=False):
                     with gr.Row():
                         gr.Image("GitHub_Res/require bs 2.png", image_mode="L", show_download_button=False,
-                                 interactive=False, label="Require the box to be ticked due to large area of empty space outside cell")
+                                 interactive=False, label="Require the box to be ticked due to large area of empty space outside the cell")
                         gr.Image("GitHub_Res/do not require bs 2.png", image_mode="L", show_download_button=False,
                                  interactive=False, label="Does not Require the box to be ticked")
                 with gr.Row():
@@ -531,79 +520,53 @@ if __name__ == "__main__":
 
                 with gr.Row():
                     enable_tensorboard = gr.Checkbox(True, scale=0, label="Enable TensorBoard Logging", visible=False)
-                    tensorboard_path = gr.Textbox('lightning_logs', scale=2, label="Path to the folder which the log will be save to")
+                    tensorboard_path = gr.Textbox('lightning_logs', scale=2, label="Path to the folder which the training log will be save to")
                     folder_button = gr.Button(document_symbol, scale=0)
                     folder_button.click(open_folder, outputs=tensorboard_path)
                 train_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
                                               label="Dataset Mode")
                 with gr.Row():
-                    exclude_edge = gr.Checkbox(scale=0, label="Mark pixels at object borders as unlabelled", visible=True)
-                    exclude_edge_size_in = gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=True, minimum=0)
-                    exclude_edge_size_out = gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=True, minimum=0)
-                with gr.Row():
                     contour_map_width = gr.Number(1, label="Width of contour (outward)", precision=0, visible=False, minimum=1)
 
-                def change_edge_exclude(mode_box, train_dataset_mode):
-                    show = (gr.Checkbox(scale=0,
-                                        label="Mark pixels at object borders as unlabelled",
-                                        visible=True),
-                            gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=True,
-                                      minimum=0),
-                            gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=True,
-                                      minimum=0))
-                    no_show = (gr.Checkbox(scale=0,
-                                           label="Mark pixels at object borders as unlabelled",
-                                           visible=False),
-                               gr.Number(1, label="Pixels to exclude (inward)", precision=0, visible=False,
-                                         minimum=0),
-                               gr.Number(1, label="Pixels to exclude (outward)", precision=0, visible=False,
-                                         minimum=0))
-                    if mode_box == "Semantic":
-                        if train_dataset_mode == "Fully Labelled":
-                            return show
-                        else:
-                            return no_show
-                    else:
-                        return no_show
-                segmentation_mode.change(fn=change_edge_exclude, inputs=[segmentation_mode, train_dataset_mode],
-                                         outputs=[exclude_edge, exclude_edge_size_in, exclude_edge_size_out])
-                train_dataset_mode.change(fn=change_edge_exclude, inputs=[segmentation_mode, train_dataset_mode],
-                                          outputs=[exclude_edge, exclude_edge_size_in, exclude_edge_size_out])
 
                 def change_contour_map_width_value(choice):
-                    if choice == "Instance":
-                        return gr.Number(1, label="Width of contour (outward)", precision=0, visible=True,
-                                         minimum=1)
-                    else:
-                        return gr.Number(1, label="Width of contour (outward)", precision=0, visible=False,
-                                         minimum=1)
+                    visible = True if choice == "Instance" else False
+                    return gr.Number(1, label="Width of contour (outward)", precision=0, visible=visible, minimum=1)
                 segmentation_mode.change(fn=change_contour_map_width_value, inputs=segmentation_mode, outputs=contour_map_width)
                 with gr.Row():
                     augmentation_csv_path = gr.Textbox('Augmentation Parameters Anisotropic.csv', scale=2,
-                                                       label="Csv File for Data Augmentation Settings")
+                                                       label="Csv File for Data Augmentation Settings."
+                                                             " You should change it to the isotropic version if your data have isotropic resolution.")
                     file_button = gr.Button(document_symbol, scale=0)
                     file_button.click(open_file, outputs=augmentation_csv_path)
                 with gr.Row():
                     outputs = gr.Gallery(label="Output Images", format="png", preview=True, selected_index=0)
                     slice_to_show = gr.Number(0, visible=False)
                     number_copies = gr.Number(6, visible=False)
-                    start_button = gr.Button("Show some example patches from your training dataset, "
-                                             "under the current patch size and augmentation settings", scale=0)
+                    start_button = gr.Button("Show some example patches from your training dataset,"
+                                             " under the current patch size and augmentation settings."
+                                             "\nWarning: This is fairly slow, so please be patient."
+                                             " And do not click it if your training dataset is larger than your RAM", scale=0)
                     start_button.click(visualise_augmentations,
                                        inputs=[train_dataset_path, hw_size, d_size, augmentation_csv_path, slice_to_show,
                                                number_copies, pairing_samples, segmentation_mode,
-                                               exclude_edge, exclude_edge_size_in, exclude_edge_size_out,
                                                contour_map_width, train_key_name],
                                        outputs=outputs)
             with gr.Tab("Test Settings"):
                 gr.Markdown("Due to the limitation of the built-in test function. The dice score obtained via the "
                             "test workflow may not represent the actual overall dice score.")
                 gr.Markdown("If you want to obtain the actual dice score, it's recommended to process the image via "
-                            "the Predict workflow. Then use the 'Extras' tab above to extract the overall dice score.")
+                            "the Predict workflow first. Then use the 'Extras' tab above to extract the overall dice score.")
                 with gr.Row():
                     test_key_name = gr.Textbox('Default', label="hdf5 dataset name",
-                                               info='If you are using hdf5 type image (instead of tif), you need to provide its '
-                                                    'dataset name.')
+                                               info='If you are using hdf5 type image, you need to provide its dataset name.')
+                with gr.Row():
+                    test_offload = gr.Checkbox(label="Offload test dataset to disk",
+                                              info="Instead of having all the test data in memory, offload them to"
+                                                   " your disk and load only the parts in need. Can reduce memory use."
+                                                   " At the expense of your disk space and slower starting up time."
+                                                   "\nAllows datasets that are larger than your memory. Each individual"
+                                                   " file still needs to be smaller, though.")
                 with gr.Row():
                     test_dataset_path = gr.Textbox('Datasets/test', scale=2, label="Test Dataset Path")
                     folder_button = gr.Button(document_symbol, scale=0)
@@ -613,8 +576,15 @@ if __name__ == "__main__":
             with gr.Tab("Predict Settings"):
                 with gr.Row():
                     predict_key_name = gr.Textbox('Default', label="hdf5 dataset name",
-                                                  info='If you are using hdf5 type image (instead of tif), you need to provide its '
+                                                  info='If you are using hdf5 type image, you need to provide its '
                                                        'dataset name.')
+                with gr.Row():
+                    predict_offload = gr.Checkbox(label="Offload predict dataset to disk",
+                                                  info="Instead of having all the predict data in memory, offload them to"
+                                                       " your disk and load only the parts in need. Can reduce memory use."
+                                                       " At the expense of your disk space and potentially slower predicting."
+                                                       "\nAllows datasets that are larger than your memory. Each individual"
+                                                       " file still needs to be smaller, though.")
                 with gr.Row():
                     predict_dataset_path = gr.Textbox('Datasets/predict', scale=2, label="Predict Dataset Path")
                     folder_button = gr.Button(document_symbol, scale=0)
@@ -668,17 +638,14 @@ if __name__ == "__main__":
                     folder_button = gr.Button(document_symbol, scale=0)
                     folder_button.click(open_folder, outputs=result_folder_path)
                 with gr.Row():
-                    '''TTA_xy = gr.Checkbox(label="Enable Test-Time Augmentation for xy dimension",
-                                         info="Horizontal And Vertical flip the image; the augmented images are then passed into the model."
-                                              " Corresponding reverse transformation then applys to the output probability maps, and those maps get combined together."
-                                              " Can improve segmentation accuracy, but will take longer and consume more CPU memory.")'''
                     instance_seg_mode = gr.Checkbox(label="Use distance transform watershed for instance segmentation",
                                                     info="Use a slower and more memory intensive watershed method for separate touching objects, "
                                                          "instead of simple connected component labelling. "
                                                          "Will yield result with much less under-segment objects.")
-                    watershed_dynamic = gr.Number(10, label="Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges.")
+                    watershed_dynamic = gr.Number(10, label="Dynamic of intensity for the search of regional minima in the distance transform image."
+                                                            " Increasing its value will yield more object merges.")
                     pixel_reclaim = gr.Checkbox(label="Enable Pixel reclaim operation for instance segmentation",
-                                                info="Due to how instance segmentation works, some pixels will be lost when seperating touching objects, "
+                                                info="Due to how instance segmentation works, some pixels will be lost when separating touching objects, "
                                                      "this settings will try to reclaim some of those lost pixels, but can take quite some time.")
                     #TTA_z = gr.Checkbox(label="Enable Test-Time Augmentation for z dimension", info="Depth Wise flip the image")
             with gr.Row():
@@ -717,10 +684,10 @@ if __name__ == "__main__":
                 memory_saving_mode = gr.Checkbox(label="Memory Saving Mode",
                                                  info="If you are experiencing running out of system memory (Not CUDA memory!) during training, "
                                                       "This option could help by using only 1 thread to do data loading. "
-                                                      "Can significantly slow down training if your system have low single core performance.")
+                                                      "Can significantly slow down the training if your system have low single core performance.")
             with gr.Row():
                 precision = gr.Dropdown(["32", "16-mixed", "bf16-mixed"], value="32", label="Precision",
-                                        info="fp16 precision could significantly cut the VRAM usage. However if you are not using an Nvidia GPU, it could signficantly slow down the training as well."
+                                        info="fp16 or bf16 precision could significantly cut the VRAM usage."
                                              "bf16 is recommended over fp16 if you are using a newer GPU.")
                 auto_precision_button = gr.Button("Find suitable precision based on your GPU")
                 def auto_precision():
@@ -766,8 +733,7 @@ if __name__ == "__main__":
                         return '32'
                 auto_precision_button.click(auto_precision, outputs=precision)
             with gr.Row():
-                model_architecture = gr.Dropdown(available_architectures_semantic, label="Model Architecture")
-                segmentation_mode.change(update_available_arch, inputs=segmentation_mode, outputs=model_architecture)
+                model_architecture = gr.Dropdown(available_architectures, label="Model Architecture")
                 model_channel_count = gr.Number(8, label="Base Channel Count", precision=0, minimum=4,
                                                 info="Often means the number of output channels in the first encoder block. Determines the size of the network. Preferably a multiple of 8.")
                 find = gr.Markdown("Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.")
@@ -793,16 +759,9 @@ if __name__ == "__main__":
                 find_max_channel_count.click(calculate_channel_count, inputs=[hw_size, d_size, batch_size, precision, dk], outputs=model_channel_count)
                 model_se = gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
                                        info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.", visible=False)
-                def show_hide_model_tab(read_existing_model, segmentation_mode):
-                    if read_existing_model:
-                        visible = False
-                    else:
-                        visible = True
-                    if segmentation_mode == 'Instance':
-                        archs = available_architectures_instance
-                    else:
-                        archs = available_architectures_semantic
-                    options = (gr.Dropdown(archs, label="Model Architecture", visible=visible),
+                def show_hide_model_tab(read_existing_model):
+                    visible = False if read_existing_model else True
+                    options = (gr.Dropdown(available_architectures, label="Model Architecture", visible=visible),
                                gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
                                info="Often means the number of output channels in the first encoder block. Determines the size of the network.", visible=visible),
                                gr.Markdown(
@@ -810,10 +769,11 @@ if __name__ == "__main__":
                                gr.Button("Automatically find the largest channel count", visible=visible))
                     return options
 
-                read_existing_model.change(show_hide_model_tab, inputs=[read_existing_model, segmentation_mode], outputs=[model_architecture, model_channel_count, find, find_max_channel_count])
-            with gr.Accordion("Visualising training progress on the fly"):
+                read_existing_model.change(show_hide_model_tab, inputs=[read_existing_model], outputs=[model_architecture, model_channel_count, find, find_max_channel_count])
+            with gr.Accordion("Visualising example network output on the fly"):
                 gr.Markdown("Note: Gradio doesn't support direct display of 3D image. The result are displayed in the tensorboard.")
                 gr.Markdown("Could slow down training process, especially if the image is big.")
+                gr.Markdown("Highly recommend cropping this image into the same size as the patches that feeds into the network.")
                 enable_mid_visualization = gr.Checkbox(label="Enable Visualisation", container=False)
                 with gr.Row():
                     mid_visualization_input = gr.Textbox('Datasets/mid_visualiser/image.tif', scale=1, label="Path to the input image")
@@ -833,9 +793,6 @@ if __name__ == "__main__":
                 train_multiplier,
                 batch_size,
                 pairing_samples,
-                #initial_lr,
-                #patience,
-                #min_lr,
                 num_epochs,
                 enable_unsupervised,
                 unsupervised_train_dataset_path,
@@ -854,6 +811,10 @@ if __name__ == "__main__":
                 val_key_name,
                 test_key_name,
                 predict_key_name,
+                train_offload,
+                val_offload,
+                test_offload,
+                predict_offload,
                 hw_size,
                 d_size,
                 predict_hw_size,
@@ -871,17 +832,12 @@ if __name__ == "__main__":
                 z_to_xy_ratio,
                 model_se,
                 train_dataset_mode,
-                exclude_edge,
-                exclude_edge_size_in,
-                exclude_edge_size_out,
                 contour_map_width,
                 val_dataset_mode,
                 test_dataset_mode,
-#                TTA_xy,
                 instance_seg_mode,
                 watershed_dynamic,
                 pixel_reclaim,
-#                TTA_z,
                 }
             with gr.Row():
                 start_button = gr.Button("Start!", elem_id="start_button")

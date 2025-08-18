@@ -190,7 +190,8 @@ def rotate_4d_tensor(tensor, planes=['xy', 'xz', 'yz'], angles=[0., 0., 0.],
 def custom_rand_crop_rotate(tensors, depth, height, width,
                             angle_range=((0, 360), (0, 360), (0, 360)),
                             planes=['xy'], interpolations=('bilinear', 'nearest'),  # fill_values=(0, 0),
-                            ensure_bothground=True, max_attempts=50, minimal_foreground=0.01, minimal_background=0.02):
+                            ensure_bothground=True, max_attempts=50, minimal_foreground=0.01, minimal_background=0.02,
+                            zarr=False, img_mean=0, img_std=1):
     """
     Randomly crop then rotate a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least some foreground object.\n
     Whether it contains foreground object is determined by the second tensor in the list,
@@ -209,6 +210,7 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         max_attempts (int): Maximum number of attempts to find a crop with at least 1% foreground object (default: 50).
         minimal_foreground (float): Proportion of desired minimal foreground pixels (default: 0.01).
         minimal_background (float): Proportion of desired minimal background pixels (default: 0.02).
+        zarr (bool): Needs to be set to true if the input are not torch tensor but zarr arrays. (default: False)
 
     Returns:
         List of cropped tensors or just the cropped tensor itself.
@@ -250,15 +252,19 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
 
     def cropping(tensors):
         # Randomly select crop starting locations within the valid range
-        d_offset = random.randint(0, tensors[0].shape[1] - depth)
-        h_offset = random.randint(0, tensors[0].shape[2] - height)
-        w_offset = random.randint(0, tensors[0].shape[3] - width)
+        d_offset = random.randint(0, d - depth)
+        h_offset = random.randint(0, h - height)
+        w_offset = random.randint(0, w - width)
         cropped_tensors = []
         for tensor in tensors:
             cropped_tensor = tensor[:, d_offset:d_offset + depth,
-                                                    h_offset:h_offset + height,
-                                                    w_offset:w_offset + width].to(torch.float32, copy=False)
-            cropped_tensors.append(cropped_tensor)
+                                       h_offset:h_offset + height,
+                                       w_offset:w_offset + width]
+            if zarr:
+                cropped_tensor = torch.from_numpy(cropped_tensor)
+            cropped_tensors.append(cropped_tensor.to(torch.float32, copy=False))
+        if zarr:
+            cropped_tensors[0] = (cropped_tensors[0] - img_mean) / img_std
         return cropped_tensors
 
     if ensure_bothground:

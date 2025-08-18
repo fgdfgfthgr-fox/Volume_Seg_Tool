@@ -16,24 +16,11 @@ from Components import DataComponents
 from Networks import *
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
-from lightning.pytorch.callbacks import LearningRateFinder
 from lightning.pytorch.callbacks import StochasticWeightAveraging
 from lightning.pytorch.tuner import Tuner
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-class FineTuneLearningRateFinder(LearningRateFinder):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def on_fit_start(self, *args, **kwargs):
-        return
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        if trainer.current_epoch == 0:
-            self.lr_find(trainer, pl_module)
 
 
 def create_logger(args):
@@ -59,13 +46,29 @@ def start_work_flow(args):
         print('Optimising computing using TunableOp! (AMD GPU only).')
         torch.cuda.tunable.enable()
         torch.cuda.tunable.set_filename('TunableOp_results')
+    if args.train_offload:
+        TD = DataComponents.TrainDatasetChunked
+        UTD = DataComponents.UnsupervisedDatasetChunked
+    else:
+        TD = DataComponents.TrainDataset
+        UTD = DataComponents.UnsupervisedDataset
+    if args.val_offload:
+        VD = DataComponents.ValDatasetChunked
+    else:
+        VD = DataComponents.ValDataset
+    if args.test_offload:
+        TeD = DataComponents.ValDatasetChunked
+    else:
+        TeD = DataComponents.ValDataset
+    if args.predict_offload:
+        PD = DataComponents.PredictDatasetChunked
+    else:
+        PD = DataComponents.PredictDataset
+
     if 'Semantic' in args.segmentation_mode:
         instance_mode = False
     else:
         instance_mode = True
-    # Placeholder means
-    label_mean = torch.tensor(0.5)
-    contour_mean = torch.tensor(0.5)
     if not args.memory_saving_mode:
         desired_num_workers = min(max((os.cpu_count()//2)-1, 1), 32)
         persistent_workers = True
@@ -73,17 +76,14 @@ def start_work_flow(args):
         desired_num_workers = 0
         persistent_workers = False
     if 'Training' in args.workflow_box:
-        train_dataset = DataComponents.TrainDataset(args.train_dataset_path, args.augmentation_csv_path,
-                                                    args.train_multiplier,
-                                                    args.hw_size, args.d_size, instance_mode,
-                                                    args.exclude_edge, args.exclude_edge_size_in, args.exclude_edge_size_out,
-                                                    args.contour_map_width, args.train_key_name)
-        label_mean = train_dataset.get_label_mean()
-        if instance_mode: contour_mean = train_dataset.get_contour_mean()
+        train_dataset = TD(args.train_dataset_path, args.augmentation_csv_path,
+                           args.train_multiplier,
+                           args.hw_size, args.d_size, instance_mode,
+                           args.contour_map_width, args.train_key_name)
         if args.enable_unsupervised:
-            unsupervised_train_dataset = DataComponents.UnsupervisedDataset(args.unsupervised_train_dataset_path,
-                                                                            args.augmentation_csv_path, args.unsupervised_train_multiplier,
-                                                                            args.hw_size, args.d_size, args.train_key_name)
+            unsupervised_train_dataset = UTD(args.unsupervised_train_dataset_path,
+                                             args.augmentation_csv_path, args.unsupervised_train_multiplier,
+                                             args.hw_size, args.d_size, args.train_key_name)
         else:
             unsupervised_train_dataset = None
         train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
@@ -94,8 +94,8 @@ def start_work_flow(args):
                                   num_workers=desired_num_workers, persistent_workers=persistent_workers)
         del train_dataset
         if 'Validation' in args.workflow_box:
-            val_dataset = DataComponents.ValDataset(args.val_dataset_path, args.hw_size, args.d_size, instance_mode,
-                                                    args.augmentation_csv_path, args.contour_map_width, args.val_key_name)
+            val_dataset = VD(args.val_dataset_path, args.hw_size, args.d_size, instance_mode,
+                             args.contour_map_width, args.val_key_name)
             val_loader = DataLoader(dataset=val_dataset, batch_size=1,
                                     #num_workers=12, persistent_workers=True, pin_memory=True)
                                     num_workers=0, pin_memory=True)
@@ -103,57 +103,14 @@ def start_work_flow(args):
         else:
             val_loader = None
         if 'Test' in args.workflow_box:
-            test_dataset = DataComponents.ValDataset(args.test_dataset_path, args.hw_size, args.d_size, instance_mode,
-                                                     args.augmentation_csv_path, args.contour_map_width, args.test_key_name)
+            test_dataset = TeD(args.test_dataset_path, args.hw_size, args.d_size, instance_mode,
+                               args.contour_map_width, args.test_key_name)
             test_loader = DataLoader(dataset=test_dataset, batch_size=args.batch_size)
             del test_dataset
-    '''if args.find_max_channel_count:
-        print('Start searching for the maximum channel count...')
-        def check_fit_in_memory(channel_count):
-            try:
-                arch = pick_arch(args.model_architecture, channel_count, args.model_depth, args.z_to_xy_ratio,
-                                 args.model_se, args.enable_unsupervised, label_mean, contour_mean)
-                model = PLModule(arch, False, False, None, instance_mode,
-                                             False, False, False, False)
-                fake_trainer = pl.Trainer(max_epochs=5, accelerator="gpu", enable_checkpointing=False, precision=args.precision, logger=None,
-                                          enable_progress_bar=False, num_sanity_val_steps=1, enable_model_summary=False, limit_train_batches=5)
-                fake_trainer.fit(model,
-                                 #val_dataloaders=val_loader,
-                                 train_dataloaders=train_loader)
-                torch.cuda.empty_cache()
-                return True
-            except RuntimeError as e:
-                if 'out of memory' in str(e) and channel_count > 1:
-                    torch.cuda.empty_cache()
-                    return False
-                elif 'out of memory' in str(e) and channel_count == 1:
-                    print("WARNING: Cannot find a valid channel count that will fit into the memory! "
-                          "Consider reduce the 'Size to spot feature', or get a better graphic card")
-                    raise e
-                else:
-                    raise e
-        def find_max_channel(min_channel, max_channel):
-            while min_channel < max_channel:
-                mid_channel = (min_channel + max_channel + 1) // 2
-                print(f"Trying a channel count of {mid_channel}...")
-                if check_fit_in_memory(mid_channel):
-                    print(f"Channel count of {mid_channel} can fit in memory")
-                    min_channel = mid_channel
-                else:
-                    print(f"Channel count of {mid_channel} won't fit in memory")
-                    max_channel = mid_channel - 1
-            print(f"Channel count search result: {max_channel}")
-            return max_channel
-        current_channel_count = find_max_channel(1, 64)
-        arch = pick_arch(args.model_architecture, current_channel_count, args.model_depth, args.z_to_xy_ratio,
-                         args.model_se, args.enable_unsupervised, label_mean, contour_mean)
-    else:
-        arch = pick_arch(args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio,
-                         args.model_se, args.enable_unsupervised, label_mean, contour_mean)'''
     gc.collect()
     arch_args = (args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio,
-                 args.model_se, label_mean, contour_mean)
-    if ('Sparsely Labelled' in args.train_dataset_mode) or (args.exclude_edge):
+                 args.model_se, instance_mode)
+    if 'Sparsely Labelled' in args.train_dataset_mode:
         sparse_train = True
     else:
         sparse_train = False
@@ -173,10 +130,10 @@ def start_work_flow(args):
     else:
         logger = False
     if 'Training' in args.workflow_box:
-        if 'Validation' in args.workflow_box:
+        '''if 'Validation' in args.workflow_box:
             to_monitor = 'Val_epoch_dice'
         else:
-            to_monitor = 'Train_epoch_dice'
+            to_monitor = 'Train_epoch_dice'''
         callbacks = []
         '''model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
                                                         filename=f"{args.save_model_name}",
@@ -218,10 +175,10 @@ def start_work_flow(args):
         del test_loader
     if 'Predict' in args.workflow_box:
         trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=False, accelerator="gpu")
-        predict_dataset = DataComponents.Predict_Dataset(args.predict_dataset_path,
-                                                         hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
-                                                         hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                                                         hdf5_key=args.predict_key_name)
+        predict_dataset = PD(args.predict_dataset_path,
+                             hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
+                             hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
+                             hdf5_key=args.predict_key_name)
         meta_info = predict_dataset.__getmetainfo__()
         predict_loader = DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
         del predict_dataset
@@ -298,6 +255,10 @@ if __name__ == "__main__":
     parser.add_argument("--enable_mid_visualization", action="store_true", help="Enable Visualization")
     parser.add_argument("--mid_visualization_input", type=str, default="Datasets/mid_visualiser/image.tif",
                         help="Path to the input image")
+    parser.add_argument("--train_offload", action="store_true", help="Enable disk offloading of training data")
+    parser.add_argument("--val_offload", action="store_true", help="Enable disk offloading of validation data")
+    parser.add_argument("--test_offload", action="store_true", help="Enable disk offloading of test data")
+    parser.add_argument("--predict_offload", action="store_true", help="Enable disk offloading of prediction data")
     parser.add_argument("--model_architecture", type=str,
                         help="Model Architecture")
     parser.add_argument("--model_channel_count", type=int, default=8, help="Base Channel Count")
@@ -307,9 +268,9 @@ if __name__ == "__main__":
     parser.add_argument("--model_se", action="store_true", help="Enable Squeeze-and-Excitation plug-in")
     parser.add_argument("--train_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],
                         default="Fully Labelled", help="Dataset Mode")
-    parser.add_argument("--exclude_edge", action="store_true", help="Mark pictures at object borders as unlabelled")
-    parser.add_argument("--exclude_edge_size_in", type=int, default=1, help="Pixels to exclude (inward)")
-    parser.add_argument("--exclude_edge_size_out", type=int, default=1, help="Pixels to exclude (outward)")
+    #parser.add_argument("--exclude_edge", action="store_true", help="Mark pictures at object borders as unlabelled")
+    #parser.add_argument("--exclude_edge_size_in", type=int, default=1, help="Pixels to exclude (inward)")
+    #parser.add_argument("--exclude_edge_size_out", type=int, default=1, help="Pixels to exclude (outward)")
     parser.add_argument("--contour_map_width", type=int, default=1, help="Width of contour (outward)")
     parser.add_argument("--val_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"], default="Fully Labelled",
                         help="Dataset Mode")

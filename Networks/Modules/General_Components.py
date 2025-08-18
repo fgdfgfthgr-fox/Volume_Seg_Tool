@@ -1,4 +1,5 @@
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -13,17 +14,18 @@ class ResBasicBlock(nn.Module):
         else:
             self.mapping = nn.Conv3d(in_channels, out_channels, 1, padding)
         for i in range(num_conv):
-            layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
-                                    kernel_size=kernel_size, padding=padding, bias=False))
             if norm:
                 layers.append(nn.InstanceNorm3d(out_channels))
-            if i != num_conv - 1:
-                layers.append(nn.SiLU(inplace=True))
+            layers.append(nn.LeakyReLU(inplace=True))
+            bias = False if i != num_conv - 1 else True
+            layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
+                                    kernel_size=kernel_size, padding=padding, bias=bias))
         self.operations = nn.Sequential(*layers)
-        self.act = nn.SiLU(inplace=True)
+        #self.act = nn.LeakyReLU(inplace=True)
 
     def forward(self, x):
-        return self.act(self.mapping(x) + self.operations(x))
+        return self.mapping(x) + self.operations(x)
+
 
 
 class ResBottleneckBlock(nn.Module):
@@ -40,7 +42,7 @@ class ResBottleneckBlock(nn.Module):
             if norm:
                 layers.append(nn.InstanceNorm3d(out_channels))
             if i != num_conv - 1:
-                layers.append(nn.SiLU(inplace=True))
+                layers.append(nn.LeakyReLU(inplace=True))
         self.convs = nn.Sequential(*layers)
 
         self.conv_up = nn.Conv3d(middle_channel, out_channels, kernel_size=1)
@@ -48,7 +50,7 @@ class ResBottleneckBlock(nn.Module):
             self.bn = nn.InstanceNorm3d(middle_channel)
         else:
             self.bn = nn.Identity()
-        self.act = nn.SiLU(inplace=True)
+        self.act = nn.LeakyReLU(inplace=True)
 
     def forward(self, x):
         b_x = self.act(self.bn(self.conv_down(x)))
@@ -67,7 +69,7 @@ class BasicBlock(nn.Module):
                                     kernel_size=kernel_size, padding=padding, bias=False, padding_mode=padding_mode))
             if norm:
                 layers.append(nn.InstanceNorm3d(out_channels))
-            layers.append(nn.SiLU(inplace=True))
+            layers.append(nn.LeakyReLU(inplace=True))
         self.operations = nn.Sequential(*layers)
 
     def forward(self, x):
@@ -78,14 +80,16 @@ class cSE(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
         self.avg_pool = nn.AdaptiveAvgPool3d(1)
-        self.fc1 = nn.Linear(in_channels, in_channels // 2)
-        self.silu = nn.SiLU(inplace=True)
+        self.fc1 = nn.Linear(in_channels, in_channels)
+        #self.act = nn.LeakyReLU(inplace=True)
+        self.glu = nn.GLU()
         self.fc2 = nn.Linear(in_channels // 2, in_channels)
 
     def forward(self, x):
         batch_size, num_channels, D, H, W = x.size()
         x_avg = self.avg_pool(x).view(batch_size, num_channels)
-        x_avg = self.silu(self.fc1(x_avg))
+        x_avg = self.fc1(x_avg)
+        x_avg = self.glu(x_avg)
         x_avg = torch.sigmoid(self.fc2(x_avg))
         return x * (x_avg.view(batch_size, num_channels, 1, 1, 1))
 
@@ -110,6 +114,56 @@ class scSE(nn.Module):
 
     def forward(self, x):
         return self.cse(x) + self.sse(x)
+
+
+class FourierShells(nn.Module):
+    def __init__(self, K):
+        super().__init__()
+        self.K = K
+
+    def forward(self, x):
+        B, C, D, H, W = x.shape
+
+        # Compute RFFT (optimized for real inputs)
+        x = torch.fft.rfftn(x, dim=(-3, -2, -1), norm='ortho')  # Output: [B, 1, D, H, W//2+1]
+
+        # Create frequency coordinates for half-spectrum
+        d_coord = torch.fft.fftfreq(D, device=x.device, dtype=torch.float16) * D
+        h_coord = torch.fft.fftfreq(H, device=x.device, dtype=torch.float16) * H
+        w_coord = torch.fft.rfftfreq(W, device=x.device, dtype=torch.float16) * W  # Only non-negative freqs
+
+        # Compute radial distances (only for non-redundant components)
+        r = torch.sqrt(
+            (d_coord.view(-1, 1, 1) ** 2) +
+            (h_coord.view(1, -1, 1) ** 2) +
+            (w_coord.view(1, 1, -1) ** 2))
+
+        # Logarithmic shell boundaries
+        boundaries = torch.logspace(
+            0,
+            torch.log2(r.max()),
+            self.K + 1,
+            base=2,
+            device=x.device,
+            dtype=torch.float16
+        )
+        boundaries[0] = 0
+        # Generate radial masks
+        masks = []
+        for k in range(self.K):
+            mask_k = (r >= boundaries[k]) & (r <= boundaries[k + 1])
+            masks.append(mask_k)
+
+        # Apply masks and compute inverse RFFT
+        masks_tensor = torch.stack(masks)  # [K, D, H, W//2+1]
+        shells = torch.fft.irfftn(
+            x * masks_tensor,
+            s=(D, H, W),  # Specify full output shape
+            dim=(-3, -2, -1),
+            norm='ortho'
+        )  # Output: [B, K, D, H, W]
+
+        return shells
 
 
 # Attention Block from Attention UNet
@@ -140,55 +194,6 @@ class AttentionBlock(nn.Module):
         g1 = self.w_g(gate)
         x1 = self.w_x(x)
         return self.psi(self.silu(g1 + x1)) * x
-
-
-# https://www-sciencedirect-com.ezproxy.otago.ac.nz/science/article/pii/S095741742401594X
-class FeatureFusionModule(nn.Module):
-    def __init__(self, num_features, ini_channels):
-        super().__init__()
-        feature_channels = [ini_channels * (2 ** i) for i in range(num_features)]
-        for i in range(num_features):
-            for j in range(num_features):
-                if j > i:
-                    # Downsamplings
-                    difference = 2 ** (j - i)
-                    setattr(self, f'{i}_to_{j}_down',
-                            nn.Sequential(nn.Conv3d(feature_channels[i], feature_channels[i], difference, difference, bias=False),
-                                          nn.InstanceNorm3d(feature_channels[i]),
-                                          nn.Conv3d(feature_channels[i], feature_channels[j], 1, bias=False),
-                                          nn.InstanceNorm3d(feature_channels[j])))
-                elif i > j:
-                    # Upsamplings
-                    difference = 2 ** (i - j)
-                    setattr(self, f'{i}_to_{j}_up',
-                            nn.Sequential(nn.Upsample(scale_factor=difference, mode='trilinear', align_corners=True),
-                                          nn.Conv3d(feature_channels[i], feature_channels[j], 1, bias=False),
-                                          nn.InstanceNorm3d(feature_channels[j])))
-            setattr(self, f'bn_{i}', nn.InstanceNorm3d(feature_channels[i]))
-        self.activation = nn.SiLU(inplace=True)
-
-    def forward(self, feature_maps):
-        # feature_maps is a list of features from different resolution branches
-        num_features = len(feature_maps)
-        fused_features = [f.clone() for f in feature_maps]  # Start with the original feature maps
-
-        for i in range(num_features):
-            for j in range(num_features):
-                if i > j:
-                    # Upsample i to match the resolution of j
-                    upsample = getattr(self, f'{i}_to_{j}_up')
-                    fused_features[j] = fused_features[j] + upsample(feature_maps[i])
-                elif j > i:
-                    # Downsample i to match the resolution of j
-                    downsample = getattr(self, f'{i}_to_{j}_down')
-                    fused_features[j] = fused_features[j] + downsample(feature_maps[i])
-        for i in range(num_features):
-            fused_features[i] = getattr(self, f'bn_{i}')(fused_features[i])
-
-        # Apply activation after fusion
-        fused_features = [self.activation(f) for f in fused_features]
-
-        return fused_features
 
 
 class DyT(nn.Module):

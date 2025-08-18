@@ -1,5 +1,6 @@
 import gc
 import math
+import threading
 import os
 
 import torch
@@ -9,16 +10,24 @@ import torchvision.transforms.v2.functional as T_F
 import numpy as np
 import imageio
 import random
+import json
+import tifffile
 import time
 import h5py
 import multiprocessing
+import mrcfile
+import zarr
+import shutil
 import pandas as pd
 from multiprocessing import Pool, shared_memory, cpu_count
+from itertools import product
 import skimage.morphology as morph
+from pathlib import Path
 from scipy.ndimage import label
 from torchvision.datasets.folder import has_file_allowed_extension, IMG_EXTENSIONS
 from . import Augmentations as Aug
 from . import MorphologicalFunctions as Morph
+from .welford_std import welford_mean_std
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -27,6 +36,19 @@ def get_label_fname(fname):
     return 'Labels_' + fname
 
 
+def multiple_loader(path, key):
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext in ['.h5', '.hdf5', '.he5']:
+        with h5py.File(path, 'r') as f:
+            img = np.array(f[key])
+    elif ext in ['.mrc']:
+        with mrcfile.open(path, mode='r') as mrc:
+            img = mrc.data
+    else:  # All other formats
+        img = imageio.v3.imread(path)
+
+    return img
 
 def path_to_array(path, label=False, key='default', norm_strategy='std'):
     """
@@ -42,12 +64,8 @@ def path_to_array(path, label=False, key='default', norm_strategy='std'):
     Returns:
         torch.Tensor: transformed Tensor.
     """
-    if 'hdf5' in path:
-        file_object = h5py.File(path, 'r')
-        img = np.array(file_object[key])
-    else:
-        # ToTensor()对16位图不方便，因此才用这招
-        img = imageio.v3.imread(path)
+    img = multiple_loader(path, key)
+
     if label:
         img_max = img.max()
         if len(np.unique(img)) <= 2:
@@ -60,9 +78,11 @@ def path_to_array(path, label=False, key='default', norm_strategy='std'):
             new_dtype = np.uint32
         img = img.astype(new_dtype, copy=False)
     else:
-        non_zero = img[img != 0]
+        non_zero = img.astype(np.bool_)
         if norm_strategy == 'std':
-            mean, std = np.mean(non_zero, dtype=np.float32), np.std(non_zero, dtype=np.float32) + 1e-8
+            # Take less memory than Numpy's Existing method.
+            mean, std = welford_mean_std(img, non_zero)
+            mean, std = np.array(mean).astype(np.float32), np.array(std).astype(np.float32)
             # Take less memory than img = (img - mean) / std
             img = img.astype(np.float32, copy=False)
             img -= mean
@@ -77,11 +97,21 @@ def path_to_array(path, label=False, key='default', norm_strategy='std'):
             # To -1 and 1
             img -= 0.5
             img *= 2
+    if len(img.shape) != 3:
+        raise ValueError(f'Only 3D images are supported (Z, Y, X)! {path} seems to be {len(img.shape)}D! instead')
     return img
 
+def path_to_array_nonorm(path, key='default'):
+    img = multiple_loader(path, key)
+    if len(img.shape) != 3:
+        raise ValueError(f'Only 3D images are supported (Z, Y, X)! {path} seems to be {len(img.shape)}D! instead')
+    non_zero = img.astype(np.bool_)
+    mean, std = welford_mean_std(img, non_zero)
+    mean, std = np.array(mean).astype(np.float32), np.array(std).astype(np.float32)
+    return img, mean, std
 
 def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
-              hw_size, d_size, foreground_threshold, background_threshold):
+              hw_size, d_size, foreground_threshold, background_threshold, zarr=False, img_mean=0, img_std=1):
     """
     Apply Image Augmentations to an image tensor and its label tensor using the augmentation parameters from a DataFrame.
     Can have an optional contour tensor processed as well.
@@ -122,7 +152,8 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
                         rotation_angles, rotation_methods,
                         ('bilinear', 'nearest', 'nearest'),
                         minimal_foreground=foreground_threshold,
-                        minimal_background=background_threshold)
+                        minimal_background=background_threshold,
+                        zarr=zarr, img_mean=img_mean, img_std=img_std)
                     contour_tensor = contour_tensor[None, :]
                     contour_tensor = F.interpolate(contour_tensor, size=(d_size, hw_size, hw_size),
                                                    mode="nearest-exact")
@@ -135,7 +166,8 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
                                                                          rotation_angles, rotation_methods,
                                                                          ('bilinear', 'nearest'),
                                                                          minimal_foreground=foreground_threshold,
-                                                                         minimal_background=background_threshold)
+                                                                         minimal_background=background_threshold,
+                                                                         zarr=zarr, img_mean=img_mean, img_std=img_std)
                 img_tensor = img_tensor[None, :]
                 img_tensor = F.interpolate(img_tensor, size=(d_size, hw_size, hw_size), mode="trilinear",
                                            align_corners=True)
@@ -153,14 +185,16 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
                         d_size, hw_size, hw_size,
                         rotation_angles, rotation_methods,
                         ('bilinear', 'nearest', 'nearest'),
-                        minimal_foreground=foreground_threshold, minimal_background=background_threshold)
+                        minimal_foreground=foreground_threshold, minimal_background=background_threshold,
+                        zarr=zarr, img_mean=img_mean, img_std=img_std)
                 else:
                     img_tensor, lab_tensor = Aug.custom_rand_crop_rotate(
                         [img_tensor, lab_tensor],
                         d_size, hw_size, hw_size,
                         rotation_angles, rotation_methods,
                         ('bilinear', 'nearest'),
-                        minimal_foreground=foreground_threshold, minimal_background=background_threshold)
+                        minimal_foreground=foreground_threshold, minimal_background=background_threshold,
+                        zarr=zarr, img_mean=img_mean, img_std=img_std)
         elif augmentation_method == 'Edge Replicate Pad' and random.random() < prob:
             if contour_tensor is not None:
                 img_tensor, lab_tensor, contour_tensor = Aug.edge_replicate_pad((img_tensor, lab_tensor, contour_tensor), row['Value'])
@@ -211,7 +245,7 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
         return img_tensor, lab_tensor
 
 
-def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
+def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size, zarr=False, img_mean=0, img_std=1):
     """
         Apply Image Augmentations to an image tensor using the augmentation parameters from a DataFrame.
 
@@ -247,7 +281,7 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
                     int(scale * hw_size),
                     rotation_angles, rotation_methods,
                     ('bilinear',),
-                    ensure_bothground=False)
+                    ensure_bothground=False, zarr=zarr, img_mean=img_mean, img_std=img_std)
                 img_tensor = img_tensor[0]
                 img_tensor = img_tensor[None, :]
                 img_tensor = F.interpolate(img_tensor, size=(d_size, hw_size, hw_size), mode="trilinear",
@@ -259,7 +293,7 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
                     d_size, hw_size, hw_size,
                     rotation_angles, rotation_methods,
                     ('bilinear',),
-                    ensure_bothground=False)
+                    ensure_bothground=False, zarr=zarr, img_mean=img_mean, img_std=img_std)
                 img_tensor = img_tensor[0]
         elif augmentation_method == 'Edge Replicate Pad' and random.random() < prob:
             img_tensor = Aug.edge_replicate_pad((img_tensor,), row['Value'])
@@ -293,7 +327,7 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size):
     return img_tensor
 
 
-def make_dataset_tv(image_dir, extensions=(".tif", ".tiff", ".hdf5")):
+def make_dataset_tv(image_dir, extensions=(".tif", ".tiff", ".mrc", ".h5", ".hdf5")):
     """
     Generate a list containing pairs of file paths to training images and their labels.
     The labels should have the same name as their corresponding image, with a prefix "Labels_".
@@ -303,21 +337,22 @@ def make_dataset_tv(image_dir, extensions=(".tif", ".tiff", ".hdf5")):
         extensions: Acceptable image formats.
 
     Returns:
-        Example[('Datasets\\train\\testimg1.tif', 'Datasets\\train\\Labels_testimg1.tif'),
-                ('Datasets\\train\\testimg2.tif', 'Datasets\\train\\Labels_testimg2.tif')]
+        Example:[('Datasets\\train\\testimg1.tif', 'Datasets\\train\\Labels_testimg1.tif'),
+                 ('Datasets\\train\\testimg2.tif', 'Datasets\\train\\Labels_testimg2.tif')]
     """
+    image_dir = Path(image_dir)
     image_label_pair = []
     image_files = os.listdir(image_dir)
     for fname in sorted(image_files):
         if has_file_allowed_extension(fname, extensions):
             if not "Labels_" in fname:
-                path = os.path.join(image_dir, fname)
-                label_path = os.path.join(image_dir, 'Labels_' + fname)
+                path = image_dir.joinpath(fname)
+                label_path = image_dir.joinpath('Labels_' + fname)
                 image_label_pair.append((path, label_path))
     return image_label_pair
 
 
-def make_dataset_predict(image_dir, extensions=(".tif", ".tiff", ".hdf5")):
+def make_dataset_predict(image_dir, extensions=(".tif", ".tiff", ".mrc", ".h5", ".hdf5")):
     """
     Generate a list containing file paths to images waiting to get predicted.
 
@@ -326,16 +361,17 @@ def make_dataset_predict(image_dir, extensions=(".tif", ".tiff", ".hdf5")):
         extensions: Acceptable image formats.
 
     Returns:
-        Example['Datasets\\predict\\testpic1.tif',
-                'Datasets\\predict\\testpic2.tif']
+        Example:['Datasets\\predict\\testpic1.tif',
+                 'Datasets\\predict\\testpic2.tif']
     """
+    image_dir = Path(image_dir)
     path_list = []
-    image_dir = os.path.expanduser(image_dir)
-    for root, _, fnames in sorted(os.walk(image_dir)):
-        for fname in sorted(fnames):
-            if has_file_allowed_extension(fname, extensions):
-                path = os.path.normpath(os.path.join(root, fname))
-                path_list.append(path)
+    image_dir = image_dir.expanduser()
+    image_files = os.listdir(image_dir)
+    for fname in sorted(image_files):
+        if has_file_allowed_extension(fname, extensions):
+            path = image_dir.joinpath(fname)
+            path_list.append(path)
     return path_list
 
 
@@ -359,20 +395,15 @@ class TrainDataset(torch.utils.data.Dataset):
         key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
 
-    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64, instance_mode=False,
-                 exclude_edge=False, exclude_edge_size_in=1, exclude_edge_size_out=1, contour_map_width=1,
-                 hdf5_key='Default'):
+    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64,
+                 instance_mode=False, contour_map_width=1, hdf5_key='Default'):
         # Get a list of file paths for images and labels
         self.file_list = np.array(make_dataset_tv(images_dir))
         self.num_files = len(self.file_list)
         self.instance_mode = instance_mode
-        def place_holder(a): return a
-        fc = place_holder
-        if exclude_edge and not instance_mode:
-            fc = Aug.exclude_border_labels
         if instance_mode:
-            self.contour_tensors = [torch.from_numpy(get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in self.file_list]
-        self.lab_tensors = [torch.from_numpy(fc(Aug.binarisation(path_to_array(item[1], key=hdf5_key, label=True)))) for item in self.file_list]
+            self.contour_tensors = [torch.from_numpy(get_contour_maps(item[1], 'generated_contour_maps', contour_map_width)) for item in self.file_list]
+        self.lab_tensors = [torch.from_numpy(Aug.binarisation(path_to_array(item[1], key=hdf5_key, label=True))) for item in self.file_list]
         self.img_tensors = [torch.from_numpy(path_to_array(item[0], key=hdf5_key, label=False)) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
@@ -391,16 +422,14 @@ class TrainDataset(torch.utils.data.Dataset):
         """
         negative_control = idx[1]
         idx = idx[0]
-        if negative_control:
-            if negative_control == 'positive':
-                foreground_threshold = 0.01
-                background_threshold = 0
-            elif negative_control == 'negative':
-                background_threshold = 0.01
-                foreground_threshold = 0
-        else:
-            background_threshold = 0.01
+        background_threshold = 0.01
+        foreground_threshold = 0.01
+        if negative_control == 'positive':
             foreground_threshold = 0.01
+            background_threshold = 0
+        elif negative_control == 'negative':
+            background_threshold = 0.01
+            foreground_threshold = 0
         idx = math.floor(idx / self.train_multiplier)
         img_tensor, lab_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :]
         if self.instance_mode:
@@ -415,7 +444,7 @@ class TrainDataset(torch.utils.data.Dataset):
                                                foreground_threshold, background_threshold)
             return img_tensor, lab_tensor
 
-    def get_label_mean(self):
+    '''def get_label_mean(self):
         numels = 0
         sum = 0
         for array in self.lab_tensors:
@@ -429,7 +458,158 @@ class TrainDataset(torch.utils.data.Dataset):
         for array in self.contour_tensors:
             numels += array.dim()
             sum += array.sum()
-        return sum / numels
+        return sum / numels'''
+
+
+def load_metadata(metadata_file_path):
+    """Load existing metadata or return empty dict"""
+    if metadata_file_path.exists():
+        with open(metadata_file_path, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_metadata(metadata_file_path, source_metadata):
+    """Save current metadata to file"""
+    with open(metadata_file_path, 'w') as f:
+        json.dump(source_metadata, f, indent=2)
+
+
+def get_file_signature(file_path):
+    stat = file_path.stat()
+    # Use file modification time and file size as a verification method
+    return f"mtime:{stat.st_mtime_ns}|size:{stat.st_size}"
+
+
+def needs_reprocessing(source_metadata, source_path, zarr_path):
+    if not Path(source_path).exists():
+        return True
+    if not zarr_path.exists():
+        return True
+    return source_metadata.get(str(source_path)) != get_file_signature(source_path)
+
+
+def safe_remove(path):
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except Exception as e:
+        pass
+        #print(f"Error removing {path}: {e}")
+
+
+def process_file(preprocessed_dir, source_metadata, hdf5_key, chunk_size, source_path, is_label, processing_func=None):
+    zarr.config.set({'async.concurrency': 2, 'async.timeout': None})
+    base = source_path.stem
+    zarr_path = preprocessed_dir.joinpath(f"{base}.zarr")
+
+    if needs_reprocessing(source_metadata, source_path, zarr_path):
+        print(f"Converting {base} into zarr format...")
+        safe_remove(zarr_path)
+        if is_label:
+            vol = path_to_array(str(source_path), True, hdf5_key)[None, :]
+        else:
+            vol, mean, std = path_to_array_nonorm(str(source_path), hdf5_key)
+            vol = vol[None, :]
+        if processing_func:
+            vol = processing_func(vol)
+
+        if is_label:
+            zarr.save_array(zarr_path, vol, chunk_shape=chunk_size)
+        else:
+            store = zarr.storage.LocalStore(zarr_path)
+            # Store the arrays with appropriate chunks
+            vol = zarr.create_array(store=store, data=vol, chunks=chunk_size)
+            vol.attrs['mean'] = float(mean)
+            vol.attrs['std'] = float(std)
+        source_metadata[str(source_path)] = get_file_signature(source_path)
+
+    return zarr_path
+
+
+class TrainDatasetChunked(torch.utils.data.Dataset):
+
+    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64,
+                 instance_mode=False, contour_map_width=1, hdf5_key='Default'):
+        self.file_list = np.array(make_dataset_tv(images_dir))
+        self.num_files = len(self.file_list)
+        self.preprocessed_dir = Path(os.path.join(images_dir, "zarr_preprocessed"))
+        os.makedirs(self.preprocessed_dir, exist_ok=True)
+
+        # Metadata file for verification
+        self.metadata_file_path = self.preprocessed_dir.joinpath("source_metadata.json")
+        self.source_metadata = load_metadata(self.metadata_file_path)
+
+        self.augmentation_params = pd.read_csv(augmentation_csv)
+        self.train_multiplier = train_multiplier
+        self.hw_size = hw_size
+        self.d_size = d_size
+        self.instance_mode = instance_mode
+        self.contour_map_width = contour_map_width
+        self.hdf5_key = hdf5_key
+
+        chunk_depth = 2 ** math.floor(math.log2(d_size) + 1)
+        chunk_hw = 2 ** math.floor(math.log2(hw_size) + 1)
+        self.chunk_size = (1, chunk_depth, chunk_hw, chunk_hw)
+
+        self.zarr_paths = self.preprocess_files()
+
+    def preprocess_files(self):
+        zarr_paths = []
+        for img_path, lab_path in self.file_list:
+            img_zarr = process_file(self.preprocessed_dir, self.source_metadata, self.hdf5_key, self.chunk_size, img_path, False)
+            lab_zarr = process_file(self.preprocessed_dir, self.source_metadata, self.hdf5_key, self.chunk_size, lab_path, True, Aug.binarisation)
+
+            if self.instance_mode:
+                contour_zarr = self.preprocessed_dir.joinpath(f"Contour_{Path(img_zarr).stem}.zarr")
+                if needs_reprocessing(self.source_metadata, lab_path, contour_zarr):
+                    print(f"Processing contour: {lab_path}")
+                    safe_remove(contour_zarr)
+                    vol = get_contour_maps(lab_path, 'generated_contour_maps', self.contour_map_width)[None, :]
+                    zarr.save_array(contour_zarr, vol, chunk_shape=self.chunk_size)
+                zarr_paths.append((img_zarr, lab_zarr, contour_zarr))
+            else:
+                zarr_paths.append((img_zarr, lab_zarr))
+
+        save_metadata(self.metadata_file_path, self.source_metadata)
+        return zarr_paths
+
+    def __len__(self):
+        return self.num_files * self.train_multiplier
+
+    def __getitem__(self, idx):
+        negative_control = idx[1]
+        idx = idx[0]
+        background_threshold = 0.01
+        foreground_threshold = 0.01
+        if negative_control == 'positive':
+            foreground_threshold = 0.01
+            background_threshold = 0
+        elif negative_control == 'negative':
+            background_threshold = 0.01
+            foreground_threshold = 0
+        idx = math.floor(idx / self.train_multiplier)
+
+        if self.instance_mode:
+            img_path, lab_path, contour_path = self.zarr_paths[idx]
+            contour_vol = zarr.open(contour_path, mode='r')
+        else:
+            img_path, lab_path = self.zarr_paths[idx]
+
+        img_vol, lab_vol = zarr.open(img_path, mode='r'), zarr.open(lab_path, mode='r')
+        img_mean, img_std = img_vol.attrs['mean'], img_vol.attrs['std']
+        if self.instance_mode:
+            img_tensor, lab_tensor, contour_tensor = apply_aug(img_vol, lab_vol, contour_vol,
+                                                               self.augmentation_params, self.hw_size, self.d_size,
+                                                               foreground_threshold, background_threshold, True, img_mean, img_std)
+            return img_tensor, lab_tensor, contour_tensor
+        else:
+            img_tensor, lab_tensor = apply_aug(img_vol, lab_vol, None,
+                                               self.augmentation_params, self.hw_size, self.d_size,
+                                               foreground_threshold, background_threshold, True, img_mean, img_std)
+            return img_tensor, lab_tensor
 
 
 class UnsupervisedDataset(torch.utils.data.Dataset):
@@ -463,6 +643,60 @@ class UnsupervisedDataset(torch.utils.data.Dataset):
         return (img_tensor,)
 
 
+class UnsupervisedDatasetChunked(torch.utils.data.Dataset):
+
+    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64, hdf5_key='Default'):
+        self.file_list = np.array(make_dataset_predict(images_dir))
+        self.num_files = len(self.file_list)
+        self.preprocessed_dir = Path(os.path.join(images_dir, "zarr_preprocessed"))
+        os.makedirs(self.preprocessed_dir, exist_ok=True)
+
+        # Metadata file for verification
+        self.metadata_file_path = self.preprocessed_dir.joinpath("source_metadata.json")
+        self.source_metadata = load_metadata(self.metadata_file_path)
+
+        self.augmentation_params = pd.read_csv(augmentation_csv)
+        self.train_multiplier = train_multiplier
+        self.hw_size = hw_size
+        self.d_size = d_size
+        self.hdf5_key = hdf5_key
+
+        chunk_depth = 2 ** math.floor(math.log2(d_size) + 1)
+        chunk_hw = 2 ** math.floor(math.log2(hw_size) + 1)
+        self.chunk_size = (1, chunk_depth, chunk_hw, chunk_hw)
+
+        self.zarr_paths = self.preprocess_files()
+
+    def __len__(self):
+        return self.num_files * self.train_multiplier
+
+    def preprocess_files(self):
+        zarr_paths = []
+        for img_path in self.file_list:
+            img_zarr = process_file(self.preprocessed_dir, self.source_metadata, self.hdf5_key, self.chunk_size, img_path, False)
+            zarr_paths.append(img_zarr)
+
+        save_metadata(self.metadata_file_path, self.source_metadata)
+        return zarr_paths
+
+    def __getitem__(self, idx):
+        idx = math.floor(idx / self.train_multiplier)
+        img_vol = zarr.open(self.zarr_paths[idx], mode='r')
+        img_mean, img_std = img_vol.attrs['mean'], img_vol.attrs['std']
+        img_tensor = apply_aug_unsupervised(img_vol, self.augmentation_params, self.hw_size, self.d_size, True, img_mean, img_std)
+        return (img_tensor,)
+
+
+def calculate_val_start_end(multiplier, required_size, full_size, idx):
+    if multiplier > 1:
+        start = (required_size - ((required_size * multiplier - full_size) / (multiplier - 1))) * idx
+        start = math.floor(start)
+    else:
+        start = 0
+    end = start + required_size
+    return start, end
+
+
 class ValDataset(torch.utils.data.Dataset):
     """
     A torch.utils.data.Dataset class that handles the validation dataset.
@@ -474,74 +708,57 @@ class ValDataset(torch.utils.data.Dataset):
         hw_size (int): The height and width of each generated patch.
         d_size (int): The depth of each generated patch.
         instance_mode (bool): If true, will prepare contour tensors for instance segmentation.
-        augmentation_csv (str): Path to the .csv file that contains the image augmentations parameters.
         contour_map_width (int): Width of the contour map. Default: 1.
         key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
 
-    def __init__(self, images_dir, hw_size, d_size, instance_mode, augmentation_csv, contour_map_width=1, hdf5_key='Default'):
+    def __init__(self, images_dir, hw_size, d_size, instance_mode, contour_map_width=1, hdf5_key='Default'):
         # Get a list of file paths for images and labels
         file_list = np.array(make_dataset_tv(images_dir))
         self.num_files = len(file_list)
         self.instance_mode = instance_mode
         if instance_mode:
-            tensor_pairs = [((path_to_array(item[0], key=hdf5_key, label=False)),
-                             Aug.binarisation(path_to_array(item[1], label=True)),
-                             get_contour_maps(item, 'generated_contour_maps', contour_map_width)) for item in file_list]
+            tensor_pairs = [((path_to_array(str(item[0]), key=hdf5_key, label=False)),
+                             Aug.binarisation(path_to_array(str(item[1]), label=True)),
+                             get_contour_maps(item[1], 'generated_contour_maps', contour_map_width)) for item in file_list]
         else:
-            tensor_pairs = [(path_to_array(item[0], key=hdf5_key, label=False),
-                            Aug.binarisation(path_to_array(item[1], label=True))) for item in file_list]
+            tensor_pairs = [(path_to_array(str(item[0]), key=hdf5_key, label=False),
+                            Aug.binarisation(path_to_array(str(item[1]), label=True))) for item in file_list]
         self.chopped_array_pairs = []
-        # augmentation_params = pd.read_csv(augmentation_csv)
+        self.total_patches = 0
         # Crop the tensors, so they are the standard shape specified in the augmentation csv.
         for pairs in tensor_pairs:
             depth, height, width = pairs[0].shape
             depth_multiplier = math.ceil(depth / d_size)
             height_multiplier = math.ceil(height / hw_size)
             width_multiplier = math.ceil(width / hw_size)
-            self.total_multiplier = depth_multiplier * height_multiplier * width_multiplier
+            total_multiplier = depth_multiplier * height_multiplier * width_multiplier
+            self.total_patches += total_multiplier
             self.leave_out_list = []
             # Loop through each depth, height, and width index
-            for depth_idx in range(depth_multiplier):
-                for height_idx in range(height_multiplier):
-                    for width_idx in range(width_multiplier):
-                        # Calculate the start and end indices for depth, height, and width
-                        if depth_multiplier > 1:
-                            depth_start = (d_size - (
-                                        (d_size * depth_multiplier - depth) / (depth_multiplier - 1))) * depth_idx
-                            depth_start = math.floor(depth_start)
-                        else:
-                            depth_start = 0
-                        depth_end = depth_start + d_size
-                        if height_multiplier > 1:
-                            height_start = (hw_size - ((hw_size * height_multiplier - height) / (
-                                        height_multiplier - 1))) * height_idx
-                            height_start = math.floor(height_start)
-                        else:
-                            height_start = 0
-                        height_end = height_start + hw_size
-                        if width_multiplier > 1:
-                            width_start = (hw_size - (
-                                        (hw_size * width_multiplier - width) / (width_multiplier - 1))) * width_idx
-                            width_start = math.floor(width_start)
-                        else:
-                            width_start = 0
-                        width_end = width_start + hw_size
-                        cropped_img = torch.from_numpy(pairs[0][depth_start:depth_end, height_start:height_end,
+            for depth_idx, height_idx, width_idx in product(range(depth_multiplier),
+                                                            range(height_multiplier),
+                                                            range(width_multiplier)):
+                # Calculate the start and end indices for depth, height, and width
+                depth_start, depth_end = calculate_val_start_end(depth_multiplier, d_size, depth, depth_idx)
+                height_start, height_end = calculate_val_start_end(height_multiplier, hw_size, height, height_idx)
+                width_start, width_end = calculate_val_start_end(width_multiplier, hw_size, width, width_idx)
+
+                cropped_img = torch.from_numpy(pairs[0][depth_start:depth_end, height_start:height_end,
+                                                        width_start:width_end])
+                cropped_lab = torch.from_numpy(pairs[1][depth_start:depth_end, height_start:height_end,
+                                                        width_start:width_end])
+                if instance_mode:
+                    cropped_contour = torch.from_numpy(pairs[2][depth_start:depth_end,
+                                                                height_start:height_end,
                                                                 width_start:width_end])
-                        cropped_lab = torch.from_numpy(pairs[1][depth_start:depth_end, height_start:height_end,
-                                                                width_start:width_end])
-                        if instance_mode:
-                            cropped_contour = torch.from_numpy(pairs[2][depth_start:depth_end,
-                                                                        height_start:height_end,
-                                                                        width_start:width_end])
-                            self.chopped_array_pairs.append((cropped_img, cropped_lab, cropped_contour))
-                        else:
-                            self.chopped_array_pairs.append((cropped_img, cropped_lab))
+                    self.chopped_array_pairs.append((cropped_img, cropped_lab, cropped_contour))
+                else:
+                    self.chopped_array_pairs.append((cropped_img, cropped_lab))
         super().__init__()
 
     def __len__(self):
-        return self.num_files * self.total_multiplier
+        return self.total_patches
 
     def __getitem__(self, idx):
         img_tensor, lab_tensor = self.chopped_array_pairs[idx][0][None, :], self.chopped_array_pairs[idx][1][None, :].to(torch.float32)
@@ -552,7 +769,180 @@ class ValDataset(torch.utils.data.Dataset):
             return img_tensor, lab_tensor
 
 
-class Predict_Dataset(torch.utils.data.Dataset):
+class ValDatasetChunked(torch.utils.data.Dataset):
+    def __init__(self, images_dir, hw_size, d_size, instance_mode, contour_map_width=1, hdf5_key='Default'):
+        self.file_list = np.array(make_dataset_tv(images_dir))
+        self.hw_size = hw_size
+        self.d_size = d_size
+        self.num_files = len(self.file_list)
+        self.instance_mode = instance_mode
+        self.contour_map_width = contour_map_width
+        self.hdf5_key = hdf5_key
+
+        self.preprocessed_dir = Path(os.path.join(images_dir, "tiff_preprocessed"))
+        os.makedirs(self.preprocessed_dir, exist_ok=True)
+
+        # Metadata file for verification
+        self.metadata_file_path = self.preprocessed_dir / "source_metadata.json"
+        self.source_metadata = load_metadata(self.metadata_file_path)
+
+        self.patch_paths = []  # Stores tuples of (img_path, lab_path, [contour_path])
+        self.original_shapes = []  # Stores original shapes for each file
+        self.total_patches = 0
+
+        # Process each image-label pair
+        for img_path, lab_path in self.file_list:
+            self.process_image_pair(Path(img_path), Path(lab_path))
+
+        save_metadata(self.metadata_file_path, self.source_metadata)
+        super().__init__()
+
+    def process_image_pair(self, img_path, lab_path):
+        # Create unique identifier for this pair
+        pair_id = f"{img_path.stem}"
+        pair_dir = self.preprocessed_dir.joinpath(pair_id)
+        os.makedirs(pair_dir, exist_ok=True)
+
+        # Get current signatures
+        img_sig = get_file_signature(img_path)
+        lab_sig = get_file_signature(lab_path)
+
+        # Check if reprocessing is needed
+        needs_processing = True
+        if pair_id in self.source_metadata:
+            entry = self.source_metadata[pair_id]
+            if (entry['img_signature'] == img_sig and
+                entry['lab_signature'] == lab_sig and
+                entry['hw_size'] == self.hw_size and
+                entry['d_size'] == self.d_size and
+                pair_dir.exists()):
+                # Verify all patch files exist
+                all_patches_exist = True
+                for patch_entry in entry['patches']:
+                    if not Path(patch_entry['img_path']).exists():
+                        all_patches_exist = False
+                    if not Path(patch_entry['lab_path']).exists():
+                        all_patches_exist = False
+                    if self.instance_mode:
+                        if not 'contour_path' in patch_entry:
+                            all_patches_exist = False
+                        elif not Path(patch_entry['contour_path']).exists():
+                            all_patches_exist = False
+
+                if all_patches_exist:
+                    self.patch_paths.extend(entry['patches'])
+                    self.original_shapes.append(entry['original_shape'])
+                    self.total_patches += len(entry['patches'])
+                    needs_processing = False
+
+        if needs_processing:
+            print(f"Processing validation pair: {pair_id}")
+            safe_remove(pair_dir)
+            os.makedirs(pair_dir, exist_ok=True)
+
+            # Load original arrays
+            img_array = path_to_array(str(img_path), key=self.hdf5_key, label=False)
+            lab_array = Aug.binarisation(path_to_array(str(lab_path), label=True))
+
+            # Get contour maps if needed
+            contour_array = None
+            if self.instance_mode:
+                contour_array = get_contour_maps(lab_path, 'generated_contour_maps', self.contour_map_width)
+
+            depth, height, width = img_array.shape
+            original_shape = (depth, height, width)
+
+            # Calculate number of patches
+            depth_multiplier = math.ceil(depth / self.d_size)
+            height_multiplier = math.ceil(height / self.hw_size)
+            width_multiplier = math.ceil(width / self.hw_size)
+
+            patch_data = []
+            # Generate and save patches
+            for depth_idx, height_idx, width_idx in product(range(depth_multiplier),
+                                                            range(height_multiplier),
+                                                            range(width_multiplier)):
+                depth_start, depth_end = calculate_val_start_end(depth_multiplier, self.d_size, depth, depth_idx)
+                height_start, height_end = calculate_val_start_end(height_multiplier, self.hw_size, height, height_idx)
+                width_start, width_end = calculate_val_start_end(width_multiplier, self.hw_size, width, width_idx)
+
+                # Extract patches
+                img_patch = img_array[depth_start:depth_end,
+                            height_start:height_end,
+                            width_start:width_end]
+
+                lab_patch = lab_array[depth_start:depth_end,
+                            height_start:height_end,
+                            width_start:width_end]
+
+                # Save patches
+                patch_id = f"patch_{depth_idx}_{height_idx}_{width_idx}"
+                img_patch_path = pair_dir / f"{patch_id}_img.tiff"
+                lab_patch_path = pair_dir / f"{patch_id}_lab.tiff"
+
+                tifffile.imwrite(str(img_patch_path), img_patch, compression='zstd')
+                tifffile.imwrite(str(lab_patch_path), lab_patch, compression='zstd')
+
+                patch_entry = {
+                    'img_path': str(img_patch_path),
+                    'lab_path': str(lab_patch_path),
+                }
+
+                # Process contour if needed
+                if self.instance_mode:
+                    contour_patch = contour_array[depth_start:depth_end,
+                                    height_start:height_end,
+                                    width_start:width_end]
+                    contour_patch_path = pair_dir / f"{patch_id}_contour.tiff"
+                    tifffile.imwrite(str(contour_patch_path), contour_patch, compression='zstd')
+                    patch_entry['contour_path'] = str(contour_patch_path)
+
+                patch_data.append(patch_entry)
+
+            # Update metadata
+            self.source_metadata[pair_id] = {
+                'img_signature': img_sig,
+                'lab_signature': lab_sig,
+                'hw_size': self.hw_size,
+                'd_size': self.d_size,
+                'original_shape': original_shape,
+                'patches': patch_data
+            }
+
+            self.patch_paths.extend(patch_data)
+            self.original_shapes.append(original_shape)
+            self.total_patches += len(patch_data)
+
+    def __len__(self):
+        return self.total_patches
+
+    def __getitem__(self, idx):
+        patch_entry = self.patch_paths[idx]
+        img_patch = tifffile.imread(patch_entry['img_path'])
+        lab_patch = tifffile.imread(patch_entry['lab_path'])
+
+        img_tensor = torch.from_numpy(img_patch[None, :])  # Add channel dimension
+        lab_tensor = torch.from_numpy(lab_patch[None, :]).float()
+
+        if self.instance_mode:
+            contour_patch = tifffile.imread(patch_entry['contour_path'])
+            contour_tensor = torch.from_numpy(contour_patch[None, :]).float()
+            return img_tensor, lab_tensor, contour_tensor
+        else:
+            return img_tensor, lab_tensor
+
+
+def calculate_predict_start_end(multiplier, required_size, full_size, idx, required_overlap):
+    if multiplier > 1:
+        start = (required_size - ((required_size * multiplier - full_size) / (multiplier - 1))) * idx
+        start = math.floor(start)
+    else:
+        start = 0
+    end = start + required_size + (2 * required_overlap)
+    return start, end
+
+
+class PredictDataset(torch.utils.data.Dataset):
     """
     A torch.utils.data.Dataset class that handles the predict dataset.\n
     Note if the image is larger than the size specified in the augmentation_csv, it will get cropped into several
@@ -568,21 +958,14 @@ class Predict_Dataset(torch.utils.data.Dataset):
         hdf5_key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
 
-    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16,
-                 leave_out_idx=None, hdf5_key='Default'):
+    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, hdf5_key='Default'):
         self.file_list = make_dataset_predict(images_dir)
         self.patches_list = []
         self.meta_list = []
-        if leave_out_idx is not None:
-            file = self.file_list[leave_out_idx]
-            self.file_list = [file]
         for file in self.file_list:
-            image = path_to_array(file, key=hdf5_key, label=False)[None, :]
-            shape = image.shape
-            depth = shape[1]
-            height = shape[2]
-            width = shape[3]
-            file_name = os.path.basename(file)
+            image = path_to_array(str(file), key=hdf5_key, label=False)[None, :]
+            c, depth, height, width = image.shape
+            file_name = file.name
 
             # Calculate the multipliers for padding and cropping
             depth_multiplier = math.ceil(depth / depth_size)
@@ -593,38 +976,20 @@ class Predict_Dataset(torch.utils.data.Dataset):
                         (depth_overlap, depth_overlap),
                         (hw_overlap, hw_overlap),
                         (hw_overlap, hw_overlap))
-            image = np.pad(image, paddings, mode="symmetric")
+            padded_image = np.pad(image, paddings, mode="symmetric")
             # Loop through each depth, height, and width index
-            for depth_idx in range(depth_multiplier):
-                for height_idx in range(height_multiplier):
-                    for width_idx in range(width_multiplier):
-                        if depth_multiplier > 1:
-                            depth_start = (depth_size - ((depth_size * depth_multiplier - depth) / (
-                                        depth_multiplier - 1))) * depth_idx
-                            depth_start = math.floor(depth_start)
-                        else:
-                            depth_start = 0
-                        depth_end = depth_start + depth_size + (2 * depth_overlap)
-                        if height_multiplier > 1:
-                            height_start = (hw_size - ((hw_size * height_multiplier - height) / (
-                                        height_multiplier - 1))) * height_idx
-                            height_start = math.floor(height_start)
-                        else:
-                            height_start = 0
-                        height_end = height_start + hw_size + (2 * hw_overlap)
-                        if width_multiplier > 1:
-                            width_start = (hw_size - (
-                                        (hw_size * width_multiplier - width) / (width_multiplier - 1))) * width_idx
-                            width_start = math.floor(width_start)
-                        else:
-                            width_start = 0
-                        width_end = width_start + hw_size + (2 * hw_overlap)
-                        patch = image[:,
-                                      depth_start:depth_end,
-                                      height_start:height_end,
-                                      width_start:width_end]
-                        self.patches_list.append(torch.from_numpy(patch))
-            self.meta_list.append((file_name, shape))
+            for depth_idx, height_idx, width_idx in product(range(depth_multiplier),
+                                                            range(height_multiplier),
+                                                            range(width_multiplier)):
+                depth_start, depth_end = calculate_predict_start_end(depth_multiplier, depth_size, depth, depth_idx, depth_overlap)
+                height_start, height_end = calculate_predict_start_end(height_multiplier, hw_size, height, height_idx, hw_overlap)
+                width_start, width_end = calculate_predict_start_end(width_multiplier, hw_size, width, width_idx, hw_overlap)
+                patch = padded_image[:,
+                                    depth_start:depth_end,
+                                    height_start:height_end,
+                                    width_start:width_end]
+                self.patches_list.append(torch.from_numpy(patch))
+            self.meta_list.append((file_name, image.shape))
         super().__init__()
 
     def __len__(self):
@@ -635,6 +1000,137 @@ class Predict_Dataset(torch.utils.data.Dataset):
 
     def __getmetainfo__(self):
         return self.meta_list
+
+
+class PredictDatasetChunked(torch.utils.data.Dataset):
+    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, hdf5_key='Default'):
+        self.file_list = make_dataset_predict(images_dir)
+        self.preprocessed_dir = Path(os.path.join(images_dir, "tiff_preprocessed"))
+        os.makedirs(self.preprocessed_dir, exist_ok=True)
+
+        # Metadata file for verification
+        self.metadata_file_path = self.preprocessed_dir.joinpath("source_metadata.json")
+        self.source_metadata = load_metadata(self.metadata_file_path)
+
+        self.hw_size = hw_size
+        self.depth_size = depth_size
+        self.hw_overlap = hw_overlap
+        self.depth_overlap = depth_overlap
+        self.hdf5_key = hdf5_key
+
+        self.patch_paths = []  # Stores paths to all patch TIFFs
+        self.meta_list = []  # Stores original file metadata
+        self.original_shapes = []  # Stores original shapes for each file
+
+        # Process each image into patches
+        for file_path in self.file_list:
+            self.process_image_into_patches(Path(file_path))
+
+        save_metadata(self.metadata_file_path, self.source_metadata)
+
+    def process_image_into_patches(self, source_path):
+        current_signature = get_file_signature(source_path)
+        base = source_path.stem
+        image_dir = self.preprocessed_dir.joinpath(base)
+        os.makedirs(image_dir, exist_ok=True)
+
+        # Check if reprocessing is needed
+        source_sig = get_file_signature(source_path)
+        needs_processing = True
+        if source_path in self.source_metadata:
+            entry = self.source_metadata[source_path]
+            if (entry['signature'] == source_sig and
+                entry['hw_size'] == self.hw_size and
+                entry['depth_size'] == self.depth_size):
+                # Verify all patch files exist
+                all_patches_exist = True
+                for patch_entry in entry['patch_paths']:
+                    if not Path(patch_entry).exists():
+                        all_patches_exist = False
+
+                if all_patches_exist:
+                    needs_processing = False
+
+        # Check if reprocessing is needed
+        if needs_processing:
+            print(f"Processing image: {source_path.name}")
+            safe_remove(image_dir)
+            os.makedirs(image_dir, exist_ok=True)
+
+            # Load and pad the image
+            image = path_to_array(str(source_path), key=self.hdf5_key, label=False)[None, :]  # [1, D, H, W]
+            c, depth, height, width = image.shape
+
+            # Calculate number of patches
+            depth_multiplier = math.ceil(depth / self.depth_size)
+            height_multiplier = math.ceil(height / self.hw_size)
+            width_multiplier = math.ceil(width / self.hw_size)
+
+            # Apply symmetric padding
+            paddings = (
+                (0, 0),
+                (self.depth_overlap, self.depth_overlap),
+                (self.hw_overlap, self.hw_overlap),
+                (self.hw_overlap, self.hw_overlap)
+            )
+            padded_image = np.pad(image, paddings, mode="symmetric")
+
+            # Store patch paths for this image
+            patch_paths = []
+
+            # Generate patches
+            for depth_idx, height_idx, width_idx in product(range(depth_multiplier),
+                                                            range(height_multiplier),
+                                                            range(width_multiplier)):
+                depth_start, depth_end = calculate_predict_start_end(depth_multiplier, self.depth_size, depth, depth_idx,
+                                                                     self.depth_overlap)
+                height_start, height_end = calculate_predict_start_end(height_multiplier, self.hw_size, height, height_idx,
+                                                                       self.hw_overlap)
+                width_start, width_end = calculate_predict_start_end(width_multiplier, self.hw_size, width, width_idx,
+                                                                     self.hw_overlap)
+
+                # Extract patch
+                patch = padded_image[
+                        :,
+                        depth_start:depth_end,
+                        height_start:height_end,
+                        width_start:width_end
+                        ]
+                # Save patch as TIFF
+                patch_path = image_dir / f"patch_{depth_idx}_{height_idx}_{width_idx}.tiff"
+                tifffile.imwrite(str(patch_path), np.squeeze(patch, axis=0), compression='zstd', compressionargs={'level': 3})
+                patch_paths.append(str(patch_path))
+
+            # Update metadata
+            self.source_metadata[str(source_path)] = {
+                'signature': current_signature,
+                'original_shape': list(image.shape),
+                'patch_paths': patch_paths,
+                'hw_size': self.hw_size,
+                'depth_size': self.depth_size,
+            }
+            self.original_shapes.append(image.shape)
+            self.patch_paths.extend(patch_paths)
+        else:
+            # Load existing patch paths from metadata
+            patch_paths = self.source_metadata[str(source_path)]['patch_paths']
+            shape = self.source_metadata[str(source_path)]['original_shape']
+            self.patch_paths.extend(patch_paths)
+            self.original_shapes.append(shape)
+
+    def __len__(self):
+        return len(self.patch_paths)
+
+    def __getitem__(self, idx):
+        patch_path = self.patch_paths[idx]
+        # Load TIFF patch and convert to tensor
+        patch = tifffile.imread(patch_path)
+        return torch.from_numpy(patch[None, :])  # Add channel dimension
+
+    def __getmetainfo__(self):
+        # Return metadata for each original file
+        return [(Path(path).name, tuple(shape))
+                for path, shape in zip(self.file_list, self.original_shapes)]
 
 
 class CollectedDataset(torch.utils.data.Dataset):
@@ -755,24 +1251,50 @@ def custom_collate(batch):
     return batch
 
 
-def get_contour_maps(file_name, folder_path, contour_map_width):
+def get_contour_maps(label_file_path, folder_path='generated_contour_maps', contour_map_width=1):
     """
-    Try get the contour map for the images file. Will first try to load previously saved one from folder_path,
+    Try get the contour map for the label file. Will first try to load previously saved one from folder_path,
     if failed, will generate new one and save it to folder_path.
     """
-    img_path = file_name[1]
-    dir_name, img_name = os.path.split(img_path)
-    contour_img_name = "contour_" + img_name
+    img_name = label_file_path.name
+    contour_img_name = "Contour_" + img_name
     contour_img_path = os.path.join(folder_path, contour_img_name)
-    if not os.path.exists(contour_img_path):
+    metadata_path = os.path.join(folder_path, "contour_metadata.json")
+
+    # Use file modification time and file size as a verification method
+    stat = label_file_path.stat()
+    current_sig = f"mtime:{stat.st_mtime_ns}|size:{stat.st_size}"
+
+    # Load existing metadata
+    metadata = {}
+    if os.path.exists(metadata_path):
+        try:
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+        except:
+            metadata = {}
+
+    # Check if regeneration is needed
+    needs_regenerate = True
+
+    if os.path.exists(contour_img_path):
+        # Check if we have metadata for this file
+        if str(label_file_path) in metadata:
+            # Compare current signature with stored signature
+            if metadata[str(label_file_path)] == current_sig:
+                needs_regenerate = False
+
+    if needs_regenerate:
         print(f'Generating contour map for {img_name}... Can take a while if there are lots of objects.')
-        contour_img = Aug.instance_contour_transform(path_to_array(img_path, label=True), contour_outward=contour_map_width)
+        contour_img = Aug.instance_contour_transform(path_to_array(str(label_file_path), label=True), contour_outward=contour_map_width)
         imageio.v3.imwrite(uri=f'{contour_img_path}', image=contour_img)
+        metadata[str(label_file_path)] = current_sig
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
         print(f'Saved {contour_img_name}')
     else:
         contour_img = path_to_array(contour_img_path, label=True)
-        print(
-            f'Loaded previously saved {contour_img_name}. Remember to delete old one if you made change to the label!')
+        print(f'Loaded previously saved {contour_img_name}')
     return contour_img
 
 

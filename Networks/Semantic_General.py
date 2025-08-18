@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as I
 import math
-from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, scSE, AttentionBlock
+from .Modules.General_Components import ResBasicBlock, BasicBlock, sSE, FourierShells
 
 # Ronneberger, O., Fischer, P., & Brox, T. (2015). U-net: Convolutional networks for biomedical image segmentation.
 # In Medical Image Computing and Computer-Assisted Intervention–MICCAI 2015: 18th International Conference, Munich,
@@ -14,144 +14,167 @@ from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, Basic
 # 2016: 424-432.
 
 # This file contains U-net-like Architectures for semantic segmentation,
-# with the main difference being the skip connection adds the channels instead of concatenate them
-# Basic: Use normal convolution block
-# Residual: Use residual block
-# ResidualBottleneck: Use residual bottleneck block
 
 # U-net: The most influential DL image classification paper.
 # Introduced the concept of skip connection to feed spatial information into the decoder part of the network
 # The original UNet implementation in the paper doesn't use batch normalization, nor does conv padding
 
-
 class UNet(nn.Module):
-    def __init__(self, base_channels=64, depth=4, z_to_xy_ratio=1, type='Basic',
-                 se=False, label_mean=torch.tensor(0.5)):
-        super(UNet, self).__init__()
+    def __init__(self, base_channels=64, depth=4, z_to_xy_ratio=1, block_type='Basic', se=False, instance=False):
+        super().__init__()
         self.depth = depth
-        self.special_layers = math.floor(math.log2(z_to_xy_ratio))
         self.se = se
+        self.instance = instance
+        self.special_layers = round(math.log2(z_to_xy_ratio))
 
+        # Validate parameters
         if abs(self.special_layers) + 1 >= depth:
-            raise ValueError("Current Z to XY ratio requires a deeper network.")
+            raise ValueError("Z to XY ratio requires deeper network")
         if depth < 2:
-            raise ValueError("The depth needs to be at least 2 (2 different feature map size exist).")
+            raise ValueError("Depth must be at least 2")
 
+        # Precompute channel sizes
+        channels = [min(base_channels * (2 ** i), 256) for i in range(depth)]
+
+        # Precompute downsampling parameters
         kernel_sizes_conv = (3, 3, 3)
+        scale_factors, kernel_sizes, paddings = [], [], []
+        for i in range(depth - 1):
+            if self.special_layers > 0 and i < self.special_layers:
+                scale_factors.append((1, 2, 2))
+                kernel_sizes.append((1, 4, 4))
+                paddings.append((0, 1, 1))
+            elif self.special_layers < 0 and i < -self.special_layers:
+                scale_factors.append((2, 1, 1))
+                kernel_sizes.append((4, 1, 1))
+                paddings.append((1, 0, 0))
+            else:
+                scale_factors.append((2, 2, 2))
+                kernel_sizes.append((4, 4, 4))
+                paddings.append((1, 1, 1))
 
-        scale_down = [(1, 2, 2) if self.special_layers > 0 and i < self.special_layers else
-                      (2, 1, 1) if self.special_layers < 0 and i < -self.special_layers else
-                      (2, 2, 2) for i in range(depth)]
-        scale_down_kernel_size = [(1, 4, 4) if self.special_layers > 0 and i < self.special_layers else
-                                  (4, 1, 1) if self.special_layers < 0 and i < -self.special_layers else
-                                  (4, 4, 4) for i in range(depth)]
-        padding_down = [(0, 1, 1) if self.special_layers > 0 and i < self.special_layers else
-                        (1, 0, 0) if self.special_layers < 0 and i < -self.special_layers else
-                        (1, 1, 1) for i in range(depth)]
-        block = {'Basic': BasicBlock, 'Residual': ResBasicBlock, 'ResidualBottleneck': ResBottleneckBlock}[type]
-        for i in range(depth):
+        # Precompute rescale factors for outputs
+        rescale_factors = []
+        for i in range(depth - 1):
+            if self.special_layers > 0:
+                z_factor = max(1, 2 ** (i - self.special_layers))
+                xy_factor = 2 ** i
+            else:
+                z_factor = 2 ** i
+                xy_factor = max(1, 2 ** (i + self.special_layers))
+            rescale_factors.append((z_factor, xy_factor, xy_factor))
+
+        # Select block type
+        block_dict = {
+            'Basic': BasicBlock,
+            'Residual': ResBasicBlock,
+        }
+        block = block_dict[block_type]
+
+        # Initialize module lists
+        self.encoder_blocks = nn.ModuleList()
+        self.down_blocks = nn.ModuleList()
+        self.deconv_blocks = nn.ModuleList()
+        self.decoder_blocks = nn.ModuleList()
+        self.p_output_convs = nn.ModuleList()
+        self.rescale_blocks = nn.ModuleList()
+        self.encoder_se = nn.ModuleList() if se else [nn.Identity()] * (depth - 1)
+        self.decoder_se = nn.ModuleList() if se else [nn.Identity()] * (depth - 1)
+
+        # Build encoder path
+        for i in range(depth - 1):
             if i == 0:
-                num_conv = 1
+                encoder = nn.Sequential(nn.Conv3d(1, channels[i], kernel_sizes_conv, padding='same'),
+                                        block(channels[i], channels[i], kernel_sizes_conv, num_conv=1))
             else:
-                num_conv = 2
-            multiplier_h = min(base_channels * (2 ** i), 256)
-            multiplier_v = min(base_channels * (2 ** (i+1)), 256)
-            if i != depth - 1:
-                if i == 0:
-                    if type == 'ResidualBottleneck':
-                        multiplier_h = multiplier_h // 2
-                        decode_multiplier_v = multiplier_v // 2
-                    else:
-                        decode_multiplier_v = multiplier_v
-                    setattr(self, f'encode{i}', BasicBlock(1, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
-                    setattr(self, f'decode{i}', BasicBlock(decode_multiplier_v, multiplier_h, kernel_sizes_conv, num_conv=num_conv, norm=False))
-                    setattr(self, f'p_out{i}', nn.Conv3d(multiplier_h, 1, kernel_size=1))
-                else:
-                    setattr(self, f'encode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
-                    setattr(self, f'decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv, norm=False))
-                    setattr(self, f'p_out{i}', nn.Conv3d(multiplier_h, 1, kernel_size=1))
-                    if self.special_layers > 0:
-                        depth_factor = max(1, 2**(i - self.special_layers))
-                        xy_factor = 2**i
-                    else:
-                        depth_factor = 2**i
-                        xy_factor = max(1, 2**(i - self.special_layers))
-                    setattr(self, f'rescale{i}', nn.Upsample(scale_factor=(depth_factor, xy_factor, xy_factor), mode='trilinear', align_corners=False))
-                if se: setattr(self, f'encode_se{i}', scSE(multiplier_h))
-                if se: setattr(self, f'decode_se{i}', scSE(multiplier_h))
-                setattr(self, f'down{i}', nn.Sequential(nn.Conv3d(multiplier_h, multiplier_v, scale_down_kernel_size[i], scale_down[i], padding_down[i]),))
-                                                        #nn.InstanceNorm3d(multiplier_v),
-                                                        #nn.SiLU(inplace=True)))
-                setattr(self, f'deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, scale_down_kernel_size[i], scale_down[i], padding_down[i]))
-                '''if unsupervised:
-                    setattr(self, f'u_deconv{i}', nn.ConvTranspose3d(multiplier_v, multiplier_h, kernel_sizes_transpose[i], kernel_sizes_transpose[i]))
-                    setattr(self, f'u_decode{i}', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
-                    if se: setattr(self, f'u_decode_se{i}', scSE(multiplier_h))'''
+                encoder = block(channels[i], channels[i], kernel_sizes_conv, num_conv=2)
+
+            down = nn.Conv3d(
+                channels[i], channels[i + 1],
+                kernel_size=kernel_sizes[i],
+                stride=scale_factors[i],
+                padding=paddings[i]
+            )
+
+            self.encoder_blocks.append(encoder)
+            self.down_blocks.append(down)
+
+            if se:
+                self.encoder_se.append(sSE(channels[i]))
+
+        # Build bottleneck
+        self.bottleneck = block(channels[-1], channels[-1], kernel_sizes_conv, num_conv=2)
+        self.bottleneck_se = sSE(channels[-1]) if se else nn.Identity()
+
+        # Build decoder path
+        for i in range(depth - 1):
+            deconv = nn.ConvTranspose3d(
+                channels[i + 1], channels[i],
+                kernel_size=kernel_sizes[i],
+                stride=scale_factors[i],
+                padding=paddings[i]
+            )
+
+            # Decoder blocks
+            if i == 0:
+                decoder = BasicBlock(channels[1], channels[0], kernel_sizes_conv, num_conv=2, norm=True)
+                if self.instance:
+                    self.c_output_conv = nn.Conv3d(channels[0], 1, kernel_size=1)
             else:
-                setattr(self, 'bottleneck', block(multiplier_h, multiplier_h, kernel_sizes_conv, num_conv=num_conv))
-                if se: setattr(self, f'bottleneck_se', scSE(multiplier_h))
-        #logit_label_mean = torch.log(label_mean / (1 - label_mean)) * 0.5 # Multiply by 0.5 seem to make training more stable.
-        #if type == 'ResidualBottleneck': base_channels = base_channels // 2
-        #with torch.no_grad():
-        #    self.s_out.bias.fill_(logit_label_mean)
-        '''if unsupervised:
-            self.u_out = nn.Conv3d(base_channels, 1, kernel_size=1)'''
+                decoder = block(channels[i], channels[i], kernel_sizes_conv, num_conv=2, norm=True)
 
-    def semantic_decode(self, x, encode_features):
-        outputs = []
+            self.deconv_blocks.append(deconv)
+            self.decoder_blocks.append(decoder)
+            self.p_output_convs.append(nn.Conv3d(channels[i], 1, kernel_size=1))
 
-        for i in reversed(range(self.depth - 1)):
-
-            x = getattr(self, f"deconv{i}")(x)
-            if i != 0:
-                x += encode_features[i]
+            # Rescale blocks (only for i>0)
+            if i > 0:
+                self.rescale_blocks.append(
+                    nn.Upsample(scale_factor=rescale_factors[i], mode='trilinear', align_corners=False)
+                )
             else:
-                x = torch.cat((x, encode_features[i]), dim=1)
-            x = getattr(self, f"decode{i}")(x)
-            if self.se:
-                x = getattr(self, f"decode_se{i}")(x)
-            output = getattr(self, f"p_out{i}")(x)
-            if i != 0:
-                output = getattr(self, f"rescale{i}")(output)
-            outputs.append(output)
+                self.rescale_blocks.append(nn.Identity())
 
-        return outputs
-
-    '''def unsupervised_decode(self, bottleneck):
-        for i in reversed(range(self.depth - 1)):
-            if i == self.depth - 2:
-                u_x = getattr(self, f"u_deconv{i}")(bottleneck)
-            else:
-                u_x = getattr(self, f"u_deconv{i}")(u_x)
-            u_x = getattr(self, f"u_decode{i}")(u_x)
-            if self.se:
-                u_x = getattr(self, f"u_decode_se{i}")(u_x)
-        u_output = self.u_out(u_x)
-        return u_output'''
+            if se:
+                self.decoder_se.append(sSE(channels[i]))
 
     def forward(self, x):
-        encode_features = []
-
+        # Encoder path
+        encoder_features = []
         for i in range(self.depth - 1):
-            x = getattr(self, f"encode{i}")(x)
-            if self.se: x = getattr(self, f"encode_se{i}")(x)
-            encode_features.append(x)
-            x = getattr(self, f"down{i}")(x)
+            x = self.encoder_blocks[i](x)
+            x = self.encoder_se[i](x)
+            encoder_features.append(x)
+            x = self.down_blocks[i](x)
 
-        bottleneck = getattr(self, "bottleneck")(x)
-        if self.se: bottleneck = getattr(self, f"bottleneck_se")(bottleneck)
+        # Bottleneck
+        x = self.bottleneck(x)
+        x = self.bottleneck_se(x)
 
-        return self.semantic_decode(bottleneck, encode_features)
+        # Decoder path with outputs
+        p_outputs = []
+        for i in reversed(range(self.depth - 1)):
+            x = self.deconv_blocks[i](x)
 
-        '''if type[0] == 0:
-            return self.semantic_decode(bottleneck, encode_features)
-        elif type[0] == 1:
-            return self.unsupervised_decode(bottleneck)
-        elif type[0] == 2:
-            return [self.semantic_decode(bottleneck, encode_features), self.unsupervised_decode(bottleneck)]
+            # Combine with encoder features
+            if i == 0:
+                x = torch.cat([x, encoder_features[i]], dim=1)
+            else:
+                x = x + encoder_features[i]
+
+            x = self.decoder_blocks[i](x)
+            x = self.decoder_se[i](x)
+
+            # Generate and rescale output
+            out = self.p_output_convs[i](x)
+            out = self.rescale_blocks[i](out)
+            p_outputs.append(out)
+
+        if self.instance:
+            c_output = self.c_output_conv(x)
+            return p_outputs, c_output
         else:
-            raise ValueError("Invalid data type. Should be either '0'(normal) or '1'(unsupervised) or '2'(both).")'''
-
+            return p_outputs
 
 
 def init_weights(m):
@@ -160,14 +183,7 @@ def init_weights(m):
         I.kaiming_normal_(m.weight, a=0.01, mode='fan_in', nonlinearity='leaky_relu')
         if m.bias is not None:
             I.zeros_(m.bias)
-
     elif isinstance(m, nn.Linear):
-        if m.out_features == 4:
-            # FINAL EMBEDDING LAYER: orthogonal with gain to set Var=0.5
-            # orthogonal gives Var=1.0 in each dim → rescale by sqrt(0.5)
-            I.orthogonal_(m.weight, gain=math.sqrt(0.5))
-            I.zeros_(m.bias)
-        else:
-            # All the intermediate fcs feeding LeakyReLU
-            I.kaiming_normal_(m.weight, a=0.01, mode='fan_in', nonlinearity='leaky_relu')
-            I.zeros_(m.bias)
+        # All the intermediate fcs feeding LeakyReLU
+        I.kaiming_normal_(m.weight, a=0.01, mode='fan_in', nonlinearity='leaky_relu')
+        I.zeros_(m.bias)

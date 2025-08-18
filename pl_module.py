@@ -4,12 +4,12 @@ import lightning.pytorch as pl
 import torch
 import torch.utils.data
 import time
-import tracemalloc
 import torch.utils.tensorboard
 
 from Components import DataComponents
 from Components import Metrics
 from Components.AdEMAMix import AdEMAMix
+from adam_atan2_pytorch import AdamAtan2
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
 from lightning.pytorch.utilities import grad_norm
@@ -33,37 +33,16 @@ class FineTuneLearningRateFinder(LearningRateFinder):
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def pick_arch(arch_args):
-    arch, base_channels, depth, z_to_xy_ratio, se, label_mean, contour_mean = arch_args
-    if arch == "HalfUNetBasic":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, label_mean)
-    elif arch == "HalfUNetGhost":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Ghost', se, label_mean)
-    elif arch == "HalfUNetResidual":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, label_mean)
-    elif arch == "HalfUNetResidualBottleneck":
-        return Semantic_HalfUNets.HalfUNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, label_mean)
-    elif arch == "UNetBasic":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, label_mean)
+    arch, base_channels, depth, z_to_xy_ratio, se, instance = arch_args
+    if arch == "UNetBasic":
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, instance)
     elif arch == "UNetResidual_Recommended":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, label_mean)
-    elif arch == "UNetResidualBottleneck":
-        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, label_mean)
-    elif arch == "SegNet":
-        return Semantic_SegNets.Auto(base_channels, depth, z_to_xy_ratio, se, label_mean)
-    #elif arch == "Tiniest":
-    #    return Testing_Models.Tiniest(base_channels, depth, z_to_xy_ratio)
-    #elif arch == "SingleTopLayer":
-    #    return Testing_Models.SingleTopLayer(base_channels, depth, z_to_xy_ratio, 'Basic', se)
-    elif arch == "InstanceBasic":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Basic', se, label_mean, contour_mean)
-    elif arch == "InstanceResidual_Recommended":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, label_mean, contour_mean)
-    elif arch == "InstanceResidualBottleneck":
-        return Instance_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualBottleneck', se, label_mean, contour_mean)
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'Residual', se, instance)
+    elif arch == "LR":
+        return Semantic_General.UNet(base_channels, depth, z_to_xy_ratio, 'ResidualLR', se, instance)
 
 
 def weight_sequence(alpha, n):
-
     # Generate a sequence of weights that decrease exponentially
     weights = [alpha ** i for i in range(n)]
 
@@ -124,7 +103,7 @@ class PLModule(pl.LightningModule):
 
     def configure_optimizers(self):
         fused = True if device == "cuda" else False
-        optimizer = AdEMAMix(self.parameters(), lr=self.lr)#, weight_decay=0.001)
+        optimizer = AdamAtan2(self.parameters(), lr=self.lr)#, weight_decay=0.001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                                factor=0.5, patience=50,
                                                                threshold_mode='rel',
@@ -142,9 +121,9 @@ class PLModule(pl.LightningModule):
                 img, lab, contour = batch
             else:
                 img = batch[0]
-            p_outputs, c_output = self.forward(img)
-            p_outputs = [p_output * self.p_weights[i] for i, p_output in enumerate(p_outputs)]
-            p_output = torch.sum(torch.stack(p_outputs), dim=0)
+            p_output, c_output = self.forward(img)
+            p_output = [p * self.p_weights[i] for i, p in enumerate(p_output)]
+            p_output = torch.sum(torch.stack(p_output), dim=0)
             if self.dice_threshold_reached:
                 #sigmoid_c_output = self.entropy_preprocess(c_output)
                 sigmoid_p_output = self.entropy_preprocess(p_output)
@@ -170,12 +149,12 @@ class PLModule(pl.LightningModule):
                 img, lab = batch
             else:
                 img = batch[0]
-            outputs = self.forward(img)
-            outputs = [output * self.p_weights[i] for i, output in enumerate(outputs)]
-            output = torch.sum(torch.stack(outputs), dim=0)
+            output = self.forward(img)
+            output = [out * self.p_weights[i] for i, out in enumerate(output)]
+            output = torch.sum(torch.stack(output), dim=0)
             if self.dice_threshold_reached:
-                sigmoid_outputs = self.entropy_preprocess(output)
-                entropy = (-sigmoid_outputs * torch.log(sigmoid_outputs)).mean()
+                sigmoid_output = self.entropy_preprocess(output)
+                entropy = (-sigmoid_output * torch.log(sigmoid_output)).mean()
                 entropy_loss = entropy * pixel_ramp_weight
             else:
                 entropy = torch.tensor(0.0, requires_grad=False)
@@ -362,82 +341,71 @@ class PLModule(pl.LightningModule):
             self.log_metrics("Test", self.test_metrics)
             self.test_metrics.clear()
 
-    '''def on_before_optimizer_step(self, optimizer):
+    def on_before_optimizer_step(self, optimizer):
         norms = grad_norm(self.network, norm_type=2)
-        self.log_dict(norms, logger=True)'''
+        self.log_dict(norms, logger=True)
 
 
 if __name__ == "__main__":
     #tracemalloc.start()
     #snap1 = tracemalloc.take_snapshot()
-    sizes = [(152, 44, 4), (192, 56, 5)]
-    channel_counts = [4, 8, 16]
-    precisions = ['bf16-mixed', '32']
+    archs = ['UNetResidual_Recommended']
     batch_sizes = [2]
-    for size in sizes:
-        for channel_count in channel_counts:
-            for precision in precisions:
-                for batch_size in batch_sizes:
-                    #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
-                    '''train_dataset = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters Anisotropic.csv",
-                                                                64,
-                                                                size[0], size[1], True, False, 0,
-                                                                0,
-                                                                1)
-                    train_label_mean = train_dataset.get_label_mean()
-                    train_contour_mean = torch.tensor(0.5)
-                    unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
-                                                                                    "Augmentation Parameters Anisotropic.csv",
-                                                                                    64,
-                                                                                    size[0], size[1])
-                    train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
-                    sampler = DataComponents.CollectedSampler(train_dataset, batch_size, unsupervised_train_dataset)
-                    collate_fn = DataComponents.custom_collate
-                    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,
-                                                               collate_fn=collate_fn, sampler=sampler,
-                                                               num_workers=0)#, pin_memory=False, persistent_workers=True)
-                    #meta_info = predict_dataset.__getmetainfo__()
-                    #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                    val_dataset = DataComponents.ValDataset("Datasets/val", size[0], size[1], True, "Augmentation Parameters Anisotropic.csv")
-                    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
+    for arch in archs:
+        for batch_size in batch_sizes:
+            for i in range(5):
+                train_dataset = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters Isotropic.csv",
+                                                            32,
+                                                            128, 128, True, 1, 'default')
+                '''unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
+                                                                                "Augmentation Parameters Anisotropic.csv",
+                                                                                64,
+                                                                                size[0], size[1])'''
+                unsupervised_train_dataset = None
+                train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
+                sampler = DataComponents.CollectedSampler(train_dataset, 2, unsupervised_train_dataset)
+                collate_fn = DataComponents.custom_collate
+                train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,
+                                                           collate_fn=collate_fn, sampler=sampler,
+                                                           num_workers=0, pin_memory=False, persistent_workers=False)
+                #meta_info = predict_dataset.__getmetainfo__()
+                #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+                val_dataset = DataComponents.ValDataset("Datasets/val", 128, 128, False, 1)
+                val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size)
 
-                    callbacks = []
-                    model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="",
-                                                                         filename="example_name",
-                                                                         save_weights_only=True, enable_version_counter=False)
-                    swa_callback = StochasticWeightAveraging(1e-5, 0.8, int(0.2 * 10 - 1))
-                    callbacks.append(LearningRateMonitor(logging_interval='epoch'))
-                    callbacks.append(model_checkpoint_last)
-                    callbacks.append(swa_callback)
-                    arch_args = ('InstanceResidual_Recommended', channel_count, size[2], 3.33, True, train_label_mean, train_contour_mean)
-                    model = PLModule(arch_args,
-                                    True, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', True,
-                                    False, False, False, True)
-                    trainer = pl.Trainer(max_epochs=5, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{size}-{channel_count}-{precision}-{batch_size}'),
-                                         accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
-                                         precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
-                                                                                                                      #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
-                    # print(subprocess.run("tensorboard --logdir='lightning_logs'", shell=True))
-                    #snap2 = tracemalloc.take_snapshot()
-                    #top_stats = snap2.compare_to(snap1, 'lineno')
-                    #for stat in top_stats[:20]:
-                    #    print(stat)
-                    #start_time = time.time()
-                    trainer.fit(model,
-                                val_dataloaders=val_loader,
-                                train_dataloaders=train_loader)
-                    torch.cuda.empty_cache()'''
-                    model = PLModule.load_from_checkpoint("'results'/Kasthuri_connectomic_largefov.ckpt")
-                    trainer = pl.Trainer(precision=precision, enable_progress_bar=True, logger=False, accelerator="gpu")
-                    predict_dataset = DataComponents.Predict_Dataset('Datasets/predict',
-                                                                     hw_size=160, depth_size=48,
-                                                                     hw_overlap=16, depth_overlap=4)
-                    predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                    meta_info = predict_dataset.__getmetainfo__()
-                    start_time = time.time()
-                    predictions = trainer.predict(model, predict_loader)
-                    end_time = time.time()
-                    DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',
-                                                                     hw_size=160, depth_size=48,
-                                                                     hw_overlap=16, depth_overlap=4, segmentation_mode='watershed')
-    #model = PLModule.load_from_checkpoint('test.ckpt')
+                callbacks = []
+                #model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="",
+                #                                                     filename="example_name",
+                #                                                     save_weights_only=True, enable_version_counter=False)
+                #swa_callback = StochasticWeightAveraging(1e-5, 0.8, int(0.2 * 150 - 1))
+                callbacks.append(LearningRateMonitor(logging_interval='epoch'))
+                #callbacks.append(model_checkpoint_last)
+                #callbacks.append(swa_callback)
+                arch_args = (arch, 4, 4, 1, True, False)
+                #model = PLModule(arch_args,
+                #                True, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', False,
+                #                False, False, False, True)
+                model = PLModule.load_from_checkpoint("'results'/example_name.ckpt")
+                trainer = pl.Trainer(max_epochs=5, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{arch}_{batch_size}_LinearMap'),
+                                     accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
+                                     precision='bf16-mixed', enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
+                #model = torch.compile(model)
+                trainer.fit(model,
+                            val_dataloaders=val_loader,
+                            train_dataloaders=train_loader)
+                torch.cuda.empty_cache()
+        '''
+        model = PLModule.load_from_checkpoint("'results'/Kasthuri_connectomic_largefov.ckpt")
+        trainer = pl.Trainer(precision=precision, enable_progress_bar=True, logger=False, accelerator="gpu")
+        predict_dataset = DataComponents.Predict_Dataset('Datasets/predict',
+                                                         hw_size=160, depth_size=48,
+                                                         hw_overlap=16, depth_overlap=4)
+        predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+        meta_info = predict_dataset.__getmetainfo__()
+        start_time = time.time()
+        predictions = trainer.predict(model, predict_loader)
+        end_time = time.time()
+        DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',
+                                                         hw_size=160, depth_size=48,
+                                                         hw_overlap=16, depth_overlap=4, segmentation_mode='watershed')
+        #model = PLModule.load_from_checkpoint('test.ckpt')'''
