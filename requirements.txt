@@ -18,3 +18,4 @@ numba==0.59.1
 mrcfile==1.5.4
 zarr==3.1.1
 tifffile==2025.6.11
+adam_atan2_pytorch

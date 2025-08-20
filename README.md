@@ -53,7 +53,7 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/) or [nnUNet](ht
 
 ## Installation
 
-1. Install [Python 3.10](https://www.python.org/downloads/release/python-31010/). (Newer versions of Python should work as well)
+1. Install [Python 3.11](https://www.python.org/downloads/release/python-31113/). (Newer versions of Python should work as well)
    - During the installation process, ensure that you select the option to add Python to the 'PATH' environment variable.
 2. Install [Git](https://git-scm.com/).
    - If you are using Linux, it's highly likely you can skip this step.
