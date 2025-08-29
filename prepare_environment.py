@@ -51,7 +51,7 @@ re_requirement = re.compile(r"\s*([-_a-zA-Z0-9]+)\s*(?:==\s*([-+_.a-zA-Z0-9]+))?
 
 def requirements_met(requirements_file):
     """
-    Does a simple parse of a requirements.txt file to determine if all rerqirements in it
+    Does a simple parse of a requirements.txt file to determine if all requirements in it
     are already installed. Returns True if so, False if not installed or parsing fails.
     """
 
@@ -99,8 +99,8 @@ def prepare_environment():
     run(f"{torch_command}", "Installing torch and torchvision", "Couldn't install torch", live=True)
     run(f"pip install packaging --trusted-host pypi.org --trusted-host files.pythonhosted.org", "Installing packaging", "Couldn't install packaging", live=True)
     requirements_file = os.path.join(script_path, requirements_file)
-    if not requirements_met(requirements_file):
-        run_pip(f"install -r \"{requirements_file}\"", "requirements")
+    #if not requirements_met(requirements_file):
+    run_pip(f"install -r \"{requirements_file}\" -U", "requirements")
 
 
 if __name__ == "__main__":
