@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as I
 import math
-from .Modules.General_Components import ResBasicBlock, BasicBlock, sSE, FourierShells
+from .Modules.General_Components import ResBasicBlock, BasicBlock, sSE
 
 # Ronneberger, O., Fischer, P., & Brox, T. (2015). U-net: Convolutional networks for biomedical image segmentation.
 # In Medical Image Computing and Computer-Assisted Intervention–MICCAI 2015: 18th International Conference, Munich,

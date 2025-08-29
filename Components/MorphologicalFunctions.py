@@ -239,3 +239,62 @@ def inverter(img):
     max = img.max()
     img = max - (img - min)
     return img
+
+
+@njit
+def pixel_reclaim(touching_map, segmentation, distance_threshold, z_to_xy_ratio=1.01):
+    touching_pixels = np.argwhere(touching_map)
+    map_size = segmentation.shape
+    max_segment_id = segmentation.max()
+    segmentation_new = segmentation.copy()
+
+    # Precompute kernel weights based on distance and z_to_xy_ratio
+    k_size = 2 * distance_threshold + 1
+    kernel = np.zeros((k_size, k_size, k_size), dtype=np.float32)
+    center = distance_threshold
+    for z_rel in range(k_size):
+        dz = z_rel - center
+        for y_rel in range(k_size):
+            dy = y_rel - center
+            for x_rel in range(k_size):
+                dx = x_rel - center
+                # Calculate weighted distance
+                dist = np.sqrt(dx ** 2 + dy ** 2 + (z_to_xy_ratio * dz) ** 2)
+                # Weight is inversely proportional to distance
+                kernel[z_rel, y_rel, x_rel] = 1.0 / (1.0 + dist)
+
+    for pixel_idx in touching_pixels:
+        z, y, x = pixel_idx[0], pixel_idx[1], pixel_idx[2]
+        # Define local region boundaries
+        z_start = max(z - distance_threshold, 0)
+        z_end = min(z + distance_threshold + 1, map_size[0])
+        y_start = max(y - distance_threshold, 0)
+        y_end = min(y + distance_threshold + 1, map_size[1])
+        x_start = max(x - distance_threshold, 0)
+        x_end = min(x + distance_threshold + 1, map_size[2])
+
+        # Initialize weighted counts for segments
+        weighted_counts = np.zeros(max_segment_id + 1, dtype=np.float32)
+
+        # Iterate over the local region
+        for z0 in range(z_start, z_end):
+            dz = z0 - z
+            k_z = dz + distance_threshold
+            for y0 in range(y_start, y_end):
+                dy = y0 - y
+                k_y = dy + distance_threshold
+                for x0 in range(x_start, x_end):
+                    dx = x0 - x
+                    k_x = dx + distance_threshold
+                    segment_id = segmentation[z0, y0, x0]
+                    # Add kernel weight to the segment's count
+                    weighted_counts[segment_id] += kernel[k_z, k_y, k_x]
+
+        # Ignore background (segment ID 0)
+        segment_weights = weighted_counts[1:]
+        total_weight = np.sum(segment_weights)
+        if total_weight > 0:
+            best_segment = np.argmax(segment_weights) + 1
+            segmentation_new[z, y, x] = best_segment
+
+    return segmentation_new

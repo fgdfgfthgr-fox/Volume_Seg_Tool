@@ -1465,7 +1465,7 @@ def allocate_pixels_global(batch_indices_and_args):
             segmentation_shared[z, y, x] = closest_object.item()
 
 
-def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, mode='simple', dynamic=10, pixel_reclaim=True, distance_threshold=1, batch_size=2048):
+def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, mode='simple', dynamic=10, pixel_reclaim='old', distance_threshold=2, batch_size=2048):
     """
     Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.
     Pixels in touching areas are assigned to the closest object based on the largest proportion of pixels within 5 pixel distance to the pixel.
@@ -1477,7 +1477,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
         mode (str): If 'simple', will identify objects via simple connected component labelling. If 'watershed', will use a distance transform watershed instead, which is slower but yield much less under-segment.
         dynamic (int): Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges. Default: 10.
         pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
-        distance_threshold (int): The radius in pixels to search for nearby pixels when allocating. Default: 1.
+        distance_threshold (int): The radius in pixels to search for nearby pixels when allocating. Default: 2.
         batch_size (int): Batch size for pixel reclaim. Default: 2048.
 
     Returns:
@@ -1526,7 +1526,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
     del structure
 
     if pixel_reclaim:
-        touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.uint16).numpy()
+        '''touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.uint16).numpy()
         del touching_map
         num_touching_pixels = len(touching_pixels)
         minlength = segmentation.max().item()
@@ -1572,8 +1572,14 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
         shm_segmentation.unlink()
         shm_touching.close()
         shm_touching.unlink()
-        img_max = segmentation_result.max()
-        if len(np.unique(segmentation_result)) <= 2:
+        segmentation_result = segmentation_result.astype(new_dtype, copy=False)
+        return segmentation_result'''
+        start_time = time.time()
+        segmentation = Morph.pixel_reclaim(touching_map.numpy(), segmentation, distance_threshold)
+        elapsed_time = time.time() - start_time
+        print(f"Time taken for pixel reclaim: {elapsed_time}")
+        img_max = segmentation.max()
+        if len(np.unique(segmentation)) <= 2:
             new_dtype = np.bool_
         elif img_max <= np.iinfo(np.uint8).max:
             new_dtype = np.uint8
@@ -1581,8 +1587,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
             new_dtype = np.uint16
         else:
             new_dtype = np.uint32
-        segmentation_result = segmentation_result.astype(new_dtype, copy=False)
-        return segmentation_result
+        segmentation = segmentation.astype(new_dtype, copy=False)
     else:
         img_max = segmentation.max()
         if len(np.unique(segmentation)) <= 2:
@@ -1594,7 +1599,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
         else:
             new_dtype = np.uint32
         segmentation = segmentation.astype(new_dtype, copy=False)
-        return segmentation
+    return segmentation
 
 
 if __name__ == "__main__":
