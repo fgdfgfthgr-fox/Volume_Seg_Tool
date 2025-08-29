@@ -6,7 +6,7 @@ VST is also available with [SBGrid](https://sbgrid.org/software/titles/vst)!
 
 Supporting Operating Systems includes: Windows and Linux.
 
-## Download Link (latest release: 0.10.0): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.10.2/VST.Release.v0.10.0.zip)
+## Download Link (latest release: 0.10.2): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.10.2/VST.Release.v0.10.2.zip)
 
 ## Latest change
 
