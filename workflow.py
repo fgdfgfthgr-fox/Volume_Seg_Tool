@@ -141,7 +141,7 @@ def start_work_flow(args):
                                                         save_weights_only=True, enable_version_counter=False)'''
         model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
                                                              filename=f"{args.save_model_name}",
-                                                             save_weights_only=True, enable_version_counter=False)
+                                                             save_weights_only=False, enable_version_counter=False)
         swa_callback = StochasticWeightAveraging(1e-5, 0.8, int(0.2*args.num_epochs-1))
         print(f'SWA starts at {int(0.8*args.num_epochs)}\n')
         if logger:
@@ -161,9 +161,15 @@ def start_work_flow(args):
         #new_lr = lr_finder.suggestion()
         #print(f'Learning Rate set to: {new_lr}.')
         #model.hparams.lr = new_lr
-        trainer.fit(model,
-                    val_dataloaders=val_loader,
-                    train_dataloaders=train_loader)
+        if args.read_existing_model:
+            trainer.fit(model,
+                        ckpt_path=args.existing_model_path,
+                        val_dataloaders=val_loader,
+                        train_dataloaders=train_loader)
+        else:
+            trainer.fit(model,
+                        val_dataloaders=val_loader,
+                        train_dataloaders=train_loader)
         del val_loader, train_loader
         model = PLModule.load_from_checkpoint(f"{args.save_model_path}/{args.save_model_name}.ckpt")
         end_time = time.time()
