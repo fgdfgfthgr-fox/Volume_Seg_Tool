@@ -2,12 +2,12 @@
 title: 'VST: A Python-based deep learning tool for segmenting electron microscopy samples'
 tags:
   - Python
-  - Semantic segmentation
-  - Instance segmentation
-  - Machine learning
-  - Image analysis
-  - Microscopy image
-  - Three-dimensional image
+  - Semantic segmentation
+  - Instance segmentation
+  - Machine learning
+  - Image analysis
+  - Microscopy image
+  - Three-dimensional image
 authors:
   - name: Yuyao (Daniel) Huang
     orcid: 0009-0007-7171-5029
