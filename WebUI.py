@@ -333,7 +333,7 @@ def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_thre
 
 
 if __name__ == "__main__":
-    with gr.Blocks(title=f"Volume Seg Tool", theme=gr.themes.Base()) as WebUI:
+    with gr.Blocks(title=f"Volume Seg Tool") as WebUI:
         with gr.Tab("Main"):
             segmentation_mode = gr.Radio(["Semantic", "Instance"], value="Semantic", label="Segmentation Mode")
             workflow_box = gr.CheckboxGroup(["Training", "Validation", "Test", "Predict"],
@@ -363,11 +363,11 @@ if __name__ == "__main__":
                                                     "instead of being calculated automatically")
                 with gr.Accordion("Example of various field of view", open=False):
                     with gr.Row():
-                        gr.Image("GitHub_Res/roi too small.png", image_mode="L", show_download_button=False,
+                        gr.Image("GitHub_Res/roi too small.png", image_mode="L",
                                  interactive=False, label="Field of view too small, cannot tell the feature")
-                        gr.Image("GitHub_Res/roi just right.png", image_mode="L", show_download_button=False,
+                        gr.Image("GitHub_Res/roi just right.png", image_mode="L",
                                  interactive=False, label="Field of view just right")
-                        gr.Image("GitHub_Res/roi too big.png", image_mode="L", show_download_button=False,
+                        gr.Image("GitHub_Res/roi too big.png", image_mode="L",
                                  interactive=False, label="Field of view too big, unnecessary computation and memory use")
                 with gr.Accordion("Automatically computed hyperparameters", open=False):
                     with gr.Row():
@@ -489,9 +489,9 @@ if __name__ == "__main__":
                                             interactive=False, visible=False)
                 with gr.Accordion("When do you need to pair positive and negative sample", open=False):
                     with gr.Row():
-                        gr.Image("GitHub_Res/require bs 2.png", image_mode="L", show_download_button=False,
+                        gr.Image("GitHub_Res/require bs 2.png", image_mode="L",
                                  interactive=False, label="Require the box to be ticked due to large area of empty space outside the cell")
-                        gr.Image("GitHub_Res/do not require bs 2.png", image_mode="L", show_download_button=False,
+                        gr.Image("GitHub_Res/do not require bs 2.png", image_mode="L",
                                  interactive=False, label="Does not Require the box to be ticked")
                 with gr.Row():
                     train_multiplier = gr.Number(None, label="Train Multiplier (Repeats)",
@@ -649,7 +649,7 @@ if __name__ == "__main__":
                                                      "this settings will try to reclaim some of those lost pixels, but can take quite some time.")
                     #TTA_z = gr.Checkbox(label="Enable Test-Time Augmentation for z dimension", info="Depth Wise flip the image")
             with gr.Row():
-                calculate_repeats = gr.Button(value="Calculate Training Repeats and Epoches!")
+                calculate_repeats = gr.Button(value="Calculate Training Repeats and Epochs!")
                 def calculate_train_multiplier(val_num_patch, num_t_files, workflow_box):
                     if 'Validation' in workflow_box:
                         # Aiming to have 10% steps in val, 90% steps in train
@@ -941,4 +941,4 @@ if __name__ == "__main__":
                 start_button.click(get_stats_between_maps, inputs=[stat_mode, predicted_img_path, ground_truth_img_path, iou_threshold],
                                     outputs=[dice, sensitivity, specificity, fpr, fnr])
 
-    WebUI.launch(inbrowser=True)
+    WebUI.launch(inbrowser=True, theme=gr.themes.Base())
