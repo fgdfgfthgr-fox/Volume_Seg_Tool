@@ -73,6 +73,6 @@ The activations visualisation section requires a trained network and an example 
 The extra section contains two functionalities: exporting the TensorBoard log to an Excel table, calculating segmentation metrics between (potentially) generated labels and ground truth labels.
 
 # Acknowledgements
-We want to thank to: Rhodri Harfoot and Isa de Vries for providing the SARS-CoV-2 infected cells samples, Sai Velamoor and Laura Burga for tumoursphere preparations, Niki Hazelton and Richard Easingwood from the Otago Micro and Nano Imaging centre for data collection, Marina Richena for fruitful discussions. We would also like to thank Bioeconomy Science Ltd for their support during the MSc study and Otago's postgraduate publishing bursaries for their support with the time of writing.
+We want to thank to: Rhodri Harfoot and Isa de Vries for providing the SARS-CoV-2 infected cells samples, Sai Velamoor and Laura Burga for tumoursphere preparations, Niki Hazelton and Richard Easingwood from the Otago Micro and Nano Imaging centre for data collection, Marina Richena for fruitful discussions. We would also like to thank Bioeconomy Science Ltd for their support during the MSc study and University of Otago Postgraduate Publishing Bursary (Master's) for their support with the time of writing.
 
 # References
