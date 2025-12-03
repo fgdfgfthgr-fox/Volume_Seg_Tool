@@ -50,7 +50,7 @@ VST has been used and tested mostly within a postgraduate project at the Univers
 
 The initial performance testing for VST with various subjects has been reported in [@huang2025generalist], further testing within postgraduate projects at the University of Otago, New Zealand has further established scale, being able to segment the entire mitochondrial complement of tumoursphers [@jadav2023beyond], and to segment poorly demarked cell remnants within wool fibres (unpublished).
 
-![Figure 1: Schematic diagram for VST](Figure 1.png)
+![Schematic diagram for VST](Figure 1.png)
 
 # Statement of need
 Volume Electron Microscopy (VEM) enables the capture of 3D structure beyond planar samples, which is crucial for understanding biological mechanisms. With automation, improved resolution, and increased data storage capacity, VEM has led to an explosion of large three-dimensional datasets. Large datasets offer the opportunity to generate statistical data, but analysing them often requires assigning each voxel (3D pixel) to its corresponding structure, a process known as image segmentation. Manually segmenting hundreds or thousands of image slices is tedious and time-consuming. Computer-aided, especially Machine Learning (ML) based segmentation is now a routinely used method, with Trainable Weka Segmentation [@arganda2017trainable] and Ilastik [@berg2019ilastik] being two leading options. Emerging methods for EM image segmentation are often based on Deep Learning (DL) [@mekuvc2020automatic] because this approach has potential to outperform traditional ML in terms of accuracy and adaptivity [@minaee2021image][@erickson2019deep].
@@ -68,7 +68,7 @@ The main section (Figure 2) contains settings regarding training and using segme
 
 Upon training, it automatically opens a Tensorboard interface [@pang2020deep] to provides various real time visualisations for the training process.
 
-![Figure 2: The main interface of VST](Figure 2.png)
+![The main interface of VST](Figure 2.png)
 
 The activations visualisation section requires a trained network and an example image. Given that image, it plots the activation across each channel through all layers of the network.
 
