@@ -49,6 +49,7 @@ Recognising the current rapid expansion of the VEM field, we have built VST with
 VST has been used and tested mostly within a postgraduate project at the University of Otago, New Zealand, using serial block face scanning electron microscopy data from tissue, cell cultures and biobased materials (e.g., hair).
 
 The initial performance testing for VST with various subjects has been reported in [@huang2025generalist], further testing within postgraduate projects at the University of Otago, New Zealand has further established scale, being able to segment the entire mitochondrial complement of tumoursphers [@jadav2023beyond], and to segment poorly demarked cell remnants within wool fibres (unpublished).
+
 ![Figure 1: Schematic diagram for VST](Figure 1.png)
 
 # Statement of need
