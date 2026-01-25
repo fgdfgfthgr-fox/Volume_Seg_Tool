@@ -1,4 +1,6 @@
 import math
+import os
+import multiprocessing
 
 import lightning.pytorch as pl
 import torch
@@ -8,14 +10,13 @@ import torch.utils.tensorboard
 
 from Components import DataComponents
 from Components import Metrics
-from Components.AdEMAMix import AdEMAMix
-from adam_atan2_pytorch import AdamAtan2
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
 from lightning.pytorch.utilities import grad_norm
 from lightning.pytorch.callbacks import LearningRateFinder
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks import StochasticWeightAveraging
+from pytorch_optimizer.optimizer import AdaMuon
 
 
 class FineTuneLearningRateFinder(LearningRateFinder):
@@ -53,6 +54,49 @@ def weight_sequence(alpha, n):
     return sequence
 
 
+def get_parameter_groups_withmuon(model, weight_decay=0.0001):
+    no_decay_keywords = ["bias", "bn", "batch_norm", "layer_norm", "norm"]
+
+    # Create the 4 groups
+    decay_muon_params = []  # decay + muon
+    decay_no_muon_params = []  # decay + no muon
+    no_decay_muon_params = []  # no decay + muon
+    no_decay_no_muon_params = []  # no decay + no muon
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        # Determine decay status
+        requires_decay = not any(no_decay_keyword in name for no_decay_keyword in no_decay_keywords)
+
+        # Determine muon status (hidden weights with ndim == 2)
+        is_muon = param.ndim == 2
+
+        # Assign to appropriate group
+        if requires_decay and is_muon:
+            decay_muon_params.append(param)
+        elif requires_decay and not is_muon:
+            decay_no_muon_params.append(param)
+        elif not requires_decay and is_muon:
+            no_decay_muon_params.append(param)
+        else:  # not requires_decay and not is_muon
+            no_decay_no_muon_params.append(param)
+
+    return [
+        # Group 1: decay + muon
+        {'params': decay_muon_params, 'weight_decay': weight_decay, 'use_muon': True},
+
+        # Group 2: decay + no muon
+        {'params': decay_no_muon_params, 'betas': (0.9, 0.95), 'weight_decay': weight_decay, 'use_muon': False},
+
+        # Group 3: no decay + muon
+        {'params': no_decay_muon_params, 'weight_decay': 0.0, 'use_muon': True},
+
+        # Group 4: no decay + no muon
+        {'params': no_decay_no_muon_params, 'betas': (0.9, 0.95), 'weight_decay': 0.0, 'use_muon': False}
+    ]
+
 class PLModule(pl.LightningModule):
     def __init__(self, arch_args, enable_val, enable_mid_visual, mid_visual_image, instance_mode,
                  use_sparse_label_train, use_sparse_label_val, use_sparse_label_test, logging):
@@ -69,7 +113,7 @@ class PLModule(pl.LightningModule):
         self.use_sparse_label_test = use_sparse_label_test
         self.logging = logging
         self.train_metrics, self.val_metrics, self.test_metrics = [], [], []
-        self.lr = 1e-4 # Not the actual LR since it's automatically computed
+        self.lr = 3e-2 # Not the actual LR since it's automatically computed
         self.pixel_ramp_steps = 2048  # Ramp-up the weight of entropy minimisation during the initial 2048 steps
         self.unsupervised_weight = 0.1
         self.p_loss_fn = Metrics.BinaryMetrics("focal")
@@ -102,12 +146,12 @@ class PLModule(pl.LightningModule):
         return 0.999 * torch.sigmoid(value) + 5e-4
 
     def configure_optimizers(self):
-        fused = True if device == "cuda" else False
-        optimizer = AdamAtan2(self.parameters(), lr=self.lr)#, weight_decay=0.001)
+        param_groups = get_parameter_groups_withmuon(self, weight_decay=0.001)
+        optimizer = AdaMuon(param_groups, lr=self.lr, weight_decay=0.001, adamw_lr=3e-4, adamw_wd=0.001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                                factor=0.5, patience=50,
                                                                threshold_mode='rel',
-                                                               cooldown=0, min_lr=0.00001)
+                                                               cooldown=0, min_lr=[1e-3, 1e-5, 1e-3, 1e-5])
         metrics = "val_loss" if self.enable_val else "train_loss"
         return {
             "optimizer": optimizer,
@@ -341,22 +385,32 @@ class PLModule(pl.LightningModule):
             self.log_metrics("Test", self.test_metrics)
             self.test_metrics.clear()
 
-    def on_before_optimizer_step(self, optimizer):
-        norms = grad_norm(self.network, norm_type=2)
-        self.log_dict(norms, logger=True)
+    #def on_before_optimizer_step(self, optimizer):
+    #    norms = grad_norm(self.network, norm_type=2)
+    #    self.log_dict(norms, logger=True)
 
 
 if __name__ == "__main__":
-    #tracemalloc.start()
-    #snap1 = tracemalloc.take_snapshot()
+    multiprocessing.set_start_method('spawn', force=True)
+    torch.set_float32_matmul_precision('medium')
+    if torch.cuda.is_available() and torch.version.cuda:
+        print('Optimising computing and memory use via cuDNN! (NVIDIA GPU only).')
+        torch.backends.cudnn.enabled = True
+        torch.backends.cudnn.benchmark = True
+    elif torch.cuda.is_available() and torch.version.hip:
+        print('Optimising computing using TunableOp! (AMD GPU only).')
+        torch.cuda.tunable.enable()
+        os.environ["PYTORCH_TUNABLEOP_HIPBLASLT_ENABLED"] = "0"
+        torch.cuda.tunable.tuning_enable()
+        torch.cuda.tunable.set_filename('TunableOp_results')
     archs = ['UNetResidual_Recommended']
     batch_sizes = [2]
     for arch in archs:
         for batch_size in batch_sizes:
-            for i in range(5):
+            for i in range(1):
                 train_dataset = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters Isotropic.csv",
                                                             32,
-                                                            128, 128, True, 1, 'default')
+                                                            192, 56, True, 1, 'default')
                 '''unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
                                                                                 "Augmentation Parameters Anisotropic.csv",
                                                                                 64,
@@ -370,7 +424,7 @@ if __name__ == "__main__":
                                                            num_workers=0, pin_memory=False, persistent_workers=False)
                 #meta_info = predict_dataset.__getmetainfo__()
                 #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                val_dataset = DataComponents.ValDataset("Datasets/val", 128, 128, False, 1)
+                val_dataset = DataComponents.ValDataset("Datasets/val", 192, 56, True, 1)
                 val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size)
 
                 callbacks = []
@@ -381,14 +435,14 @@ if __name__ == "__main__":
                 callbacks.append(LearningRateMonitor(logging_interval='epoch'))
                 #callbacks.append(model_checkpoint_last)
                 #callbacks.append(swa_callback)
-                arch_args = (arch, 4, 4, 1, True, False)
-                #model = PLModule(arch_args,
-                #                True, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', False,
-                #                False, False, False, True)
-                model = PLModule.load_from_checkpoint("'results'/example_name.ckpt")
-                trainer = pl.Trainer(max_epochs=5, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{arch}_{batch_size}_LinearMap'),
+                arch_args = (arch, 8, 4, 3.33, True, True)
+                model = PLModule(arch_args,
+                                True, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', True,
+                                False, False, False, True)
+                #model = PLModule.load_from_checkpoint("'results'/example_name.ckpt")
+                trainer = pl.Trainer(max_epochs=1, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{arch}_{batch_size}_LinearMap'),
                                      accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
-                                     precision='bf16-mixed', enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
+                                     precision='32', enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
                 #model = torch.compile(model)
                 trainer.fit(model,
                             val_dataloaders=val_loader,
