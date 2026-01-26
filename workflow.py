@@ -44,8 +44,10 @@ def start_work_flow(args):
         torch.backends.cudnn.benchmark = True
     elif torch.cuda.is_available() and torch.version.hip:
         print('Optimising computing using TunableOp! (AMD GPU only).')
-        torch.cuda.tunable.enable()
-        torch.cuda.tunable.set_filename('TunableOp_results')
+        #torch.backends.cudnn.enabled = False
+        #os.environ["PYTORCH_TUNABLEOP_HIPBLASLT_ENABLED"] = "0"
+        #torch.cuda.tunable.enable()
+        #torch.cuda.tunable.set_filename('TunableOp_results')
     if args.train_offload:
         TD = DataComponents.TrainDatasetChunked
         UTD = DataComponents.UnsupervisedDatasetChunked
@@ -115,7 +117,7 @@ def start_work_flow(args):
     else:
         sparse_train = False
     if args.read_existing_model:
-        model = PLModule.load_from_checkpoint(args.existing_model_path)
+        model = PLModule.load_from_checkpoint(args.existing_model_path, weights_only=False)
     else:
         model = PLModule(arch_args,
                          'Validation' in args.workflow_box, args.enable_mid_visualization,
@@ -171,7 +173,7 @@ def start_work_flow(args):
                         val_dataloaders=val_loader,
                         train_dataloaders=train_loader)
         del val_loader, train_loader
-        model = PLModule.load_from_checkpoint(f"{args.save_model_path}/{args.save_model_name}.ckpt")
+        model = PLModule.load_from_checkpoint(f"{args.save_model_path}/{args.save_model_name}.ckpt", weights_only=False)
         end_time = time.time()
         print(f"Training Taken: {end_time - start_time} seconds")
         gc.collect()

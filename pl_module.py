@@ -19,7 +19,7 @@ from lightning.pytorch.callbacks import StochasticWeightAveraging
 from pytorch_optimizer.optimizer import AdaMuon
 
 
-class FineTuneLearningRateFinder(LearningRateFinder):
+'''class FineTuneLearningRateFinder(LearningRateFinder):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -28,7 +28,7 @@ class FineTuneLearningRateFinder(LearningRateFinder):
 
     def on_train_epoch_start(self, trainer, pl_module):
         if trainer.current_epoch == 0:
-            self.lr_find(trainer, pl_module)
+            self.lr_find(trainer, pl_module)'''
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -399,56 +399,58 @@ if __name__ == "__main__":
         torch.backends.cudnn.benchmark = True
     elif torch.cuda.is_available() and torch.version.hip:
         print('Optimising computing using TunableOp! (AMD GPU only).')
-        torch.cuda.tunable.enable()
+        '''torch.cuda.tunable.enable()
         os.environ["PYTORCH_TUNABLEOP_HIPBLASLT_ENABLED"] = "0"
-        torch.cuda.tunable.tuning_enable()
+        os.environ["MIOPEN_ENABLE_LOGGING"] = "1"
+        os.environ["MIOPEN_ENABLE_LOGGING_CMD"] = "1"
+        os.environ["MIOPEN_LOG_LEVEL"] = "7"
+        os.environ["MIOPEN_FIND_MODE"] = "2"
+        torch.cuda.tunable.tuning_enable()'''
         torch.cuda.tunable.set_filename('TunableOp_results')
-    archs = ['UNetResidual_Recommended']
-    batch_sizes = [2]
-    for arch in archs:
-        for batch_size in batch_sizes:
-            for i in range(1):
-                train_dataset = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters Isotropic.csv",
-                                                            32,
-                                                            192, 56, True, 1, 'default')
-                '''unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
-                                                                                "Augmentation Parameters Anisotropic.csv",
-                                                                                64,
-                                                                                size[0], size[1])'''
-                unsupervised_train_dataset = None
-                train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
-                sampler = DataComponents.CollectedSampler(train_dataset, 2, unsupervised_train_dataset)
-                collate_fn = DataComponents.custom_collate
-                train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,
-                                                           collate_fn=collate_fn, sampler=sampler,
-                                                           num_workers=0, pin_memory=False, persistent_workers=False)
-                #meta_info = predict_dataset.__getmetainfo__()
-                #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                val_dataset = DataComponents.ValDataset("Datasets/val", 192, 56, True, 1)
-                val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size)
+        torch.backends.cuda.preferred_blas_library(backend='hipblas')
+    arch = 'UNetResidual_Recommended'
+    batch_size = 2
+    train_dataset = DataComponents.TrainDataset("Datasets/train", "Augmentation Parameters Isotropic.csv",
+                                                32,
+                                                192, 56, True, 1, 'default')
+    '''unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
+                                                                    "Augmentation Parameters Anisotropic.csv",
+                                                                    64,
+                                                                    size[0], size[1])'''
+    unsupervised_train_dataset = None
+    train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
+    sampler = DataComponents.CollectedSampler(train_dataset, 2, unsupervised_train_dataset)
+    collate_fn = DataComponents.custom_collate
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,
+                                               collate_fn=collate_fn, sampler=sampler,
+                                               num_workers=0, pin_memory=False, persistent_workers=False)
+    #meta_info = predict_dataset.__getmetainfo__()
+    #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+    val_dataset = DataComponents.ValDataset("Datasets/val", 192, 56, True, 1)
+    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=batch_size)
 
-                callbacks = []
-                #model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="",
-                #                                                     filename="example_name",
-                #                                                     save_weights_only=True, enable_version_counter=False)
-                #swa_callback = StochasticWeightAveraging(1e-5, 0.8, int(0.2 * 150 - 1))
-                callbacks.append(LearningRateMonitor(logging_interval='epoch'))
-                #callbacks.append(model_checkpoint_last)
-                #callbacks.append(swa_callback)
-                arch_args = (arch, 8, 4, 3.33, True, True)
-                model = PLModule(arch_args,
-                                True, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', True,
-                                False, False, False, True)
-                #model = PLModule.load_from_checkpoint("'results'/example_name.ckpt")
-                trainer = pl.Trainer(max_epochs=1, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{arch}_{batch_size}_LinearMap'),
-                                     accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
-                                     precision='32', enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
-                #model = torch.compile(model)
-                trainer.fit(model,
-                            val_dataloaders=val_loader,
-                            train_dataloaders=train_loader)
-                torch.cuda.empty_cache()
-        '''
+    callbacks = []
+    #model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="",
+    #                                                     filename="example_name",
+    #                                                     save_weights_only=True, enable_version_counter=False)
+    #swa_callback = StochasticWeightAveraging(1e-5, 0.8, int(0.2 * 150 - 1))
+    callbacks.append(LearningRateMonitor(logging_interval='epoch'))
+    #callbacks.append(model_checkpoint_last)
+    #callbacks.append(swa_callback)
+    arch_args = (arch, 8, 4, 3.33, True, True)
+    model = PLModule(arch_args,
+                    True, False, 'Datasets/mid_visualiser/Ts-4c_visualiser.tif', True,
+                    False, False, False, True)
+    #model = PLModule.load_from_checkpoint("'results'/example_name.ckpt")
+    trainer = pl.Trainer(max_epochs=1, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'{arch}_{batch_size}_LinearMap'),
+                         accelerator="auto", enable_checkpointing=False, gradient_clip_val=0.2,
+                         precision='32', enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
+    #model = torch.compile(model)
+    trainer.fit(model,
+                val_dataloaders=val_loader,
+                train_dataloaders=train_loader)
+    #torch.cuda.empty_cache()
+    '''
         model = PLModule.load_from_checkpoint("'results'/Kasthuri_connectomic_largefov.ckpt")
         trainer = pl.Trainer(precision=precision, enable_progress_bar=True, logger=False, accelerator="gpu")
         predict_dataset = DataComponents.Predict_Dataset('Datasets/predict',

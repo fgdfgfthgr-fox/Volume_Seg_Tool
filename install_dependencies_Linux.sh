@@ -95,6 +95,7 @@ elif [[ -n "$gpu_info" && "$gpu_info" == *"AMD"* ]] || [[ -n "$rocm_version" ]];
         fi
     else
         printf "\e[1m\e[33mWARNING: AMD GPU detected but ROCm installation not found\e[0m\n"
+        exit 1
     fi
 fi
 

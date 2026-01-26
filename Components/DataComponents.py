@@ -397,6 +397,7 @@ class TrainDataset(torch.utils.data.Dataset):
 
     def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64,
                  instance_mode=False, contour_map_width=1, hdf5_key='Default'):
+        super().__init__()
         # Get a list of file paths for images and labels
         self.file_list = np.array(make_dataset_tv(images_dir))
         self.num_files = len(self.file_list)
@@ -409,7 +410,6 @@ class TrainDataset(torch.utils.data.Dataset):
         self.train_multiplier = train_multiplier
         self.hw_size = hw_size
         self.d_size = d_size
-        super().__init__()
 
     def __len__(self):
         return self.num_files * self.train_multiplier
