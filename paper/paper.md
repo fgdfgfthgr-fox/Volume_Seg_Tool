@@ -56,14 +56,14 @@ Many earlier DL tools developed are highly specific to single sample types, like
 In short, there is a lack of tools that can handle a wide range of VEM data well for generating both semantic and instance segmentation, while at the same time been easy to use, scalable and can be run locally. Which is what motivated us to develop VST - an easy-to-use and adaptive DL tools specifically optimised for generalised VEM image segmentation. 
 
 # Software design
-The core principles of VST lie in the user-friendliness and scalability. We aim to make the software as accessible as possible to non-professional users. The one-click installer included automatically creates a Python virtual environment and installs all the required dependencies, adjusting to the user's GPU brand and generation. Full documentation on all user-accessible features is also included, as well as a walkthrough using example data on the software's GitHub wiki. Internally, VST uses a heavily modified U-Net [@ronneberger2015u] architecture, a proven DL architecture for segmentation tasks that is known for its fast convergence and adaptability.
+The core principles of VST lie in the user-friendliness and scalability. The software come with an one-click installer and full documentation on all user-accessible features, aim to enable accessibility for domain experts without machine learning expertise. In terms of scalability, VST uses Zarr[@abernathey2026zarr], a framework for distributed storage, which allows just-in-time, chunked access for datasets much larger than the user's system memory. Which is a common situation within VEM, where datasets of hundreds or thousands of gigabytes scales are present.
 
-In terms of scalability, VST uses Zarr[@abernathey2026zarr] to create intermediate datasets, allowing efficient, just-in-time, chunked access and enabling the use of datasets much larger than the user's system memory. Which is a common situation within VEM, where datasets of hundreds or thousands of gigabytes scales are present.
+In terms of design, the software provides a graphical interface over a set of scripts handling various aspects of the deep learning and inference workload. The internal training framework utilises PyTorch [@paszke2019pytorch], the interface compiles terminal commands and activates the Python scripts as needed (Figure 1). For the DL model underneath, VST uses a heavily modified U-Net [@ronneberger2015u], a proven DL architecture for segmentation tasks that is known for its fast convergence and adaptability. The size, depth and other details of the model are configured automatically based on the characteristics of the user's dataset.
 
-2D datasets are often smaller in size, so the scalability aspect matters less. Much of VST's internal logic is optimised for single-class semantic and instance segmentation, and cannot easily be transferred to the multi-class case. To keep the workload and codebase manageable, we have made the trade-off of not being able to perform 2D image segmentation or multi-class segmentation.
+Much of VST's internal logic is optimised for single-class semantic and instance segmentation and cannot easily be transferred to the multi-class case or 2D image segmentation. This trade-off was made to keep workloads manageable, simplify the codebase, and maximise the ease of use for those with minimal machine learning expertise.
 
 # Research impact statement
-VST has currently only been used in postgraduate projects at the University of Otago in New Zealand. It has been used to segment the entire mitochondrial complement of tumoursphers [@jadav2023beyond], and to segment poorly demarked cell remnants within wool fibres (unpublished). It has not yet seen outside the university and is currently maintained by its creators only. However, we believe that VST is at the state of being ready for use and ready to be contributed by the wider community: as initial testing has reported competitive performance [@huang2025generalist], and an MIT open-source licence and complete usage documentation are available.
+VST has been used in postgraduate projects at the University of Otago in New Zealand for segmentation of the entire mitochondrial complement of tumorsphere [@jadav2023beyond], as well as poorly demarked cell remnants within wool fibres. VST's competitive performance to nnU-Net [@huang2025generalist], an MIT open-source licence, and comprehensive documentation make it ready for use by the wider community.
 
 # The graphical user interface
 VST's GUI is supported by the Gradio package [@abid2019gradio] and hosted on the user's browser.
@@ -72,7 +72,7 @@ The GUI is divided into three sections: Main, Activations Visualisation and Extr
 
 The main section (Figure 2) contains settings regarding training and using segmenting networks. Two segmentation modes are supported: semantic segmentation, in which the foreground objects are separated from the background, and instance segmentation, in which individual foreground objects are separated from each other as well. User can either train a new network, load an existing network and use it for predictions on new data, or train one and use it immediately.
 
-Upon training, it automatically opens a Tensorboard interface [@pang2020deep] to provides various real time visualisations for the training process.
+Upon training, it automatically opens a TensorBoard interface [@pang2020deep] to provides various real time visualisations for the training process.
 
 ![The main interface of VST](Figure 2.png)
 
@@ -81,7 +81,7 @@ The activations visualisation section requires a trained network and an example 
 The extra section contains two functionalities: exporting the TensorBoard log to an Excel table, calculating segmentation metrics between (potentially) generated labels and ground truth labels.
 
 # AI Usage Disclosure
-ChatGPT and DeepSeek were used in the software creation, exclusively for writing Python functions that satisfy the specified input and output conditions. All generated functions were thoroughly analysed, modified and verified with real-world data to ensure they functioned exactly as desired. No generative AI tools were used in the writing of this manuscript, or the preparation of supporting materials.
+ChatGPT and DeepSeek were used to generate some Python functions. All generated functions were thoroughly analysed, tested with real-world data, modified and verified to satisfy desired input and output conditions. No generative AI tools were used in the writing of this manuscript, or the preparation of supporting materials.
 
 # Acknowledgements
 We want to thank to: Rhodri Harfoot and Isa de Vries for providing the SARS-CoV-2 infected cells samples, Sai Velamoor and Laura Burga for tumoursphere preparations, Niki Hazelton and Richard Easingwood from the Otago Micro and Nano Imaging centre for data collection, Marina Richena for fruitful discussions. We would also like to thank Bioeconomy Science Ltd for their support during the MSc study and University of Otago Postgraduate Publishing Bursary (Master's) for their support with the time of writing.
