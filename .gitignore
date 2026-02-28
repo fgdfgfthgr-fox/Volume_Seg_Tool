@@ -1,5 +1,8 @@
 /venv
 /lightning_logs
 /Cross_Validate_Dataset
-Components/poly_label_tensor_2D.py
-Components/poly_label_tensor_3D.py
+/Components/AdEMAMix.py
+/Networks/GANS.py
+/Networks/Modules/GANS.py
+/Networks/Modules/Transformer.py
+/Cold_Logs

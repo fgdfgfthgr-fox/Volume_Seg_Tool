@@ -1,10 +1,10 @@
 import torch.nn as nn
-from .Modules.General_Components import ResBasicBlock, ResBottleneckBlock, BasicBlock, scSE, sSE
+from .Modules.General import BasicBlock
 
 # Models for various testing purpose
 
 class Tiniest(nn.Module):
-    def __init__(self, base_channels=64, depth=4, z_to_xy_ratio=1):
+    def __init__(self, base_channels=64):
         super(Tiniest, self).__init__()
         self.model = BasicBlock(1, base_channels)
 

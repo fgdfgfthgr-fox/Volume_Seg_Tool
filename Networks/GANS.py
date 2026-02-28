@@ -4,8 +4,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from torch.nn.utils.parametrizations import spectral_norm
-from .Modules.GANS_Components import (ConstantInput, PixelNorm, EqualizedLinear, StyledConv3d, ToG, ResBasicBlock, BasicBlock,
-                                      LowPassFilter, MinibatchStd3d, SimpleGANConv, SimpleModulatedStyleConv, SimpleToG)
+from .Modules.GANS import (ConstantInput, PixelNorm, EqualizedLinear, StyledConv3d, ToG, ResBasicBlock, BasicBlock,
+                           LowPassFilter, MinibatchStd3d, SimpleGANConv, SimpleModulatedStyleConv, SimpleToG)
 
 
 class Generator(nn.Module):

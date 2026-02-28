@@ -3,7 +3,6 @@ import os
 import math
 
 import torch
-import imageio
 import gradio as gr
 import tkinter as tk
 import matplotlib.pyplot as plt
@@ -12,8 +11,7 @@ import numpy as np
 from Components import DataComponents
 from Components import Metrics
 from tkinter import filedialog
-from Networks import *
-from Visualise_Network import V_N_PLModule
+#from Visualise_Network import V_N_PLModule
 from read_tensorboard import read_all_tensorboard_event_files, write_to_excel
 from torchvision.datasets.folder import has_file_allowed_extension
 from command_executor import CommandExecutor
@@ -102,8 +100,11 @@ def start_work_flow(inputs):
            f"--watershed_dynamic {inputs[watershed_dynamic]} "
            f"--result_folder_path {inputs[result_folder_path]} "
            f"--mid_visualization_input {inputs[mid_visualization_input]} "
-           f"--model_architecture {inputs[model_architecture]} --model_channel_count {inputs[model_channel_count]} "
+           f"--model_architecture {inputs[model_architecture]} "
+           f"--model_patch_size_xy {inputs[model_patch_size_xy]} --model_patch_size_z {inputs[model_patch_size_z]} "
+           #f"--model_window_size {inputs[model_window_size]} "
            f"--model_depth {inputs[model_depth]} --z_to_xy_ratio {inputs[z_to_xy_ratio]} "
+           f"--model_depth_multiplier {inputs[model_depth_multiplier]} "
            f"--train_dataset_mode {train_dataset_mode_n} "
            #f"--exclude_edge_size_in {inputs[exclude_edge_size_in]} --exclude_edge_size_out {inputs[exclude_edge_size_out]} "
            f"--contour_map_width {inputs[contour_map_width]} "
@@ -130,10 +131,10 @@ def start_work_flow(inputs):
         cmd += "--test_offload "
     if inputs[predict_offload]:
         cmd += "--predict_offload "
-    if inputs[model_se]:
-        cmd += "--model_se "
-    if inputs[find_max_channel_count]:
-        cmd += "--find_max_channel_count "
+    #if inputs[model_se]:
+    #    cmd += "--model_se "
+    #if inputs[find_max_channel_count]:
+    #    cmd += "--find_max_channel_count "
     if inputs[instance_seg_mode]:
         cmd += "--instance_seg_mode "
     if inputs[pixel_reclaim]:
@@ -142,7 +143,7 @@ def start_work_flow(inputs):
     command_executor.execute_command(cmd)
 
 
-def visualisation_activations(existing_model_path, example_image, slice_to_show):
+'''def visualisation_activations(existing_model_path, example_image, slice_to_show):
     model = V_N_PLModule.load_from_checkpoint(existing_model_path).to('cpu')
     figure_list = []
     tensor = DataComponents.path_to_array(example_image).unsqueeze(0).unsqueeze(0)
@@ -219,7 +220,7 @@ def visualisation_activations(existing_model_path, example_image, slice_to_show)
         img_buffer = np.array(canvas.renderer.buffer_rgba())
         plt.close()
         figure_list.append(img_buffer)
-    return figure_list
+    return figure_list'''
 
 
 def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_csv,
@@ -295,15 +296,7 @@ def tensorboard_to_excel(log_path, save_log_name, save_log_path):
     print(f"Data from all TensorBoard event files in {log_path} has been merged and written to {save_log_name}.")
 
 
-available_architectures = ['UNetResidual_Recommended',
-                           'UNetBasic']
-
-
-def update_available_arch(radio_value):
-    #if radio_value == 'Semantic':
-        #return gr.Dropdown(available_architectures_semantic, label="Model Architecture", value="UNetResidual_Recommended")
-    #else:
-    return gr.Dropdown(available_architectures, label="Model Architecture", value="UNetResidual_Recommended")
+available_architectures = ['SwishTransformer']
 
 
 def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_threshold):
@@ -353,10 +346,11 @@ if __name__ == "__main__":
                                              info="Given a square shaped 2d patch randomly taken from your dataset,"
                                                " what's the minimum side length (in pixels) you (as a human) would need to tell"
                                                " and segment the cellular structure of interest from the patch? "
-                                               "\nIs used to compute the network's patch size, aka field of view.",
+                                               "\nIs used to compute the size of images send into the network.",
                                              precision=0)
                     z_to_xy_ratio = gr.Number(1.0, label="Z-resolution to XY-resolution ratio",
                                               info="The ratio of the z-resolution of the images in the dataset to their xy-resolution. "
+                                                   "Usually is 1.0 or larger if the dataset is anisotropic (e.g. SBF-SEM). "
                                                    "We assume xy has the same resolution.")
                     manual_mode = gr.Checkbox(scale=0,
                                               label="Check to allow manual editing of the parameters below, "
@@ -371,31 +365,43 @@ if __name__ == "__main__":
                                  interactive=False, label="Field of view too big, unnecessary computation and memory use")
                 with gr.Accordion("Automatically computed hyperparameters", open=False):
                     with gr.Row():
-                        hw_size = gr.Number(48, label="Patch Height and Width (px)", interactive=False, precision=0)
-                        model_depth = gr.Number(4, label="Model Depth", interactive=False, precision=0)
-                        d_size = gr.Number(48, label="Patch Depth (px)", interactive=False, precision=0)
-                        dk = gr.Number(0, label="floor(log2([Z to XY ratio]))", interactive=False, precision=0)
+                        hw_size = gr.Number(64, label="Height and Width (px) of training image", interactive=False, precision=0)
+                        d_size = gr.Number(64, label="Depth (px) of training image", interactive=False, precision=0)
+                        model_patch_size_xy = gr.Number(4, label="Patch Height and Width (px)", interactive=False, precision=0)
+                        model_patch_size_z = gr.Number(4, label="Patch Depth (px)", interactive=False, precision=0)
+                        model_depth = gr.Number(8, label="Number of Transformer layers", interactive=False, precision=0)
 
                     def change_dataset_info_mode(choice):
                         interactive = True if choice else False
-                        options = (gr.Number(48, label="Patch Height and Width (px)", interactive=interactive, precision=0),
-                                   gr.Number(4, label="Model Depth", interactive=interactive, precision=0),
-                                   gr.Number(48, label="Patch Depth (px)", interactive=interactive, precision=0))
+                        options = (gr.Number(64, label="Height and Width (px) of training image", interactive=interactive, precision=0),
+                                   gr.Number(64, label="Depth (px) of training image", interactive=interactive, precision=0),
+                                   gr.Number(4, label="Patch Height and Width (px)", interactive=interactive, precision=0),
+                                   gr.Number(4, label="Patch Depth (px)", interactive=interactive, precision=0),
+                                   gr.Number(8, label="Number of Transformer layers", interactive=interactive, precision=0))
                         return options
-                    manual_mode.change(fn=change_dataset_info_mode, inputs=segmentation_mode, outputs=[hw_size, model_depth, d_size])
+                    manual_mode.change(fn=change_dataset_info_mode, inputs=manual_mode,
+                                       outputs=[hw_size, d_size, model_patch_size_xy, model_patch_size_z, model_depth])
 
-                    def calculate_dhw_size(question1, z_to_xy_ratio):
-                        hw_estimate = 1.5 * question1
-                        model_depth = max(round(math.log2(hw_estimate) - 3), 3)
-                        hw_precision = 2 ** (model_depth - 1)
-                        hw_size = hw_precision * max(round(hw_estimate / hw_precision), 1)
+                    def calculate_dhw_size(size_to_spot, z_to_xy_ratio):
+                        hw_estimate = 1.5 * size_to_spot
+                        hw_patch_size = int(math.cbrt(64*z_to_xy_ratio))
+                        d_patch_size = int(math.cbrt(64/z_to_xy_ratio))
 
-                        dk = math.floor(math.log2(z_to_xy_ratio))
-                        d_precision = round(2 ** (model_depth - 1 - dk))
-                        d_size = d_precision * max(round((hw_estimate / z_to_xy_ratio) / d_precision), 1)
-                        return hw_size, model_depth, d_size, dk
-                    size_to_spot.change(calculate_dhw_size, inputs=[size_to_spot, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
-                    z_to_xy_ratio.change(calculate_dhw_size, inputs=[size_to_spot, z_to_xy_ratio], outputs=[hw_size, model_depth, d_size, dk])
+                        window_size = 4 # Hardcoded value that seems good enough
+
+                        hw_size_interval = hw_patch_size * window_size
+                        d_size_interval = d_patch_size * window_size
+
+                        hw_size = hw_size_interval * max(round(hw_estimate / hw_size_interval), 1)
+                        d_size = d_size_interval * max(round(hw_estimate / d_size_interval / z_to_xy_ratio), 1)
+
+                        depth = math.ceil(hw_estimate / hw_size_interval)
+
+                        return hw_size, d_size, hw_patch_size, d_patch_size, depth
+                    size_to_spot.change(calculate_dhw_size, inputs=[size_to_spot, z_to_xy_ratio],
+                                        outputs=[hw_size, d_size, model_patch_size_xy, model_patch_size_z, model_depth])
+                    z_to_xy_ratio.change(calculate_dhw_size, inputs=[size_to_spot, z_to_xy_ratio],
+                                         outputs=[hw_size, d_size, model_patch_size_xy, model_patch_size_z, model_depth])
                 with gr.Row():
                     enable_unsupervised = gr.Checkbox(scale=0, label="Enable Unsupervised Learning",
                                                       info="Allow using unlabelled data to enhance performance.")
@@ -590,10 +596,10 @@ if __name__ == "__main__":
                     folder_button = gr.Button(document_symbol, scale=0)
                     folder_button.click(open_folder, outputs=predict_dataset_path)
                 with gr.Row():
-                    predict_hw_overlap = gr.Number(2**(model_depth.value-1)/2,
+                    predict_hw_overlap = gr.Number(model_patch_size_xy.value*2,
                                                    label="Expansion in Height and Width for each Patch (px)",
                                                    precision=0, interactive=False)
-                    predict_depth_overlap = gr.Number(2**(model_depth.value-1-dk.value)/2,
+                    predict_depth_overlap = gr.Number(model_patch_size_z.value*2,
                                                       label="Expansion in Depth for each Patch (px)",
                                                       precision=0, interactive=False)
                     predict_hw_size = gr.Number(hw_size.value-2*predict_hw_overlap.value,
@@ -601,7 +607,7 @@ if __name__ == "__main__":
                     predict_depth_size = gr.Number(d_size.value-2*predict_depth_overlap.value,
                                                    label="Depth of each Patch (px)", precision=0, interactive=False)
 
-                    def calculate_predict_parameters(model_depth, hw_size, d_size, dk):
+                    def calculate_predict_parameters(model_patch_size_xy, model_patch_size_z, hw_size, d_size):
                         if hw_size <= 64:
                             hw_overlap_multiplier = 1
                         elif hw_size <= 192:
@@ -610,10 +616,12 @@ if __name__ == "__main__":
                             hw_overlap_multiplier = 3
                         if d_size <= 64:
                             d_overlap_multiplier = 1
-                        else:
+                        elif d_size <= 192:
                             d_overlap_multiplier = 2
-                        predict_hw_overlap = (2**(model_depth-1)/2) * hw_overlap_multiplier
-                        predict_depth_overlap = (2**(model_depth-1-dk)/2) * d_overlap_multiplier
+                        else:
+                            d_overlap_multiplier = 3
+                        predict_hw_overlap = model_patch_size_xy * 2 * hw_overlap_multiplier
+                        predict_depth_overlap = model_patch_size_z * 2 * d_overlap_multiplier
                         predict_hw_size = hw_size-2*predict_hw_overlap
                         predict_depth_size = d_size-2*predict_depth_overlap
                         options = (gr.Number(predict_hw_overlap, label="Expansion in Height and Width for each Patch (px)", interactive=False),
@@ -621,18 +629,18 @@ if __name__ == "__main__":
                                    gr.Number(predict_hw_size, label="Height and Width of each Patch (px)", interactive=False),
                                    gr.Number(predict_depth_size, label="Depth of each Patch (px)", interactive=False))
                         return options
-                    model_depth.change(calculate_predict_parameters,
-                                       inputs=[model_depth, hw_size, d_size, dk],
-                                       outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
                     hw_size.change(calculate_predict_parameters,
-                                   inputs=[model_depth, hw_size, d_size, dk],
+                                   inputs=[model_patch_size_xy, model_patch_size_z, hw_size, d_size],
                                    outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
                     d_size.change(calculate_predict_parameters,
-                                  inputs=[model_depth, hw_size, d_size, dk],
+                                  inputs=[model_patch_size_xy, model_patch_size_z, hw_size, d_size],
                                   outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
-                    dk.change(calculate_predict_parameters,
-                              inputs=[model_depth, hw_size, d_size, dk],
-                              outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
+                    model_patch_size_xy.change(calculate_predict_parameters,
+                                               inputs=[model_patch_size_xy, model_patch_size_z, hw_size, d_size],
+                                               outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
+                    model_patch_size_z.change(calculate_predict_parameters,
+                                               inputs=[model_patch_size_xy, model_patch_size_z, hw_size, d_size],
+                                               outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
                 with gr.Row():
                     result_folder_path = gr.Textbox('Datasets/result', scale=2, label="Result Folder Path")
                     folder_button = gr.Button(document_symbol, scale=0)
@@ -734,9 +742,10 @@ if __name__ == "__main__":
                 auto_precision_button.click(auto_precision, outputs=precision)
             with gr.Row():
                 model_architecture = gr.Dropdown(available_architectures, label="Model Architecture")
-                model_channel_count = gr.Number(8, label="Base Channel Count", precision=0, minimum=4,
-                                                info="Often means the number of output channels in the first encoder block. Determines the size of the network. Preferably a multiple of 8.")
-                find = gr.Markdown("Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.")
+                model_depth_multiplier = gr.Number(1.0, label="Model Depth multiplier",
+                                                info="Increasing this numbe makes the model deeper, "
+                                                     "which can help if you want more accuracy at the expense of speed and video memory usage.")
+                '''find = gr.Markdown("Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.")
                 find_max_channel_count = gr.Button("Automatically find the largest channel count")
                 def calculate_channel_count(hw_size, d_size, batch_size, precision, dk):
                     # Reserve around 500 mb
@@ -756,20 +765,19 @@ if __name__ == "__main__":
                         return 4
                     else:
                         return channel_count
-                find_max_channel_count.click(calculate_channel_count, inputs=[hw_size, d_size, batch_size, precision, dk], outputs=model_channel_count)
-                model_se = gr.Checkbox(True, scale=0, label="Enable Squeeze-and-Excitation plug-in",
-                                       info="A simple network attention plug-in that improves segmentation accuracy at minimal cost. It is recommended to enable it.", visible=False)
+                find_max_channel_count.click(calculate_channel_count, inputs=[hw_size, d_size, batch_size, precision, dk], outputs=model_channel_count)'''
                 def show_hide_model_tab(read_existing_model):
                     visible = False if read_existing_model else True
                     options = (gr.Dropdown(available_architectures, label="Model Architecture", visible=visible),
-                               gr.Number(8, label="Base Channel Count", precision=0, minimum=1,
-                               info="Often means the number of output channels in the first encoder block. Determines the size of the network.", visible=visible),
-                               gr.Markdown(
-                                   "Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.", visible=visible),
-                               gr.Button("Automatically find the largest channel count", visible=visible))
+                               gr.Number(1.0, label="Model Size multiplier",
+                                         info="Increasing this numbe makes the model deeper, "
+                                              "which can help if you want more accuracy at the expense of speed and video memory usage.", visible=visible))
+                               #gr.Markdown(
+                               #    "Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.", visible=visible),
+                               #gr.Button("Automatically find the largest channel count", visible=visible))
                     return options
 
-                read_existing_model.change(show_hide_model_tab, inputs=[read_existing_model], outputs=[model_architecture, model_channel_count, find, find_max_channel_count])
+                read_existing_model.change(show_hide_model_tab, inputs=[read_existing_model], outputs=[model_architecture, model_depth_multiplier])
             with gr.Accordion("Visualising example network output on the fly"):
                 gr.Markdown("Note: Gradio doesn't support direct display of 3D image. The result are displayed in the tensorboard.")
                 gr.Markdown("Could slow down training process, especially if the image is big.")
@@ -825,12 +833,12 @@ if __name__ == "__main__":
                 enable_mid_visualization,
                 mid_visualization_input,
                 model_architecture,
-                model_channel_count,
-                find_max_channel_count,
+                model_patch_size_xy,
+                model_patch_size_z,
+                model_depth_multiplier,
                 memory_saving_mode,
                 model_depth,
                 z_to_xy_ratio,
-                model_se,
                 train_dataset_mode,
                 contour_map_width,
                 val_dataset_mode,
@@ -846,7 +854,7 @@ if __name__ == "__main__":
                 #stop_button.click(stop_training_callback)
                 stop_button.click(command_executor.kill_command)
 
-        with gr.Tab("Activations Visualisation"):
+        '''with gr.Tab("Activations Visualisation"):
             gr.Markdown("Given an example image and a trained model weight, visualize the model output in each activation layers.")
             gr.Markdown("As well as the sigmoid layer (the layer right before the output).")
             with gr.Row():
@@ -860,7 +868,7 @@ if __name__ == "__main__":
             slice_to_show = gr.Number(0, label="Depth Slice to show", precision=0, minimum=0)
             outputs = gr.Gallery(label="Output Images", preview=True, selected_index=0)
             start_button = gr.Button("Show Visualization")
-            start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show], outputs=outputs)
+            start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show], outputs=outputs)'''
         '''
         with gr.Tab("Augmentations Visualisation"):
             gr.Markdown("Given your Training Dataset and Augmentation CSV, show some examples of augmented images that will be fed into the network.")

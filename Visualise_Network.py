@@ -5,10 +5,12 @@ import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import torch.nn as nn
 from Networks import *
+from Networks.Modules.Swin import SwinTransformerBlock
 from Components.DataComponents import path_to_array
 from pl_module import pick_arch
 import time
 
+# Not functional right now! Give me some time to find new code for visualising the attention pattern...
 
 
 class V_N_PLModule(pl.LightningModule):
@@ -21,7 +23,7 @@ class V_N_PLModule(pl.LightningModule):
         self.p_outs = []
         self.unsupervised = False
 
-        # Register a hook for activations layers
+        # Register a hook for activations layers or each transformer layer
         def activation_hook_fn(module, input, output):
             self.activations.append(output)
 
@@ -43,19 +45,14 @@ class V_N_PLModule(pl.LightningModule):
                 module.register_forward_hook(activation_hook_fn)
             if isinstance(module, nn.SiLU):
                 module.register_forward_hook(activation_hook_fn)
-            '''if name == "u_out":
-                self.unsupervised = True
-                module.register_forward_hook(u_outs_hook_fn)'''
+            if isinstance(module, SwinTransformerBlock):
+                module.register_forward_hook(activation_hook_fn)
             if name == "c_out":
                 module.register_forward_hook(c_outs_hook_fn)
             if "rescale" in name or name == "p_out0":
                 module.register_forward_hook(p_outs_hook_fn)
 
     def forward(self, image):
-        '''if self.unsupervised:
-            return self.model(image, [2,])
-        else:
-            return self.model(image, [0,])'''
         return self.network(image)
 
 
@@ -63,16 +60,16 @@ class V_N_PLModule(pl.LightningModule):
 if __name__ == "__main__":
 
     # The filename for the existing network to read.
-    EXISTING_NETWORK_NAME = "''/example_name.ckpt"
+    EXISTING_NETWORK_NAME = "example_name.ckpt"
 
     # The architecture of the network
-    NETWORK_ARCH = Semantic_General.UNet(16, 4, 1, 'Residual', True, 0.5)
+    NETWORK_ARCH = DiT.Network()
 
     # The image file you are going to exam the network with.
-    INPUT = 'Datasets/mid_visualiser/image.tif'
+    INPUT = 'Datasets/mid_visualiser/mip1_visualiser.tif'
 
     model = V_N_PLModule.load_from_checkpoint(EXISTING_NETWORK_NAME).to('cpu')
-    test_tensor = path_to_array(INPUT).unsqueeze(0).unsqueeze(0)  # Shape of (1, 1, 128, 256, 256)
+    test_tensor = path_to_array(INPUT).unsqueeze(0).unsqueeze(0)
     # Set the model to evaluation mode
     # model.eval()
 
@@ -89,45 +86,34 @@ if __name__ == "__main__":
 
     # Now, self.activations contains the intermediate activations
     for i, activation in enumerate(model.activations):
-        if i <= 50:
-            pass
-        else:
-            plt.figure(figsize=(16,9))
-            if len(activation.shape) == 5:
-                activation = activation[:, :, 0:1, :, :]
-                tensor_width = activation.shape[-1]
-                tensor_height = activation.shape[-2]
-                if tensor_width >= 4 and tensor_height >= 4:
-                    channels = torch.split(activation, 1, dim=1)
-                    num_channels = len(channels)
-                    plt.suptitle(f'Activation Layer {i}, {num_channels} channels, {tensor_width} * {tensor_height}')
+        plt.figure(figsize=(16,9))
+        '''if len(activation.shape) == 5: # (B, C, D, H, W) for UNet
+            activation = activation[:, :, 0:1, :, :]
+            tensor_width = activation.shape[-1]
+            tensor_height = activation.shape[-2]
+            if tensor_width >= 4 and tensor_height >= 4:
+                channels = torch.split(activation, 1, dim=1)
+                num_channels = len(channels)
+                plt.suptitle(f'Activation Layer {i}, {num_channels} channels, {tensor_width} * {tensor_height}')
 
-                    # Create a grid of subplots to display channels
-                    rows = math.floor(math.sqrt(num_channels))
-                    cols = math.ceil(num_channels/rows)
+                # Create a grid of subplots to display channels
+                rows = math.floor(math.sqrt(num_channels))
+                cols = math.ceil(num_channels/rows)
 
-                    for j, channel in enumerate(channels):
-                        channel = channel.squeeze()
-                        plt.subplot(rows, cols, j + 1)
-                        plt.imshow(channel.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
-                        plt.axis('off')
+                for j, channel in enumerate(channels):
+                    channel = channel.squeeze()
+                    plt.subplot(rows, cols, j + 1)
+                    plt.imshow(channel.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
+                    plt.axis('off')
 
-                    plt.subplots_adjust(wspace=0.1, hspace=0.1)  # Reduce spacing between subplots
-                    plt.show()
-                    time.sleep(0.5)
+                plt.subplots_adjust(wspace=0.1, hspace=0.1)  # Reduce spacing between subplots
+                plt.show()
+                time.sleep(0.5)'''
 
     plt.figure()
     plt.suptitle(f'Sigmoid Layer')
     sigmoid = model.s_outs[-1][:, :, 0:1, :, :].squeeze()
     plt.imshow(sigmoid.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
-    plt.colorbar()
-    plt.axis('off')
-    plt.show()
-
-    plt.figure()
-    plt.suptitle(f'Unsupervised Output Layer')
-    output = model.u_outs[-1][:, :, 0:1, :, :].squeeze()
-    plt.imshow(output.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
     plt.colorbar()
     plt.axis('off')
     plt.show()

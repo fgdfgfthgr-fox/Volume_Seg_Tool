@@ -1,5 +1,3 @@
-import math
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -66,7 +64,7 @@ class BasicBlock(nn.Module):
         layers = []
         for i in range(num_conv):
             layers.append(nn.Conv3d(in_channels if i == 0 else out_channels, out_channels,
-                                    kernel_size=kernel_size, padding=padding, bias=False, padding_mode=padding_mode))
+                                    kernel_size=kernel_size, padding=padding, bias=False))
             if norm:
                 layers.append(nn.InstanceNorm3d(out_channels))
             layers.append(nn.LeakyReLU(inplace=True))
@@ -195,32 +193,3 @@ class AttentionBlock(nn.Module):
         x1 = self.w_x(x)
         return self.psi(self.silu(g1 + x1)) * x
 
-
-class DyT(nn.Module):
-    def __init__(self, num_features, dim=1):
-        """
-        Dynamic Tanh (DyT) layer
-
-        Args:
-            num_features (int): Number of features/channels (same as corresponding normalization layer)
-            dim (int, optional): Dimension along which to apply parameters.
-                                Default: 1 (channel dimension for Conv layers)
-        """
-        super().__init__()
-        self.num_features = num_features
-        self.dim = dim
-
-        # Learnable parameters
-        self.alpha = nn.Parameter(torch.tensor(0.5))  # scalar
-        self.gamma = nn.Parameter(torch.ones(num_features))  # per-channel vector
-        self.beta = nn.Parameter(torch.zeros(num_features))  # per-channel vector
-
-    def forward(self, x):
-        # Reshape gamma and beta to match input dimensions
-        shape = [1] * x.ndim
-        shape[self.dim] = self.num_features
-        gamma = self.gamma.view(*shape)
-        beta = self.beta.view(*shape)
-
-        # Apply dynamic tanh transformation
-        return gamma * torch.tanh(self.alpha * x) + beta

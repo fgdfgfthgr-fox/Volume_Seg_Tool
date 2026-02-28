@@ -24,35 +24,39 @@ set ERROR_REPORTING=FALSE
 :: Do not reinstall existing pip packages on Windows
 set PIP_IGNORE_INSTALLED=0
 
-:: GPU detection and setup
-set gpu_info=
+:: Initialize GPU detection variables
 set cuda_version=
 set torch_command_set=0
+set gpu_failure_reason=
 
-:: Check for NVIDIA GPU and CUDA version using nvidia-smi
-where nvidia-smi >nul 2>nul
-if !errorlevel! equ 0 (
-    set cuda_version=
-    for /f "tokens=*" %%i in ('nvidia-smi ^| findstr /c:"CUDA Version"') do (
-        set "line=%%i"
-        set "line=!line:*CUDA Version:=!"
-        for /f "tokens=1" %%v in ("!line!") do set cuda_version=%%v
-    )
+:: Check for NVIDIA GPU via wmic
+set gpu_list=
+for /f "skip=1 tokens=*" %%i in ('"wmic path win32_videocontroller get caption"') do (
+    set "line=%%i"
+    if not "!line!"=="" set gpu_list=!gpu_list! !line!
 )
 
-:: Check GPU info
-for /f "tokens=*" %%i in ('"wmic path win32_videocontroller get caption"') do set gpu_info=!gpu_info! %%i
-
-echo !gpu_info! | findstr /i "NVIDIA" >nul
+:: Check if any NVIDIA GPU is present
+echo !gpu_list! | findstr /i "NVIDIA" >nul
 if !errorlevel! equ 0 (
+    :: NVIDIA GPU detected – try to get CUDA version
+    where nvidia-smi >nul 2>nul
+    if !errorlevel! equ 0 (
+        for /f "tokens=*" %%i in ('nvidia-smi ^| findstr /c:"CUDA Version"') do (
+            set "line=%%i"
+            set "line=!line:*CUDA Version:=!"
+            for /f "tokens=1" %%v in ("!line!") do set cuda_version=%%v
+        )
+    )
+
     if defined cuda_version (
-        :: Convert version to comparable format (major.minor)
+        :: Parse major.minor
         for /f "tokens=1,2 delims=." %%a in ("!cuda_version!") do (
             set cuda_major=%%a
             set cuda_minor=%%b
         )
 
-        :: Check if CUDA version is >= 11.8
+        :: Check supported versions
         if !cuda_major! equ 12 (
             if !cuda_minor! geq 8 (
                 set TORCH_COMMAND=pip install torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cu128
@@ -67,39 +71,55 @@ if !errorlevel! equ 0 (
         )
 
         if !torch_command_set! equ 0 (
-            echo.
-            echo WARNING: Detected CUDA version !cuda_version! which is not supported by PyTorch 2.7.1
-            echo.
+            set gpu_failure_reason=Unsupported CUDA version !cuda_version! (requires >=11.8)
         )
     ) else (
-        echo.
-        echo WARNING: NVIDIA GPU detected but CUDA installation not found: !cuda_version!
-        echo.
+        :: NVIDIA GPU present but nvidia-smi failed or CUDA not found
+        set gpu_failure_reason=NVIDIA GPU detected but CUDA not found
     )
 ) else (
-    echo !gpu_info! | findstr /i "AMD" >nul
+    :: No NVIDIA – check for AMD
+    echo !gpu_list! | findstr /i "AMD" >nul
     if !errorlevel! equ 0 (
-        echo.
-        echo WARNING: AMD GPU detected but Windows ROCm support is not available
-        echo.
+        set gpu_failure_reason=AMD GPU detected but Windows ROCm is not supported
+    ) else (
+        set gpu_failure_reason=No compatible GPU detected (NVIDIA required)
     )
 )
 
-:: Set CPU install if no compatible GPU setup found
+:: If no compatible GPU setup found, halt with error
 if !torch_command_set! equ 0 (
     echo.
-    echo Installing CPU-only version of PyTorch
+    echo ERROR: !gpu_failure_reason!
+    echo This tool requires a CUDA-capable NVIDIA GPU with a supported driver.
+    echo Installation aborted.
     echo.
-    set TORCH_COMMAND=pip install torch torchvision
+    exit /b 1
 )
 
+:: Python version check (must be >=3.9)
+%python_cmd% -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ERROR: Python 3.9 or higher is required.
+    echo.
+    exit /b 1
+)
 
+:: Check for venv module
+%python_cmd% -c "import venv" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ERROR: Python venv module is not available. Please ensure Python venv is installed.
+    echo.
+    exit /b 1
+)
 
 echo.
 echo Installing dependencies for Volume Seg Tool...
 echo.
 
-:: Check if virtual environment is already activated
+:: Create and activate virtual environment if needed
 if not defined VIRTUAL_ENV (
     echo Creating and activating python venv...
     cd /d "!install_dir!" || (

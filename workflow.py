@@ -11,7 +11,7 @@ import torch
 import multiprocessing
 from torch.utils.data import DataLoader
 
-from pl_module import PLModule
+from pl_module_dit import PLModule
 from Components import DataComponents
 from Networks import *
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
@@ -44,7 +44,7 @@ def start_work_flow(args):
         torch.backends.cudnn.benchmark = True
     elif torch.cuda.is_available() and torch.version.hip:
         print('Optimising computing using TunableOp! (AMD GPU only).')
-        #torch.backends.cudnn.enabled = False
+        torch.backends.cudnn.enabled = False
         #os.environ["PYTORCH_TUNABLEOP_HIPBLASLT_ENABLED"] = "0"
         #torch.cuda.tunable.enable()
         #torch.cuda.tunable.set_filename('TunableOp_results')
@@ -110,8 +110,8 @@ def start_work_flow(args):
             test_loader = DataLoader(dataset=test_dataset, batch_size=args.batch_size)
             del test_dataset
     gc.collect()
-    arch_args = (args.model_architecture, args.model_channel_count, args.model_depth, args.z_to_xy_ratio,
-                 args.model_se, instance_mode)
+    arch_args = ((args.model_patch_size_z, args.model_patch_size_xy, args.model_patch_size_xy), 4,
+                 args.model_depth * args.model_depth_multiplier, instance_mode)
     if 'Sparsely Labelled' in args.train_dataset_mode:
         sparse_train = True
     else:
@@ -250,8 +250,8 @@ if __name__ == "__main__":
     parser.add_argument("--val_key_name", type=str, default=".", help="hdf5 dataset name")
     parser.add_argument("--test_key_name", type=str, default=".", help="hdf5 dataset name")
     parser.add_argument("--predict_key_name", type=str, default=".", help="hdf5 dataset name")
-    parser.add_argument("--hw_size", type=int, default=64, help="Height and Width of each Patch (px)")
-    parser.add_argument("--d_size", type=int, default=64, help="Depth of each Patch (px)")
+    parser.add_argument("--hw_size", type=int, default=64, help="Height and Width of each Training Patch (px)")
+    parser.add_argument("--d_size", type=int, default=64, help="Depth of each Training Patch (px)")
     parser.add_argument("--predict_hw_size", type=int, default=128, help="Height and Width of each Patch (px) during prediction")
     parser.add_argument("--predict_depth_size", type=int, default=128, help="Depth of each Patch (px) during prediction")
     parser.add_argument("--predict_hw_overlap", type=int, default=8,
@@ -269,11 +269,12 @@ if __name__ == "__main__":
     parser.add_argument("--predict_offload", action="store_true", help="Enable disk offloading of prediction data")
     parser.add_argument("--model_architecture", type=str,
                         help="Model Architecture")
-    parser.add_argument("--model_channel_count", type=int, default=8, help="Base Channel Count")
-    parser.add_argument("--find_max_channel_count", action="store_true", help="Automatically find the max channel count that won't result in an OOM error")
+    parser.add_argument("--model_depth_multiplier", type=int, default=8, help="Model Depth multiplier")
+    parser.add_argument("--model_patch_size_xy", type=int, default=4, help="Patch Height and Width (px)")
+    parser.add_argument("--model_patch_size_z", type=int, default=4, help="Patch Depth (px)")
+    #parser.add_argument("--find_max_channel_count", action="store_true", help="Automatically find the max channel count that won't result in an OOM error")
     parser.add_argument("--model_depth", type=int, default=5, help="Model Depth")
     parser.add_argument("--z_to_xy_ratio", type=float, default=1.0)
-    parser.add_argument("--model_se", action="store_true", help="Enable Squeeze-and-Excitation plug-in")
     parser.add_argument("--train_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],
                         default="Fully Labelled", help="Dataset Mode")
     #parser.add_argument("--exclude_edge", action="store_true", help="Mark pictures at object borders as unlabelled")

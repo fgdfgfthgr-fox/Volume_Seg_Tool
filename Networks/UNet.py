@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as I
 import math
-from .Modules.General_Components import ResBasicBlock, BasicBlock, sSE
+from .Modules.General import ResBasicBlock, BasicBlock, sSE
 
 # Ronneberger, O., Fischer, P., & Brox, T. (2015). U-net: Convolutional networks for biomedical image segmentation.
 # In Medical Image Computing and Computer-Assisted Intervention–MICCAI 2015: 18th International Conference, Munich,
@@ -13,11 +13,13 @@ from .Modules.General_Components import ResBasicBlock, BasicBlock, sSE
 # Conference, Athens, Greece, October 17-21, 2016, Proceedings, Part II 19. Springer International Publishing,
 # 2016: 424-432.
 
-# This file contains U-net-like Architectures for semantic segmentation,
+# F. Milletari, N. Navab, S.-A. Ahmadi, V-Net: fully convolutional neural networks for volumetric medical image
+# segmentation, in: 2016 Fourth International Conference on 3D Vision (3DV), IEEE, 2016, pp. 565–571,
+# doi:10.1109/3DV.2016.79.
 
+# This file contains V-Net-like Architectures for semantic segmentation,
 # U-net: The most influential DL image classification paper.
 # Introduced the concept of skip connection to feed spatial information into the decoder part of the network
-# The original UNet implementation in the paper doesn't use batch normalization, nor does conv padding
 
 class UNet(nn.Module):
     def __init__(self, base_channels=64, depth=4, z_to_xy_ratio=1, block_type='Basic', se=False, instance=False):

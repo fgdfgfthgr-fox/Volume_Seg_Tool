@@ -27,7 +27,7 @@ from scipy.ndimage import label
 from torchvision.datasets.folder import has_file_allowed_extension, IMG_EXTENSIONS
 from . import Augmentations as Aug
 from . import MorphologicalFunctions as Morph
-from .welford_std import welford_mean_std
+from .Welford import welford_mean_std
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
