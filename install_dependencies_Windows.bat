@@ -8,7 +8,7 @@ goto :main
 echo.
 echo Press any key to exit...
 pause >nul
-exit /b %1
+exit %1
 
 :main
 :: Get the script directory
