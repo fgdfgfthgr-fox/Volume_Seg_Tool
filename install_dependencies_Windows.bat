@@ -1,6 +1,16 @@
 @echo off
 setlocal enabledelayedexpansion
 
+:: Function to pause and wait for user input before exiting
+goto :main
+
+:pause_and_exit
+echo.
+echo Press any key to exit...
+pause >nul
+exit /b %1
+
+:main
 :: Get the script directory
 for %%i in ("%~dp0") do set "SCRIPT_DIR=%%~fi"
 
@@ -93,8 +103,7 @@ if !torch_command_set! equ 0 (
     echo ERROR: !gpu_failure_reason!
     echo This tool requires a CUDA-capable NVIDIA GPU with a supported driver.
     echo Installation aborted.
-    echo.
-    exit /b 1
+    call :pause_and_exit 1
 )
 
 :: Python version check (must be >=3.9)
@@ -102,8 +111,7 @@ if !torch_command_set! equ 0 (
 if errorlevel 1 (
     echo.
     echo ERROR: Python 3.9 or higher is required.
-    echo.
-    exit /b 1
+    call :pause_and_exit 1
 )
 
 :: Check for venv module
@@ -111,8 +119,7 @@ if errorlevel 1 (
 if errorlevel 1 (
     echo.
     echo ERROR: Python venv module is not available. Please ensure Python venv is installed.
-    echo.
-    exit /b 1
+    call :pause_and_exit 1
 )
 
 echo.
@@ -124,14 +131,14 @@ if not defined VIRTUAL_ENV (
     echo Creating and activating python venv...
     cd /d "!install_dir!" || (
         echo ERROR: Can't cd to !install_dir!, aborting...
-        exit /b 1
+        call :pause_and_exit 1
     )
     if not exist "!venv_dir!" (
         !python_cmd! -m venv "!venv_dir!"
     )
     call !venv_dir!\Scripts\activate || (
         echo ERROR: Cannot activate python venv, aborting...
-        exit /b 1
+        call :pause_and_exit 1
     )
 ) else (
     echo Python venv already activated: !VIRTUAL_ENV!
@@ -140,4 +147,7 @@ if not defined VIRTUAL_ENV (
 :: Run the environment script
 !python_cmd! -u "!ENV_SCRIPT!" %*
 
-:end
+:: If we get here, installation completed successfully
+echo.
+echo Installation completed successfully!
+call :pause_and_exit 0
