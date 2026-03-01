@@ -51,9 +51,10 @@ class Network(nn.Module):
         attn_mask = compute_attn_mask(grid_size, self.window_size, self.window_size//2, x.device)
         x = self.dit(x, grid_size, attn_mask)
 
-        p, c = self.down_p(x), self.down_c(x)
+        p = self.down_p(x)
         p = unfoldNd.foldNd(p.permute(0, 2, 1), (D, H, W), self.patch_size, stride=self.patch_size)
         if self.instance:
+            c = self.down_c(x)
             c = unfoldNd.foldNd(c.permute(0, 2, 1), (D, H, W), self.patch_size, stride=self.patch_size)
             return p, c
         return p

@@ -94,6 +94,7 @@ def start_work_flow(args):
         train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
                                   collate_fn=collate_fn, sampler=sampler,
                                   num_workers=desired_num_workers, persistent_workers=persistent_workers)
+                                  #num_workers=0, persistent_workers=False)
         del train_dataset
         if 'Validation' in args.workflow_box:
             val_dataset = VD(args.val_dataset_path, args.hw_size, args.d_size, instance_mode,
@@ -219,22 +220,23 @@ if __name__ == "__main__":
     multiprocessing.set_start_method('spawn', force=True)
 
     parser = argparse.ArgumentParser(description="Deep Learning Workflow")
-    parser.add_argument("--workflow_box", nargs='+', choices=["Training", "Validation", "Test", "Predict"], default=[],
+    # The default values are for the coverage test using the default data
+    parser.add_argument("--workflow_box", nargs='+', choices=["Training", "Validation", "Test", "Predict"], default=["Training", "Validation", "Predict"],
                         help="Workflows to enable")
     parser.add_argument("--segmentation_mode", choices=["Semantic", "Instance"], default="Semantic",
                         help="Segmentation Mode")
     parser.add_argument("--train_dataset_path", type=str, default="Datasets/train", help="Train Dataset Path")
     parser.add_argument("--augmentation_csv_path", type=str, default="Augmentation Parameters Anisotropic.csv",
                         help="Csv File for Data Augmentation Settings")
-    parser.add_argument("--train_multiplier", type=int, default=8, help="Train Multiplier (Repeats)")
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch Size")
-    parser.add_argument("--pairing_samples", action="store_true", help="Pairing positive and negative samples in a batch")
-    parser.add_argument("--num_epochs", type=int, default=40, help="Number of Epochs")
-    parser.add_argument("--enable_tensorboard", action="store_true", help="Enable TensorBoard Logging")
+    parser.add_argument("--train_multiplier", type=int, default=128, help="Train Multiplier (Repeats)")
+    parser.add_argument("--batch_size", type=int, default=2, help="Batch Size")
+    parser.add_argument("--pairing_samples", default=True, action="store_true", help="Pairing positive and negative samples in a batch")
+    parser.add_argument("--num_epochs", type=int, default=5, help="Number of Epochs") # Five epoch is enough
+    parser.add_argument("--enable_tensorboard", default=True, action="store_true", help="Enable TensorBoard Logging")
     parser.add_argument("--enable_unsupervised", action="store_true", help="Enable Unsupervised Pretraining")
     parser.add_argument("--memory_saving_mode", action="store_true", help="Try save some system memory by dataloading on just single core")
     parser.add_argument("--unsupervised_train_dataset_path", type=str, default="Datasets/unsupervised_train", help="Unsupervised Dataset Path")
-    parser.add_argument("--unsupervised_train_multiplier", type=int, default=64, help="Unsupervised Train Multiplier (Repeats)")
+    parser.add_argument("--unsupervised_train_multiplier", type=int, default=128, help="Unsupervised Train Multiplier (Repeats)")
     parser.add_argument("--tensorboard_path", type=str, default="lightning_logs",
                         help="Path to the folder which the log will be saved to")
     parser.add_argument("--val_dataset_path", type=str, default="Datasets/val", help="Validation Dataset Path")
@@ -243,38 +245,38 @@ if __name__ == "__main__":
     parser.add_argument("--read_existing_model", action="store_true", help="Read Existing Model Weight File")
     parser.add_argument("--existing_model_path", type=str, default="", help="Path to Existing Model Weight File")
     parser.add_argument("--precision", choices=["32", "16-mixed", "bf16-mixed"], default="32", help="Precision")
-    parser.add_argument("--save_model_name", type=str, default="example_name.pth",
+    parser.add_argument("--save_model_name", type=str, default="example_name.ckpt",
                         help="File Name for Model Saved, including extension")
-    parser.add_argument("--save_model_path", type=str, default=".", help="Path to Save the Model Weight")
+    parser.add_argument("--save_model_path", type=str, default="trained_model", help="Path to Save the Model Weight")
     parser.add_argument("--train_key_name", type=str, default=".", help="hdf5 dataset name")
     parser.add_argument("--val_key_name", type=str, default=".", help="hdf5 dataset name")
     parser.add_argument("--test_key_name", type=str, default=".", help="hdf5 dataset name")
     parser.add_argument("--predict_key_name", type=str, default=".", help="hdf5 dataset name")
-    parser.add_argument("--hw_size", type=int, default=64, help="Height and Width of each Training Patch (px)")
-    parser.add_argument("--d_size", type=int, default=64, help="Depth of each Training Patch (px)")
-    parser.add_argument("--predict_hw_size", type=int, default=128, help="Height and Width of each Patch (px) during prediction")
-    parser.add_argument("--predict_depth_size", type=int, default=128, help="Depth of each Patch (px) during prediction")
-    parser.add_argument("--predict_hw_overlap", type=int, default=8,
+    parser.add_argument("--hw_size", type=int, default=160, help="Height and Width of each Training Patch (px)")
+    parser.add_argument("--d_size", type=int, default=48, help="Depth of each Training Patch (px)")
+    parser.add_argument("--predict_hw_size", type=int, default=120, help="Height and Width of each Patch (px) during prediction")
+    parser.add_argument("--predict_depth_size", type=int, default=32, help="Depth of each Patch (px) during prediction")
+    parser.add_argument("--predict_hw_overlap", type=int, default=20,
                         help="Expansion in Height and Width for each Patch (px) during prediction")
     parser.add_argument("--watershed_dynamic", type=int, default=10,
                         help="Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges.")
     parser.add_argument("--predict_depth_overlap", type=int, default=8, help="Expansion in Depth for each Patch (px) during prediction")
     parser.add_argument("--result_folder_path", type=str, default="Datasets/result", help="Result Folder Path")
-    parser.add_argument("--enable_mid_visualization", action="store_true", help="Enable Visualization")
+    parser.add_argument("--enable_mid_visualization", default=True, action="store_true", help="Enable Visualization")
     parser.add_argument("--mid_visualization_input", type=str, default="Datasets/mid_visualiser/image.tif",
                         help="Path to the input image")
     parser.add_argument("--train_offload", action="store_true", help="Enable disk offloading of training data")
     parser.add_argument("--val_offload", action="store_true", help="Enable disk offloading of validation data")
     parser.add_argument("--test_offload", action="store_true", help="Enable disk offloading of test data")
     parser.add_argument("--predict_offload", action="store_true", help="Enable disk offloading of prediction data")
-    parser.add_argument("--model_architecture", type=str,
+    parser.add_argument("--model_architecture", type=str, default="SwishTransformer",
                         help="Model Architecture")
-    parser.add_argument("--model_depth_multiplier", type=int, default=8, help="Model Depth multiplier")
-    parser.add_argument("--model_patch_size_xy", type=int, default=4, help="Patch Height and Width (px)")
-    parser.add_argument("--model_patch_size_z", type=int, default=4, help="Patch Depth (px)")
+    parser.add_argument("--model_depth_multiplier", type=int, default=1, help="Model Depth multiplier")
+    parser.add_argument("--model_patch_size_xy", type=int, default=5, help="Patch Height and Width (px)")
+    parser.add_argument("--model_patch_size_z", type=int, default=2, help="Patch Depth (px)")
     #parser.add_argument("--find_max_channel_count", action="store_true", help="Automatically find the max channel count that won't result in an OOM error")
-    parser.add_argument("--model_depth", type=int, default=5, help="Model Depth")
-    parser.add_argument("--z_to_xy_ratio", type=float, default=1.0)
+    parser.add_argument("--model_depth", type=int, default=8, help="Number of Transformer blocks in the Model")
+    parser.add_argument("--z_to_xy_ratio", type=float, default=3.33)
     parser.add_argument("--train_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],
                         default="Fully Labelled", help="Dataset Mode")
     #parser.add_argument("--exclude_edge", action="store_true", help="Mark pictures at object borders as unlabelled")

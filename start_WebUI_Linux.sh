@@ -1,3 +1,4 @@
+#!/bin/bash
 
 python_cmd="python3"
 

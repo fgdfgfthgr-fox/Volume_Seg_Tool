@@ -31,7 +31,13 @@ if not defined VIRTUAL_ENV (
 )
 
 :: Start WebUI script
-echo Starting WebUI script...
-!python_cmd! -u "!WEBUI_SCRIPT!" %*
-
-:end
+set exit_code=!errorlevel!
+echo.
+if !exit_code! equ 0 (
+    echo Workflow completed successfully (exit code 0).
+) else (
+    echo Workflow failed with exit code !exit_code!.
+)
+echo Press any key to exit...
+pause >nul
+exit /b !exit_code!

@@ -685,7 +685,7 @@ if __name__ == "__main__":
             with gr.Row():
                 read_existing_model = gr.Checkbox(label="Read Existing Model Weight File", scale=0,
                                                   info="Else it will create a new model with randomised weight.")
-                existing_model_path = gr.Textbox('example_name.ckpt', label="Path to Existing Model Weight File, it should be a file with 'ckpt' at the end.")
+                existing_model_path = gr.Textbox('trained_model/example_name.ckpt', label="Path to Existing Model Weight File, it should be a file with 'ckpt' at the end.")
                 file_button = gr.Button(document_symbol, scale=0)
                 file_button.click(open_file, outputs=existing_model_path)
             with gr.Row():
@@ -789,7 +789,7 @@ if __name__ == "__main__":
                     file_button.click(open_file, outputs=mid_visualization_input)
             with gr.Row():
                 save_model_name = gr.Textbox('example_name', label="File Name for Model Saved, do not include extension")
-                save_model_path = gr.Textbox("'enter where you want the model to be saved'", scale=2, label="Path to Save the Model Weight",
+                save_model_path = gr.Textbox("trained_model", scale=2, label="Path to Save the Model Weight",
                                              info="For path with space in it, put '' on both sides")
                 folder_button = gr.Button(document_symbol, scale=0)
                 folder_button.click(open_folder, outputs=save_model_path)
