@@ -245,8 +245,8 @@ if __name__ == "__main__":
     parser.add_argument("--read_existing_model", action="store_true", help="Read Existing Model Weight File")
     parser.add_argument("--existing_model_path", type=str, default="", help="Path to Existing Model Weight File")
     parser.add_argument("--precision", choices=["32", "16-mixed", "bf16-mixed"], default="32", help="Precision")
-    parser.add_argument("--save_model_name", type=str, default="example_name.ckpt",
-                        help="File Name for Model Saved, including extension")
+    parser.add_argument("--save_model_name", type=str, default="example_name",
+                        help="File Name for Model Saved, does not include extension")
     parser.add_argument("--save_model_path", type=str, default="trained_model", help="Path to Save the Model Weight")
     parser.add_argument("--train_key_name", type=str, default=".", help="hdf5 dataset name")
     parser.add_argument("--val_key_name", type=str, default=".", help="hdf5 dataset name")
