@@ -32,7 +32,7 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/) or [nnUNet](ht
 - Versatile
   - Semantic Segmentation & Instance Segmentation
   - Isotropic & anisotropic images
-  - Adaptive network type, size and depth
+  - Adaptive network size for different dataset characteristics
   - Support AMD GPU (only under Linux)
   - Support large dataset - even larger than your system memory
 - Easy to use
@@ -77,15 +77,8 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/) or [nnUNet](ht
 Please see the [Wiki](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/wiki).
 
 ## Evaluation
-All number below were obtained with semantic segmentation
-<!------>
-  | Dataset                                                                                       | Time taken                                                                | Dice Score                                 | Peak VRAM Use |
-  |-----------------------------------------------------------------------------------------------|---------------------------------------------------------------------------|--------------------------------------------|---------------|
-  | [UroCell](https://github.com/MancaZerovnikMekuc/UroCell) Mitochondria validate on fib-1-0-0-0 | 1.0 hour                                                                  | 0.8926                                     | 7.5GB         |
-More evaluation please see the upcoming paper...
-
-![Paper Figure 5.png](GitHub_Res%2FFigure05.png)
-A. Ground Truth. B. VST predicted result C. DeepImageJ D. ZeroCostDL4mic E. nnUNet
+VST has recently switched its network backbone from U-Net to Swin-transformer,
+a new round of evaluation is underway...
 ![Paper Figure 7.png](GitHub_Res%2FFigure07.png)
 A. Ground Truth. B. VST predicted result
 

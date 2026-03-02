@@ -6,9 +6,11 @@ VST is also available with [SBGrid](https://sbgrid.org/software/titles/vst)!
 
 Supporting Operating Systems includes: Windows and Linux.
 
-## Download Link (latest release: 0.10.4): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.10.4/VST.Release.v0.10.4.zip)
+## Download Link (latest release: 0.11.0): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.11.0/VST.Release.v0.11.0.zip)
 
-## Latest change
+## Latest major changes
+2/03/2026: VST switched its network backbone from U-Net to Swin-transformer,
+which should take way less video memory and at the same time being faster.
 
 18/08/2025: VST now support dataset that are larger than your system memory,
 by converting them to zarr and load only the required chunks when needed!
@@ -48,13 +50,13 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/) or [nnUNet](ht
 
 - Does not support 2D images, nor images with colours (grey scale only)
 - Since it's based on Deep Learning, the tool needs to be used with a discrete GPU
-  - It's possible to run this tool without a discrete GPU, however it will run __extremely__ slowly
   - Recommended minimal GPU requirement: 4GB of Video Memory, made by Nvidia or AMD
 - Since it's based on Deep Learning, the user has to create training samples to train the network before it could perform segmentation
+  - For more information, please see [Tutorials](#tutorials).
 
 ## Installation
 
-1. Install [Python 3.10](https://www.python.org/downloads/release/python-31010/) or newer Python version.
+1. Install [Python 3.11](https://www.python.org/downloads/release/python-31113/). (Newer versions of Python should work as well)
    - During the installation process, ensure that you select the option to add Python to the 'PATH' environment variable.
 2. Install [Git](https://git-scm.com/).
    - If you are using Linux, it's highly likely you can skip this step.
@@ -67,6 +69,12 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/) or [nnUNet](ht
    - For Windows, it would be install_dependencies_Windows.bat
 
 6. Wait for the script to finish, which could take a while depends on your network speed.
+
+## Starting GUI
+
+1. Run the corresponding "start_WebUI" script for your system. This would open up a terminal.
+   - For Windows, it would be start_WebUI_Windows.bat
+2. Your web browser should automatically open up a "website" with url "127.0.0.1:7860" or something similar.
 
 ## Tutorials
 
