@@ -252,15 +252,15 @@ if __name__ == "__main__":
     parser.add_argument("--val_key_name", type=str, default=".", help="hdf5 dataset name")
     parser.add_argument("--test_key_name", type=str, default=".", help="hdf5 dataset name")
     parser.add_argument("--predict_key_name", type=str, default=".", help="hdf5 dataset name")
-    parser.add_argument("--hw_size", type=int, default=160, help="Height and Width of each Training Patch (px)")
-    parser.add_argument("--d_size", type=int, default=48, help="Depth of each Training Patch (px)")
-    parser.add_argument("--predict_hw_size", type=int, default=120, help="Height and Width of each Patch (px) during prediction")
+    parser.add_argument("--hw_size", type=int, default=144, help="Height and Width of each Training Patch (px)")
+    parser.add_argument("--d_size", type=int, default=40, help="Depth of each Training Patch (px)")
+    parser.add_argument("--predict_hw_size", type=int, default=96, help="Height and Width of each Patch (px) during prediction")
     parser.add_argument("--predict_depth_size", type=int, default=32, help="Depth of each Patch (px) during prediction")
-    parser.add_argument("--predict_hw_overlap", type=int, default=20,
+    parser.add_argument("--predict_hw_overlap", type=int, default=24,
                         help="Expansion in Height and Width for each Patch (px) during prediction")
     parser.add_argument("--watershed_dynamic", type=int, default=10,
                         help="Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges.")
-    parser.add_argument("--predict_depth_overlap", type=int, default=8, help="Expansion in Depth for each Patch (px) during prediction")
+    parser.add_argument("--predict_depth_overlap", type=int, default=4, help="Expansion in Depth for each Patch (px) during prediction")
     parser.add_argument("--result_folder_path", type=str, default="Datasets/result", help="Result Folder Path")
     parser.add_argument("--enable_mid_visualization", default=True, action="store_true", help="Enable Visualization")
     parser.add_argument("--mid_visualization_input", type=str, default="Datasets/mid_visualiser/image.tif",
@@ -276,7 +276,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_patch_size_z", type=int, default=2, help="Patch Depth (px)")
     #parser.add_argument("--find_max_channel_count", action="store_true", help="Automatically find the max channel count that won't result in an OOM error")
     parser.add_argument("--model_depth", type=int, default=8, help="Number of Transformer blocks in the Model")
-    parser.add_argument("--z_to_xy_ratio", type=float, default=3.33)
+    parser.add_argument("--z_to_xy_ratio", type=float, default=4.0)
     parser.add_argument("--train_dataset_mode", choices=["Fully Labelled", "Sparsely Labelled"],
                         default="Fully Labelled", help="Dataset Mode")
     #parser.add_argument("--exclude_edge", action="store_true", help="Mark pictures at object borders as unlabelled")
