@@ -66,6 +66,9 @@ or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/) or [nnUNet](ht
 
 6. Wait for the script to finish, which could take a while depends on your network speed.
 
+7. To confirm the installation is successful, you should try to run the coverage test script.
+   - For Windows, it would be coverage_test_Windows.bat
+
 ## Starting GUI
 
 1. Run the corresponding "start_WebUI" script for your system. This would open up a terminal.
