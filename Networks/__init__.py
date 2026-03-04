@@ -1,1 +1,1 @@
-__all__ = ["UNet", "DiT"]
+__all__ = ["DiT"]

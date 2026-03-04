@@ -4,8 +4,8 @@ import subprocess
 import os
 import sys
 
-if sys.version_info < (3, 9):
-    print("ERROR: Python 3.9 or higher is required.")
+if sys.version_info < (3, 11):
+    print("ERROR: Python 3.11 or higher is required.")
     sys.exit(1)
 
 script_path = os.path.dirname(os.path.realpath(__file__))

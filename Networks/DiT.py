@@ -1,8 +1,7 @@
 import torch
-import torch.nn as nn
 import unfoldNd
+import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
-
 from .Modules.Swin import SwinTransformerBlock, compute_attn_mask
 
 class SwinBlock(nn.Module):

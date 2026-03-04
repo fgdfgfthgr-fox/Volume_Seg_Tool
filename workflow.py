@@ -5,19 +5,17 @@ import threading
 import argparse
 import subprocess
 import webbrowser
-
-import lightning.pytorch as pl
 import torch
 import multiprocessing
-from torch.utils.data import DataLoader
 
+import lightning.pytorch as pl
+
+from torch.utils.data import DataLoader
 from pl_module_dit import PLModule
 from Components import DataComponents
-from Networks import *
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks import StochasticWeightAveraging
-from lightning.pytorch.tuner import Tuner
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

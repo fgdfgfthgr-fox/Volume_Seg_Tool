@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from timm.layers import trunc_normal_
 
+# Mostly implementation from Timm, just changed to 3D
+
 def to_3tuple(x):
     if isinstance(x, (tuple, list)):
         assert len(x) == 3

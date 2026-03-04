@@ -1,8 +1,8 @@
 import gc
 import os
 import math
-
 import torch
+
 import gradio as gr
 import tkinter as tk
 import matplotlib.pyplot as plt
@@ -11,7 +11,6 @@ import numpy as np
 from Components import DataComponents
 from Components import Metrics
 from tkinter import filedialog
-#from Visualise_Network import V_N_PLModule
 from read_tensorboard import read_all_tensorboard_event_files, write_to_excel
 from torchvision.datasets.folder import has_file_allowed_extension
 from command_executor import CommandExecutor
@@ -296,7 +295,7 @@ def tensorboard_to_excel(log_path, save_log_name, save_log_path):
     print(f"Data from all TensorBoard event files in {log_path} has been merged and written to {save_log_name}.")
 
 
-available_architectures = ['SwishTransformer']
+available_architectures = ['SwinTransformer']
 
 
 def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_threshold):

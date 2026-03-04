@@ -21,6 +21,8 @@ The desired images are 8bit or 16bit grey scale 3D tif/hdf as commonly generated
 This tool does __not__ support 2D image segmentation, nor colorful image segmentation. In which case you should consider [ilastik](https://www.ilastik.org/) 
 or [Trainable Weka Segmentation](https://imagej.net/plugins/tws/) or [nnUNet](https://github.com/MIC-DKFZ/nnUNet).
 
+To contributor: The [GitHub page](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool) for VST is the preferred site for reporting issue or community feedback.
+
 ![How_much_can_it_help.png](GitHub_Res%2FHow_much_can_it_help.png)
 ## Advantages
 

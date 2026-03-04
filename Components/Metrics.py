@@ -1,14 +1,10 @@
 import math
-
-import numpy as np
 import torch
-from skimage.io import imread_collection, imsave
-from joblib import Parallel, delayed
-from tqdm import tqdm
-import imagej
+
 import torch.nn as nn
 import torch.nn.functional as F
-import time
+
+from tqdm import tqdm
 
 
 class DiceLoss(nn.Module):
@@ -65,37 +61,6 @@ class DiceLoss(nn.Module):
 
         dice_loss = 1 - dice_coefficient
         return dice_loss
-
-def compute_sdf(img_gt, out_shape):
-    """
-    compute the signed distance map of binary mask
-    img_gt: segmentation, shape = (batch_size, x, y, z)
-    out_shape: the Signed Distance Map (SDM)
-    sdf(x) = 0; x in segmentation boundary
-             -inf|x-y|; x in segmentation
-             +inf|x-y|; x out of segmentation
-    """
-
-    from scipy.ndimage import distance_transform_edt
-    from skimage import segmentation as skimage_seg
-
-    img_gt = img_gt.astype(np.uint8)
-
-    gt_sdf = np.zeros(out_shape)
-
-    for b in range(out_shape[0]): # batch size
-        for c in range(1, out_shape[1]): # channel
-            posmask = img_gt[b][c].astype(np.bool)
-            if posmask.any():
-                negmask = ~posmask
-                posdis = distance_transform_edt(posmask)
-                negdis = distance_transform_edt(negmask)
-                boundary = skimage_seg.find_boundaries(posmask, mode='inner').astype(np.uint8)
-                sdf = negdis - posdis
-                sdf[boundary==1] = 0
-                gt_sdf[b][c] = sdf
-
-    return gt_sdf
 
 
 class BinaryMetrics(nn.Module):
@@ -205,111 +170,6 @@ class BinaryMetrics(nn.Module):
             raise ValueError("Invalid loss. Use 'boundary' or 'focal' or 'dice' or 'dice+bce'.")
 
 
-class BinaryMetricsForList(nn.Module):
-    def __init__(self, loss_mode: str, smooth=1024):
-        """
-        A loss module designed to calculate evaluation related metrics as well as loss. Dealing with a list of predicted and a single target.
-
-        Args:
-            loss_mode (str): A string indicating whether to use focal loss ("focal") or dice+bce ("dice+bce").
-            smooth (float): A smoothing factor for numerical stability (default is 1024, very large, explained in the code)
-        """
-        super(BinaryMetricsForList, self).__init__()
-        self.loss_mode = loss_mode
-        self.smooth = smooth
-
-    @staticmethod
-    def sparse_preprocessing(predicts, target):
-        # In sparse label cases:
-        # Predict: 1 = Foreground, 0 = Background. Can be any number in between.
-        # Target: 0 = Unlabelled, 1 = Foreground, 2 = Background
-        target = target.flatten()
-        inputs = [predict.flatten() for predict in predicts]
-        target = torch.where(target == 0, math.nan, target)
-        target = 1 - (target - 1)
-        known_label = ~torch.isnan(target)
-        inputs = [input[known_label] for input in inputs]
-        targets = target[known_label]
-        return inputs, targets
-
-    def calculate_iou_loss(self, predict: torch.Tensor, target: torch.Tensor):
-        intersection_s = 2 * torch.sum(target * predict) + self.smooth
-        # Huge smooth to prevent loss jump when the ground truth foreground is very low or 0
-        union_s = torch.sum(predict) + torch.sum(target) + self.smooth
-        loss = 1 - (intersection_s / union_s)
-        with torch.no_grad():
-            predict_map = torch.where(predict >= 0.5, 1, 0).to(torch.int8)
-            intersection = 2 * torch.sum(target * predict_map)
-            union = torch.sum(predict_map) + torch.sum(target)
-        return intersection, union, loss
-
-    @staticmethod
-    def calculate_other_metrices(inputs: torch.Tensor, targets: torch.Tensor):
-        inputs = torch.where(inputs >= 0.5, 1, 0).to(torch.int8)
-        true_positives = (inputs*targets).sum().detach()
-        false_negatives = ((1-inputs)*targets).sum().detach()
-        true_negatives = ((1-inputs)*(1-targets)).sum().detach()
-        false_positives = (inputs*(1-targets)).sum().detach()
-        return true_positives, false_negatives, true_negatives, false_positives
-
-    def forward(self, predicts: list[torch.Tensor], target: torch.Tensor, weights: list, sparse_label=False):
-        """
-        Calculate binary classification metrics and loss based on the provided inputs and targets.
-
-        Args:
-            predicts (List of torch.Tensor): The predicted binary classification values (B, 1, D, H, W).
-            target (torch.Tensor): The target labels (B, 1, D, H, W).
-                When `sparse_label` is True: 0 for unlabeled, 1 for foreground, 2 for background
-                When `sparse_label` is False: 0.0 for background, 1.0 for foreground
-            weights (list): The weight for each input in the list. Should sum up to 1.
-            sparse_label (bool): A flag indicating whether the target labels are sparse (default is False).
-            If true, will force to dice loss.
-
-        Returns:
-            loss (torch.Tensor): The calculated loss value based on the chosen loss function.
-            intersection (torch.Tensor)
-            union (torch.Tensor)
-            true_positives (torch.Tensor)
-            false_negatives (torch.Tensor)
-            true_negatives (torch.Tensor)
-            false_positives (torch.Tensor)
-        """
-        # In Non-sparse label cases:
-        # Input: 1 = Foreground, 0 = Background. Can be any number in between.
-        # Target: 1 = Foreground, 0 = Background. Can be any number in between.
-        if sparse_label:
-            predicts, target = self.sparse_preprocessing(predicts, target)
-
-        if self.loss_mode == "focal":
-            bce_losses = [F.binary_cross_entropy_with_logits(predict, target, reduction='none') for predict in predicts]
-            pts = [torch.exp(-bce_loss) for bce_loss in bce_losses]
-            f_losses = [((1-pt) ** 1.333 * bce_loss).mean() for pt, bce_loss in zip(pts, bce_losses)]
-            f_loss = sum([loss * weights[i] for i, loss in enumerate(f_losses)])
-
-            with torch.no_grad():
-                iou_outs = [self.calculate_iou_loss(F.sigmoid(predict), target) for predict in predicts]
-                other_metrics = [self.calculate_other_metrices(F.sigmoid(predict), target) for predict in predicts]
-                intersection, union = sum([scale[0] for scale in iou_outs]), sum([scale[1] for scale in iou_outs])
-                tp, fn, tn, fp = [sum([scale[i] for scale in other_metrics]) for i in range(4)]
-            return f_loss, intersection, union, tp, fn, tn, fp
-        elif self.loss_mode == "dice+bce":
-            bce_losses = [F.binary_cross_entropy_with_logits(predict, target, reduction='none').mean() for predict in predicts]
-            bce_loss = sum([loss * weights[i] for i, loss in enumerate(bce_losses)])
-            iou_outs = [self.calculate_iou_loss(F.sigmoid(predict), target) for predict in predicts]
-            for i, iou_out in enumerate(iou_outs):
-                iou_outs[i][0] *= weights[i]
-                iou_outs[i][1] *= weights[i]
-                iou_outs[i][2] *= weights[i]
-            intersection, union, dice_loss = [sum([scale[i] for scale in iou_outs]) for i in range(3)]
-            with torch.no_grad():
-                other_metrics = [self.calculate_other_metrices(F.sigmoid(predict), target) for predict in predicts]
-                tp, fn, tn, fp = [sum([scale[i] for scale in other_metrics]) for i in range(4)]
-            total_loss = 0.1*dice_loss+1.9*bce_loss
-            return total_loss, intersection, union, tp, fn, tn, fp
-        else:
-            raise ValueError("Invalid loss. Use 'boundary' or 'focal' or 'dice' or 'dice+bce'.")
-
-
 def get_bounding_boxes(tensor):
     """
     Returns a dictionary of bounding boxes for each object in the tensor.
@@ -403,92 +263,3 @@ def instance_segmentation_metrics(pred_map, gt_map, iou_threshold):
 
     return tpr.cpu(), fpr.cpu(), fnr.cpu(), precision.cpu(), recall.cpu()
 
-
-def getvrand(fiji_dic: str, ground_truth, predicted):
-    """
-    Calculate V-Rand (Foreground-restricted Rand Scoring) score given the predicted map and the ground truth map.
-    Essentially The Rand error, for more information please see https://imagej.net/plugins/tws/rand-error.\n
-    Best used to evaluate membrane segmentation task, e.g. ISBI-2012 segmentation challenge.\n
-    ImageJ (Fiji) must be installed in order to use it.\n
-    Note: Calculating V-Rand score is fairly slow.\n
-    Note2: Require a very specific data format, where 0 is the edge label and 255 is everything else.
-
-    Args:
-        fiji_dic (str): Installation directory of your Fiji.app folder.
-        ground_truth (torch.Tensor): Ground Truth Map of shape (D, H, W).
-        predicted (torch.Tensor): Predicted Map of shape (D, H, W).
-
-    Returns:
-        VRand (float): The calculated V-Rand score which range from 0 to 1. 0 is the worst while 1 is the best.
-    """
-    ij = imagej.init(fiji_dic)
-    Language_extension = "BeanShell"
-    Ground_data = np.asarray(ground_truth, dtype='float32')
-    if np.max(Ground_data) != 1:
-        Ground_data = Ground_data / 255.0
-    imsave(f'GroundData.tif', Ground_data)
-
-    Result_data = np.asarray(predicted, dtype='float32')
-    if np.max(Result_data) != 1:
-        Result_data = Result_data / 255.0
-    imsave(f'ResultData.tif', Result_data)
-
-    macroVRand = """
-import trainableSegmentation.metrics.*;
-#@output String VRand
-import ij.IJ;
-originalLabels=IJ.openImage("GroundData.tif");
-proposedLabels=IJ.openImage("ResultData.tif");
-metric = new RandError( originalLabels, proposedLabels );
-maxThres = 1.0;
-maxScore = metric.getMaximalVRandAfterThinning( 0.0, maxThres, 0.1, true );  
-VRand = maxScore;
-"""
-
-    VRand = ij.py.run_script(Language_extension, macroVRand).getOutput('VRand')
-    return VRand
-
-
-def getvinfo(fiji_dic: str, ground_truth, predicted):
-    """
-    Calculate V-Info (Foreground-restricted Information Theoretic Scoring) score given the predicted map and the ground truth map.
-    For more information please see https://github.com/akhadangi/Segmentation-Evaluation-after-border-thinning.\n
-    Best used to evaluate membrane segmentation task, e.g. ISBI-2012 segmentation challenge.\n
-    ImageJ (Fiji) must be installed in order to use it.\n
-    Note: Calculating V-Info score is fairly slow.\n
-    Note2: Require a very specific data format, where 0 is the edge label and 255 is everything else.
-
-    Args:
-        fiji_dic (str): Installation directory of your Fiji.app folder.
-        ground_truth (torch.Tensor): Ground Truth Map of shape (D, H, W).
-        predicted (torch.Tensor): Predicted Map of shape (D, H, W).
-
-    Returns:
-        VRand (float): The calculated V-Info score which range from 0 to 1. 0 is the worst while 1 is the best.
-    """
-    ij = imagej.init(fiji_dic)
-    Language_extension = "BeanShell"
-    Ground_data = np.asarray(ground_truth, dtype='float32')
-    if np.max(Ground_data) != 1:
-        Ground_data = Ground_data / 255.0
-    imsave(f'GroundData.tif', Ground_data)
-
-    Result_data = np.asarray(predicted, dtype='float32')
-    if np.max(Result_data) != 1:
-        Result_data = Result_data / 255.0
-    imsave(f'ResultData.tif', Result_data)
-
-    macroVInfo = """
-import trainableSegmentation.metrics.*;
-#@output String VInfo
-import ij.IJ;
-originalLabels=IJ.openImage("GroundData.tif");
-proposedLabels=IJ.openImage("ResultData.tif");
-metric = new VariationOfInformation( originalLabels, proposedLabels );
-maxThres =1.0;
-maxScore = metric.getMaximalVInfoAfterThinning( 0.0, maxThres, 0.1 );  
-VInfo = maxScore;
-"""
-
-    VInfo = ij.py.run_script(Language_extension, macroVInfo).getOutput('VInfo')
-    return VInfo

@@ -9,9 +9,7 @@ from Components import DataComponents
 from Components import Metrics
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
-from lightning.pytorch.utilities import grad_norm
 from lightning.pytorch.callbacks import LearningRateMonitor
-from lightning.pytorch.callbacks import StochasticWeightAveraging
 from pytorch_optimizer.optimizer import AdaMuon
 
 
@@ -110,7 +108,6 @@ class PLModule(pl.LightningModule):
 
     def configure_optimizers(self):
         #fused = True if device == "cuda" else False
-        #optimizer = AdEMAMix(self.parameters(), lr=self.lr)#, weight_decay=0.001)
         param_groups = get_parameter_groups_with_muon(self, weight_decay=0.001)
         optimizer = AdaMuon(param_groups, lr=self.lr, weight_decay=0.001, adamw_lr=3e-4, adamw_wd=0.001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
