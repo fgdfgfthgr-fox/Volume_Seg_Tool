@@ -121,8 +121,8 @@ def start_work_flow(inputs):
         cmd += "--read_existing_model "
     '''if inputs[exclude_edge]:
         cmd += "--exclude_edge "'''
-    if inputs[enable_mid_visualization]:
-        cmd += "--enable_mid_visualization "
+    if not inputs[enable_mid_visualization]:
+        cmd += "--mid_visualization "
     if inputs[train_offload]:
         cmd += "--train_offload "
     if inputs[val_offload]:
@@ -854,7 +854,8 @@ if __name__ == "__main__":
                 #stop_button.click(stop_training_callback)
                 stop_button.click(command_executor.kill_command)
 
-        '''with gr.Tab("Activations Visualisation"):
+        '''
+        with gr.Tab("Activations Visualisation"):
             gr.Markdown("Given an example image and a trained model weight, visualize the model output in each activation layers.")
             gr.Markdown("As well as the sigmoid layer (the layer right before the output).")
             with gr.Row():
@@ -869,6 +870,7 @@ if __name__ == "__main__":
             outputs = gr.Gallery(label="Output Images", preview=True, selected_index=0)
             start_button = gr.Button("Show Visualization")
             start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show], outputs=outputs)'''
+
         '''
         with gr.Tab("Augmentations Visualisation"):
             gr.Markdown("Given your Training Dataset and Augmentation CSV, show some examples of augmented images that will be fed into the network.")

@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 import unfoldNd
 from torch.utils.checkpoint import checkpoint
@@ -52,9 +53,11 @@ class Network(nn.Module):
         x = self.dit(x, grid_size, attn_mask)
 
         p = self.down_p(x)
-        p = unfoldNd.foldNd(p.permute(0, 2, 1), (D, H, W), self.patch_size, stride=self.patch_size)
+        with torch.amp.autocast('cuda', enabled=False):
+            p = unfoldNd.foldNd(p.permute(0, 2, 1), (D, H, W), self.patch_size, stride=self.patch_size)
         if self.instance:
             c = self.down_c(x)
-            c = unfoldNd.foldNd(c.permute(0, 2, 1), (D, H, W), self.patch_size, stride=self.patch_size)
+            with torch.amp.autocast('cuda', enabled=False):
+                c = unfoldNd.foldNd(c.permute(0, 2, 1), (D, H, W), self.patch_size, stride=self.patch_size)
             return p, c
         return p

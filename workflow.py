@@ -121,7 +121,7 @@ def start_work_flow(args):
         model = PLModule.load_from_checkpoint(args.existing_model_path, weights_only=False)
     else:
         model = PLModule(arch_args,
-                         'Validation' in args.workflow_box, args.enable_mid_visualization,
+                         'Validation' in args.workflow_box, args.mid_visualization,
                          args.mid_visualization_input, instance_mode,
                          sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
                          'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
@@ -262,7 +262,7 @@ if __name__ == "__main__":
                         help="Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges.")
     parser.add_argument("--predict_depth_overlap", type=int, default=4, help="Expansion in Depth for each Patch (px) during prediction")
     parser.add_argument("--result_folder_path", type=str, default="Datasets/result", help="Result Folder Path")
-    parser.add_argument("--enable_mid_visualization", default=True, action="store_true", help="Enable Visualization")
+    parser.add_argument("--mid_visualization", action="store_false", help="Store False, so this will disable Mid Visualization")
     parser.add_argument("--mid_visualization_input", type=str, default="Datasets/mid_visualiser/image.tif",
                         help="Path to the input image")
     parser.add_argument("--train_offload", action="store_true", help="Enable disk offloading of training data")

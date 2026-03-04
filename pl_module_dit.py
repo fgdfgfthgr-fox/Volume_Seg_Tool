@@ -114,7 +114,7 @@ class PLModule(pl.LightningModule):
         param_groups = get_parameter_groups_with_muon(self, weight_decay=0.001)
         optimizer = AdaMuon(param_groups, lr=self.lr, weight_decay=0.001, adamw_lr=3e-4, adamw_wd=0.001)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
-                                                               factor=0.5, patience=50,
+                                                               factor=0.5, patience=30,
                                                                threshold_mode='rel',
                                                                cooldown=0, min_lr=[1e-3, 1e-5, 1e-3, 1e-5])
         metrics = "val_loss" if self.enable_val else "train_loss"
@@ -347,72 +347,70 @@ if __name__ == "__main__":
     #tracemalloc.start()
     #snap1 = tracemalloc.take_snapshot()
     torch.backends.cudnn.enabled = False
-    sizes = [(192, 64, 4)]
-    channel_counts = [4]
-    precisions = ['32']
+    sizes = [(144, 144)]
+    precisions = ['16-mixed']
     batch_sizes = [2]
     for size in sizes:
-        for channel_count in channel_counts:
-            for precision in precisions:
-                for batch_size in batch_sizes:
-                    #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
-                    train_dataset = DataComponents.TrainDataset("Datasets/train",
-                                                                "Augmentation Parameters Anisotropic.csv",
-                                                                32,
-                                                                size[0], size[1], True, False, 'default')
-                    '''unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
-                                                                                    "Augmentation Parameters Anisotropic.csv",
-                                                                                    64,
-                                                                                    size[0], size[1])'''
-                    train_dataset = DataComponents.CollectedDataset(train_dataset, None)
-                    sampler = DataComponents.CollectedSampler(train_dataset, batch_size, None)
-                    collate_fn = DataComponents.custom_collate
-                    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,
-                                                               collate_fn=collate_fn, sampler=sampler,
-                                                               num_workers=0, pin_memory=True, persistent_workers=False)
-                    # meta_info = predict_dataset.__getmetainfo__()
-                    # predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                    val_dataset = DataComponents.ValDataset("Datasets/val", size[0], size[1], True,
-                                                            "Augmentation Parameters Anisotropic.csv")
-                    val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
+        for precision in precisions:
+            for batch_size in batch_sizes:
+                #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
+                train_dataset = DataComponents.TrainDataset("Datasets/train",
+                                                            "Augmentation Parameters Anisotropic.csv",
+                                                            32,
+                                                            size[0], size[1], False, False, 'default')
+                '''unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
+                                                                                "Augmentation Parameters Anisotropic.csv",
+                                                                                64,
+                                                                                size[0], size[1])'''
+                train_dataset = DataComponents.CollectedDataset(train_dataset, None)
+                sampler = DataComponents.CollectedSampler(train_dataset, batch_size, None)
+                collate_fn = DataComponents.custom_collate
+                train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,
+                                                           collate_fn=collate_fn, sampler=sampler,
+                                                           num_workers=8, pin_memory=True, persistent_workers=True)
+                # meta_info = predict_dataset.__getmetainfo__()
+                # predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+                #val_dataset = DataComponents.ValDataset("Datasets/val", size[0], size[1], True,
+                #                                        "Augmentation Parameters Anisotropic.csv")
+                #val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
 
-                    callbacks = []
-                    model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="",
-                                                                         filename="example_name",
-                                                                         save_weights_only=True, enable_version_counter=False)
-                    #swa_callback = StochasticWeightAveraging([1e-3, 1e-5, 1e-3, 1e-5], 0.8, int(0.2 * 10 - 1))
-                    callbacks.append(LearningRateMonitor(logging_interval='epoch'))
-                    callbacks.append(model_checkpoint_last)
-                    #callbacks.append(swa_callback)
-                    arch_args = ((2,4,4), 4, 8, True)
-                    model = PLModule(arch_args,
-                                    True, True, 'Datasets/mid_visualiser/mip1_visualiser.tif', True,
-                                    False, False, False, True)
-                    trainer = pl.Trainer(max_epochs=2, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'dit-4,8ps-384d-4layers-2heads-pcseperate-swin-64-window4'),
-                                         accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
-                                         precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
-                                                                                                                      #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
-                    # print(subprocess.run("tensorboard --logdir='lightning_logs'", shell=True))
-                    #snap2 = tracemalloc.take_snapshot()
-                    #top_stats = snap2.compare_to(snap1, 'lineno')
-                    #for stat in top_stats[:20]:
-                    #    print(stat)
-                    #start_time = time.time()
-                    trainer.fit(model,
-                                val_dataloaders=val_loader,
-                                train_dataloaders=train_loader)
-                    torch.cuda.empty_cache()
-                    '''model = PLModule.load_from_checkpoint("'results'/Kasthuri_connectomic_largefov.ckpt")
-                    trainer = pl.Trainer(precision=precision, enable_progress_bar=True, logger=False, accelerator="gpu")
-                    predict_dataset = DataComponents.Predict_Dataset('Datasets/predict',
-                                                                     hw_size=160, depth_size=48,
-                                                                     hw_overlap=16, depth_overlap=4)
-                    predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                    meta_info = predict_dataset.__getmetainfo__()
-                    start_time = time.time()
-                    predictions = trainer.predict(model, predict_loader)
-                    end_time = time.time()
-                    DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',
-                                                                     hw_size=160, depth_size=48,
-                                                                     hw_overlap=16, depth_overlap=4, segmentation_mode='watershed')'''
+                callbacks = []
+                model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="trained_model",
+                                                                     filename="example_name",
+                                                                     save_weights_only=True, enable_version_counter=False)
+                #swa_callback = StochasticWeightAveraging([1e-3, 1e-5, 1e-3, 1e-5], 0.8, int(0.2 * 10 - 1))
+                callbacks.append(LearningRateMonitor(logging_interval='epoch'))
+                callbacks.append(model_checkpoint_last)
+                #callbacks.append(swa_callback)
+                arch_args = ((4,4,4), 4, 10, False)
+                model = PLModule(arch_args,
+                                False, True, 'Datasets/mid_visualiser/fib1-4-3-0-crop.tif', False,
+                                False, False, False, True)
+                trainer = pl.Trainer(max_epochs=2, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'dit-4,8ps-384d-4layers-2heads-pcseperate-swin-64-window4'),
+                                     accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
+                                     precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
+                                                                                                                  #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
+                # print(subprocess.run("tensorboard --logdir='lightning_logs'", shell=True))
+                #snap2 = tracemalloc.take_snapshot()
+                #top_stats = snap2.compare_to(snap1, 'lineno')
+                #for stat in top_stats[:20]:
+                #    print(stat)
+                #start_time = time.time()
+                trainer.fit(model,
+                            #val_dataloaders=val_loader,
+                            train_dataloaders=train_loader)
+                torch.cuda.empty_cache()
+                '''model = PLModule.load_from_checkpoint("'results'/Kasthuri_connectomic_largefov.ckpt")
+                trainer = pl.Trainer(precision=precision, enable_progress_bar=True, logger=False, accelerator="gpu")
+                predict_dataset = DataComponents.Predict_Dataset('Datasets/predict',
+                                                                 hw_size=160, depth_size=48,
+                                                                 hw_overlap=16, depth_overlap=4)
+                predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+                meta_info = predict_dataset.__getmetainfo__()
+                start_time = time.time()
+                predictions = trainer.predict(model, predict_loader)
+                end_time = time.time()
+                DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',
+                                                                 hw_size=160, depth_size=48,
+                                                                 hw_overlap=16, depth_overlap=4, segmentation_mode='watershed')'''
     #model = PLModule.load_from_checkpoint('test.ckpt')
