@@ -229,7 +229,10 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         padded = []
         for tensor in tensors:
             # Pad the tensor if needed
-            tensor = torch.nn.functional.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
+            if zarr:
+                tensor = np.pad(tensor, ((0,0), (0,d_pad), (0,h_pad), (0,w_pad)))
+            else:
+                tensor = torch.nn.functional.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
             padded.append(tensor)
         c, d, h, w = padded[0].shape
     else:

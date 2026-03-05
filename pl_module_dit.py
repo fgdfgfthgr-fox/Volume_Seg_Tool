@@ -345,20 +345,20 @@ if __name__ == "__main__":
     #snap1 = tracemalloc.take_snapshot()
     torch.backends.cudnn.enabled = False
     sizes = [(144, 144)]
-    precisions = ['16-mixed']
+    precisions = ['bf16-mixed']
     batch_sizes = [2]
     for size in sizes:
         for precision in precisions:
             for batch_size in batch_sizes:
                 #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
-                train_dataset = DataComponents.TrainDataset("Datasets/train",
+                '''train_dataset = DataComponents.TrainDataset("Datasets/train",
                                                             "Augmentation Parameters Anisotropic.csv",
                                                             32,
                                                             size[0], size[1], False, False, 'default')
-                '''unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
+                unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
                                                                                 "Augmentation Parameters Anisotropic.csv",
                                                                                 64,
-                                                                                size[0], size[1])'''
+                                                                                size[0], size[1])
                 train_dataset = DataComponents.CollectedDataset(train_dataset, None)
                 sampler = DataComponents.CollectedSampler(train_dataset, batch_size, None)
                 collate_fn = DataComponents.custom_collate
@@ -396,18 +396,16 @@ if __name__ == "__main__":
                 trainer.fit(model,
                             #val_dataloaders=val_loader,
                             train_dataloaders=train_loader)
-                torch.cuda.empty_cache()
-                '''model = PLModule.load_from_checkpoint("'results'/Kasthuri_connectomic_largefov.ckpt")
+                torch.cuda.empty_cache()'''
+                model = PLModule.load_from_checkpoint("trained_model/UroCell_120_1.ckpt", weights_only=False)
                 trainer = pl.Trainer(precision=precision, enable_progress_bar=True, logger=False, accelerator="gpu")
-                predict_dataset = DataComponents.Predict_Dataset('Datasets/predict',
-                                                                 hw_size=160, depth_size=48,
-                                                                 hw_overlap=16, depth_overlap=4)
+                predict_dataset = DataComponents.PredictDataset('Datasets/predict',
+                                                                 hw_size=144, depth_size=144,
+                                                                 hw_overlap=16, depth_overlap=16)
                 predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
                 meta_info = predict_dataset.__getmetainfo__()
-                start_time = time.time()
                 predictions = trainer.predict(model, predict_loader)
-                end_time = time.time()
-                DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',
-                                                                 hw_size=160, depth_size=48,
-                                                                 hw_overlap=16, depth_overlap=4, segmentation_mode='watershed')'''
+                #DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',
+                #                                                 hw_size=144, depth_size=144,
+                #                                                 hw_overlap=16, depth_overlap=16, segmentation_mode='watershed')
     #model = PLModule.load_from_checkpoint('test.ckpt')

@@ -49,7 +49,7 @@ To contributor: The [GitHub page](https://github.com/fgdfgfthgr-fox/Volume_Seg_T
 - Does not support 2D images, nor images with colours (grey scale only)
 - Since it's based on Deep Learning, the tool needs to be used with a discrete GPU
   - Recommended minimal GPU requirement: 4GB of Video Memory, made by Nvidia or AMD
-- Since it's based on Deep Learning, the user has to create training samples to train the network before it could perform segmentation
+- Since it's based on Supervised Learning, the user has to create ground truth samples to train the network, before it could perform segmentation
   - For more information, please see [Tutorials](#tutorials).
 
 ## Installation
@@ -68,8 +68,8 @@ To contributor: The [GitHub page](https://github.com/fgdfgfthgr-fox/Volume_Seg_T
 
 6. Wait for the script to finish, which could take a while depends on your network speed.
 
-7. To confirm the installation is successful, you should try to run the coverage test script.
-   - For Windows, it would be coverage_test_Windows.bat
+7. To confirm the installation is successful, you should try to run the sanity check script.
+   - For Windows, it would be sanity_check_Windows.bat
 
 ## Starting GUI
 
