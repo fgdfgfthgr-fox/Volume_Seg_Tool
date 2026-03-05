@@ -1,13 +1,7 @@
 import gc
 import math
-import threading
 import os
-
 import torch
-import torch.utils.data
-import torch.nn.functional as F
-import torchvision.transforms.v2.functional as T_F
-import numpy as np
 import imageio
 import random
 import json
@@ -18,22 +12,24 @@ import multiprocessing
 import mrcfile
 import zarr
 import shutil
+
+import torch.nn.functional as F
+import torchvision.transforms.v2.functional as T_F
+import numpy as np
 import pandas as pd
-from multiprocessing import Pool, shared_memory, cpu_count
-from itertools import product
 import skimage.morphology as morph
+
+from multiprocessing import shared_memory
+from itertools import product
 from pathlib import Path
 from scipy.ndimage import label
-from torchvision.datasets.folder import has_file_allowed_extension, IMG_EXTENSIONS
+from torchvision.datasets.folder import has_file_allowed_extension
 from . import Augmentations as Aug
 from . import MorphologicalFunctions as Morph
-from .welford_std import welford_mean_std
+from .Welford import welford_mean_std
+
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-def get_label_fname(fname):
-    return 'Labels_' + fname
 
 
 def multiple_loader(path, key):
@@ -397,6 +393,7 @@ class TrainDataset(torch.utils.data.Dataset):
 
     def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64,
                  instance_mode=False, contour_map_width=1, hdf5_key='Default'):
+        super().__init__()
         # Get a list of file paths for images and labels
         self.file_list = np.array(make_dataset_tv(images_dir))
         self.num_files = len(self.file_list)
@@ -409,7 +406,6 @@ class TrainDataset(torch.utils.data.Dataset):
         self.train_multiplier = train_multiplier
         self.hw_size = hw_size
         self.d_size = d_size
-        super().__init__()
 
     def __len__(self):
         return self.num_files * self.train_multiplier
@@ -1465,7 +1461,7 @@ def allocate_pixels_global(batch_indices_and_args):
             segmentation_shared[z, y, x] = closest_object.item()
 
 
-def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, mode='simple', dynamic=10, pixel_reclaim='old', distance_threshold=2, batch_size=2048):
+def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, mode='simple', dynamic=10, pixel_reclaim='old', distance_threshold=2):
     """
     Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.
     Pixels in touching areas are assigned to the closest object based on the largest proportion of pixels within 5 pixel distance to the pixel.
@@ -1478,7 +1474,6 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
         dynamic (int): Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges. Default: 10.
         pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
         distance_threshold (int): The radius in pixels to search for nearby pixels when allocating. Default: 2.
-        batch_size (int): Batch size for pixel reclaim. Default: 2048.
 
     Returns:
         np.Array: uint16 instance segmented map where 0 is background and every other value represent an object.

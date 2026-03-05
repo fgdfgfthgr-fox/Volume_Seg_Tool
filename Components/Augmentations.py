@@ -1,17 +1,13 @@
-import torch.nn.functional as F
-import torchvision.transforms.v2.functional as T_F
-import torchvision.transforms.v2 as transforms
 import random
 import torch
 import math
 import scipy
-import os
-import numpy as np
-from joblib import Parallel, delayed
 
+import numpy as np
+import torch.nn.functional as F
+
+from joblib import Parallel, delayed
 from scipy.ndimage import distance_transform_edt
-import torch.multiprocessing as mp
-from .Perlin3d import generate_perlin_noise_3d
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -233,7 +229,10 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         padded = []
         for tensor in tensors:
             # Pad the tensor if needed
-            tensor = torch.nn.functional.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
+            if zarr:
+                tensor = np.pad(tensor, ((0,0), (0,d_pad), (0,h_pad), (0,w_pad)))
+            else:
+                tensor = torch.nn.functional.pad(tensor, (0, w_pad, 0, h_pad, 0, d_pad))
             padded.append(tensor)
         c, d, h, w = padded[0].shape
     else:
@@ -622,18 +621,6 @@ def gaussian_noise(input_tensor, strength=0.05, octaves=3):
         noise = (torch.randn(shape, dtype=torch.float32) * random.uniform(0.5, 1.5) * (0.5**octave) * strength).unsqueeze(0)
         noises += F.interpolate(noise, origin_shape[1:], mode='trilinear', align_corners=False).squeeze(0)
     input_tensor += noises
-    input_tensor = torch.clamp(input_tensor, -4, 4)
-    return input_tensor
-
-
-def perlin_noise(input_tensor, strength, max_res):
-    shapes = input_tensor.shape
-    xy_to_z_ratio = shapes[1]/shapes[0]
-    res = random.randint(2, max_res)
-    ress = ((max(int(res/xy_to_z_ratio), 2)), res, res)
-    noise = generate_perlin_noise_3d([shape for shape in shapes], ress)
-    noise *= strength
-    input_tensor += noise
     input_tensor = torch.clamp(input_tensor, -4, 4)
     return input_tensor
 

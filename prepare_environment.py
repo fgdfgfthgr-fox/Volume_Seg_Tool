@@ -4,6 +4,9 @@ import subprocess
 import os
 import sys
 
+if sys.version_info < (3, 11):
+    print("ERROR: Python 3.11 or higher is required.")
+    sys.exit(1)
 
 script_path = os.path.dirname(os.path.realpath(__file__))
 
@@ -47,40 +50,6 @@ def run(command, desc=None, errdesc=None, custom_env=None, live: bool = True) ->
 
 
 re_requirement = re.compile(r"\s*([-_a-zA-Z0-9]+)\s*(?:==\s*([-+_.a-zA-Z0-9]+))?\s*")
-
-
-def requirements_met(requirements_file):
-    """
-    Does a simple parse of a requirements.txt file to determine if all requirements in it
-    are already installed. Returns True if so, False if not installed or parsing fails.
-    """
-
-    import importlib.metadata
-    import packaging.version
-
-    with open(requirements_file, "r", encoding="utf8") as file:
-        for line in file:
-            if line.strip() == "":
-                continue
-            m = re.match(re_requirement, line)
-            if m is None:
-                return False
-            package = m.group(1).strip()
-            version_required = (m.group(2) or "").strip()
-
-            if version_required == "":
-                continue
-
-            try:
-                version_installed = importlib.metadata.version(package)
-                print(version_installed)
-            except Exception:
-                return False
-
-            if packaging.version.parse(version_required) != packaging.version.parse(version_installed):
-                return False
-
-    return True
 
 
 def run_pip(command, desc=None, live=True):

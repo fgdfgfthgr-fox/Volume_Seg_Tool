@@ -1,1 +1,1 @@
-__all__ = ["Semantic_General", 'GANS']
+__all__ = ["DiT"]

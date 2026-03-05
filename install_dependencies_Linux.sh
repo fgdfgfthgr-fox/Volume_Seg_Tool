@@ -1,3 +1,12 @@
+#!/bin/bash
+
+# Function to pause and wait for user input before exiting
+pause() {
+    echo
+    echo "Press any key to exit..."
+    read -n 1 -s
+}
+
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 if [[ -z "${install_dir}" ]]
@@ -11,7 +20,7 @@ python_cmd="python3"
 # git executable
 export GIT="git"
 
-# python3 venv without trailing slash (defaults to ${install_dir}/${clone_dir}/venv)
+# python3 venv without trailing slash (defaults to ${install_dir}/venv)
 venv_dir="venv"
 
 ENV_SCRIPT="prepare_environment.py"
@@ -38,7 +47,7 @@ fi
 rocm_version=""
 if [ -f /opt/rocm/.info/version ]; then
     rocm_version=$(cat /opt/rocm/.info/version | cut -d. -f1-2)
-elif [ -f /opt/rocm/.info/version-* ]; then
+elif ls /opt/rocm/.info/version-* 1> /dev/null 2>&1; then
     rocm_version=$(cat /opt/rocm/.info/version-* | cut -d. -f1-2)
 fi
 
@@ -100,8 +109,10 @@ fi
 
 # Set CPU install if no compatible GPU setup found
 if [ $torch_command_set -eq 0 ]; then
-    printf "\e[1m\e[33mInstalling CPU-only version of PyTorch\e[0m\n"
-    export TORCH_COMMAND="pip install torch torchvision"
+    printf "\e[1m\e[31mERROR: No compatible GPU and drivers found.\n"
+    printf "This tool requires a GPU with CUDA or ROCm support. Aborting.\e[0m\n"
+    pause
+    exit 1
 fi
 
 # Check for venv module
@@ -110,6 +121,7 @@ then
     printf "\n%s\n" "${delimiter}"
     printf "\e[1m\e[31mERROR: python3-venv is not installed, aborting...\e[0m"
     printf "\n%s\n" "${delimiter}"
+    pause
     exit 1
 fi
 
@@ -118,7 +130,7 @@ printf "\e[1m\e[32mInstalling dependencies for Volume Seg Tool...\n"
 if [[ -z "${VIRTUAL_ENV}" ]];
 then
     printf "Creating and activating python venv\n"
-    cd "${install_dir}"/ || { printf "\e[1m\e[31mERROR: Can't cd to %s/, aborting...\e[0m" "${install_dir}"; exit 1; }
+    cd "${install_dir}"/ || { printf "\e[1m\e[31mERROR: Can't cd to %s/, aborting...\e[0m" "${install_dir}"; pause; exit 1; }
     if [[ ! -d "${venv_dir}" ]]
     then
         "${python_cmd}" -m venv "${venv_dir}"
@@ -129,6 +141,7 @@ then
         source "${venv_dir}"/bin/activate
     else
         printf "\e[1m\e[31mERROR: Cannot activate python venv, aborting...\e[0m"
+        pause
         exit 1
     fi
 else
@@ -136,3 +149,8 @@ else
 fi
 
 "${python_cmd}" -u "${ENV_SCRIPT}" "$@"
+
+# Add pause at the end if the script was run successfully
+echo
+echo "Installation completed successfully!"
+pause

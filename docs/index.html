@@ -70,14 +70,14 @@
 
     <p>Paper is available at: <a href="https://www.sciencedirect.com/science/article/pii/S1047847725000498">A generalist deep-learning volume segmentation tool for volume electron microscopy of biological samples</a></p>
 
-    <p>VST is also available with <a href="https://sbgrid.org/software/titles/vst">SBGrid!</a></p>
+    <p>VST is also available with <a href="https://sbgrid.org/software/titles/vst">SBGrid</a>!</p>
 
     <p>Supporting Operating Systems includes: Windows and Linux.</p>
 
-    <h2>Download Link (latest release: 0.10.3): <a href="https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.10.3/VST.Release.v0.10.3.7z">Link</a></h2>
+    <h2>Download Link (latest release: 0.11.1): <a href="https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.11.1/VST.Release.v0.11.1.zip">Link</a></h2>
 
-    <h2>Latest change</h2>
-
+    <h2>Latest major changes</h2>
+    <p>2/03/2026: VST switched its network backbone from U-Net to Swin-transformer, which should take way less video memory and at the same time being faster.</p>
     <p>18/08/2025: VST now support dataset that are larger than your system memory, by converting them to zarr and load only the required chunks when needed!</p>
 
     <h2>About the Tool</h2>
@@ -90,6 +90,8 @@
 
     <p>This tool does <strong>not</strong> support 2D image segmentation, nor colorful image segmentation. In which case you should consider <a href="https://www.ilastik.org/">ilastik</a>
     or <a href="https://imagej.net/plugins/tws/">Trainable Weka Segmentation</a> or <a href="https://github.com/MIC-DKFZ/nnUNet">nnUNet</a>.</p>
+
+    <p>To contributor: The <a href="https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool">GitHub page</a> for VST is the preferred site for reporting issue or community feedback.</p>
 
     <h2>Advantages</h2>
 
@@ -128,17 +130,20 @@
         <li>Does not support 2D images, nor images with colours (grey scale only)</li>
         <li>Since it's based on Deep Learning, the tool needs to be used with a discrete GPU
             <ul>
-                <li>It's possible to run this tool without a discrete GPU, however it will run <strong>extremely</strong> slowly</li>
                 <li>Recommended minimal GPU requirement: 4GB of Video Memory, made by Nvidia or AMD</li>
             </ul>
         </li>
-        <li>Since it's based on Deep Learning, the user has to create training samples to train the network before it could perform segmentation</li>
+        <li>Since it's based on Deep Learning, the user has to create ground truth samples to train the network, before it could perform segmentation
+            <ul>
+                <li>For more information, please see <a href="https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/wiki/Quick-walkthrough-with-the-example-dataset">Tutorials</a>.</li>
+            </ul>
+        </li>
     </ul>
 
     <h2>Installation</h2>
 
     <ol>
-        <li>Install <a href="https://www.python.org/downloads/release/python-31010/">Python 3.10</a> or newer Python version.
+        <li>Install <a href="https://www.python.org/downloads/release/python-31113/">Python 3.11</a>. (Newer versions of Python should work as well)
             <ul>
                 <li>During the installation process, ensure that you select the option to add Python to the 'PATH' environment variable.</li>
             </ul>
@@ -158,6 +163,22 @@
             </ul>
         </li>
         <li>Wait for the script to finish, which could take a while depends on your network speed.</li>
+        <li>To confirm the installation is successful, you should try to run the sanity check script.
+            <ul>
+                <li>For Windows, it would be sanity_check_Windows.bat</li>
+            </ul>
+        </li>
+    </ol>
+
+    <h2>Starting GUI</h2>
+
+    <ol>
+        <li>Run the corresponding "start_WebUI" script for your system. This would open up a terminal.
+            <ul>
+                <li>For Windows, it would be start_WebUI_Windows.bat</li>
+            </ul>
+        </li>
+        <li>Your web browser should automatically open up a "website" with url "127.0.0.1:7860" or something similar.</li>
     </ol>
 
     <h2>Tutorials</h2>
