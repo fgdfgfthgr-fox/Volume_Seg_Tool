@@ -546,10 +546,10 @@ def nearest_interpolate(input_tensor, target_size):
     height_indices = torch.linspace(0, height-1, new_height, device=input_tensor.device).round().long()
     width_indices = torch.linspace(0, width-1, new_width, device=input_tensor.device).round().long()
 
-    output_tensor = input_tensor[:, :,
-                                 depth_indices[:, None, None],
-                                 height_indices[None, :, None],
-                                 width_indices[None, None, :]]
+    output_tensor = input_tensor.to(torch.int64)[:, :,
+                                                depth_indices[:, None, None],
+                                                height_indices[None, :, None],
+                                                width_indices[None, None, :]].to(input_tensor.dtype)
 
     return output_tensor
 
