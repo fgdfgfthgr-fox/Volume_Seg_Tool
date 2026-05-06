@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint
-from .Modules.Swin import SwinTransformerBlock, compute_attn_mask
+import torch.nn.functional as F
+from .Modules.Swin import SwinBlock, compute_attn_mask
+from timm.layers import trunc_normal_
 
 def unfold(x, kernel_size):
     """
@@ -59,40 +60,19 @@ def fold(patches, kernel_size, original_shape):
     return patches.reshape(B, C, D, H, W)
 
 
-class SwinBlock(nn.Module):
-    def __init__(self, d_main, nhead, num_layers, ffn_multiplier, window_size):
-        super().__init__()
-        self.num_layers = num_layers
-        self.layers_no_shift = nn.ModuleList([
-            SwinTransformerBlock(d_main, nhead, window_size, 0, ffn_multiplier, False, nn.RMSNorm)
-            for i in range(num_layers)
-        ])
-        self.layers_shift = nn.ModuleList([
-            SwinTransformerBlock(d_main, nhead, window_size, window_size // 2, ffn_multiplier, False, nn.RMSNorm)
-            for i in range(num_layers)
-        ])
-
-    def forward(self, x, input_resolution, attn_mask):
-        for layer_n, layer_s in zip(self.layers_no_shift, self.layers_shift):
-            x = layer_n(x, input_resolution, None) if not self.training else checkpoint(layer_n, x, input_resolution, None, use_reentrant=False)
-            x = layer_s(x, input_resolution, attn_mask) if not self.training else checkpoint(layer_s, x, input_resolution, attn_mask, use_reentrant=False)
-        return x
-
-
-class Network(nn.Module):
+class SwinTransformer(nn.Module):
     def __init__(self, patch_size=(2,4,4), window_size=4, depth=8, instance=True):
         super().__init__()
 
         self.patch_size = patch_size
         self.window_size = window_size
         self.instance = instance
-        patch_dim = (self.patch_size[0]*self.patch_size[1]*self.patch_size[2])
-        #self.to_patches = unfoldNd.UnfoldNd(kernel_size=self.patch_size, stride=self.patch_size)
-        self.up = nn.Linear(patch_dim, patch_dim*2)
-        self.dit = SwinBlock(patch_dim*2, 2, depth, 2, self.window_size)
-        self.down_p = nn.Linear(patch_dim*2, patch_dim)
+        self.patch_dim = self.patch_size[0]*self.patch_size[1]*self.patch_size[2]
+        self.up = nn.Linear(self.patch_dim, self.patch_dim*2)
+        self.dit = SwinBlock(self.patch_dim*2, 2, depth, 2, self.window_size)
+        self.down_p = nn.Linear(self.patch_dim*2, self.patch_dim)
         if instance:
-            self.down_c = nn.Linear(patch_dim*2, patch_dim)
+            self.down_c = nn.Linear(self.patch_dim*2, self.patch_dim)
 
 
     def forward(self, x):
@@ -100,21 +80,71 @@ class Network(nn.Module):
         B,C,D,H,W = x.shape
         grid_size = (D // self.patch_size[0], H // self.patch_size[1], W // self.patch_size[2])
 
-        # x = self.to_patches(x).permute(0, 2, 1)  # [B, num_patches, d]
-        x = unfold(x, self.patch_size)
+        x = unfold(x, self.patch_size)  # [B, num_patches, d]
 
         x = self.up(x)
         attn_mask = compute_attn_mask(grid_size, self.window_size, self.window_size//2, x.device)
         x = self.dit(x, grid_size, attn_mask)
 
         p = self.down_p(x)
-        # with torch.amp.autocast('cuda', enabled=False):
-            # p = unfoldNd.foldNd(p.permute(0, 2, 1), (D, H, W), self.patch_size, stride=self.patch_size)
         p = fold(p, self.patch_size, (B, C, D, H, W))
         if self.instance:
             c = self.down_c(x)
-            # with torch.amp.autocast('cuda', enabled=False):
-                # c = unfoldNd.foldNd(c.permute(0, 2, 1), (D, H, W), self.patch_size, stride=self.patch_size)
             c = fold(c, self.patch_size, (B, C, D, H, W))
             return p, c
         return p
+
+class SwinTransformerForSimMIM(SwinTransformer):
+    def __init__(self, *kwargs):
+        super().__init__(*kwargs)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, self.patch_dim*2))
+        self.down_s = nn.Linear(self.patch_dim * 2, self.patch_dim)
+        trunc_normal_(self.mask_token, std=.02)
+
+    def forward(self, x, mask):
+        B,C,D,H,W = x.shape
+        grid_size = (D // self.patch_size[0], H // self.patch_size[1], W // self.patch_size[2])
+
+        x = unfold(x, self.patch_size)
+
+        x = self.up(x)
+        attn_mask = compute_attn_mask(grid_size, self.window_size, self.window_size // 2, x.device)
+
+        B, L, _ = x.shape
+        mask_tokens = self.mask_token.expand(B, L, -1)
+        w = mask.flatten(1).unsqueeze(-1).type_as(mask_tokens)
+        x = x * (1. - w) + mask_tokens * w
+
+        x = self.dit(x, grid_size, attn_mask)
+
+        x = self.down_s(x)
+        x = fold(x, self.patch_size, (B, C, D, H, W))
+        return x
+
+
+class SimMIM(nn.Module):
+    def __init__(self, encoder):
+        super().__init__()
+        self.encoder = encoder
+        self.patch_size = encoder.patch_size
+
+    def forward(self, x, mask):
+        x_rec = self.encoder(x, mask)
+
+        pd, ph, pw = self.patch_size
+        B, C, D, H, W = x.shape
+
+        # Reshape the 1D mask to the 3D grid of patches
+        mask_3d = mask.view(B, D // pd, H // ph, W // pw)
+
+        # Upsample by repeating each patch element along the corresponding spatial dimensions
+        mask_expanded = mask_3d.repeat_interleave(pd, dim=1) \
+            .repeat_interleave(ph, dim=2) \
+            .repeat_interleave(pw, dim=3)
+
+        # Add a singleton channel dimension
+        mask_expanded = mask_expanded.unsqueeze(1)  # (B, 1, D, H, W)
+
+        loss_recon = F.l1_loss(x, x_rec, reduction='none')
+        loss = (loss_recon * mask_expanded).sum() / (mask_expanded.sum() + 1e-5)
+        return loss, x_rec

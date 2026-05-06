@@ -64,7 +64,7 @@ class PLModule(pl.LightningModule):
                  use_sparse_label_train, use_sparse_label_val, use_sparse_label_test, logging):
         super().__init__()
         self.save_hyperparameters()
-        self.network = DiT.Network(*arch_args)
+        self.network = DiT.SwinTransformer(*arch_args)
         self.enable_val = enable_val
         self.enable_mid_visual = enable_mid_visual
         self.mid_visual_image = mid_visual_image

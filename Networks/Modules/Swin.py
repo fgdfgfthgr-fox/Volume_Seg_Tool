@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from timm.layers import trunc_normal_
+from torch.utils.checkpoint import checkpoint
 
 # Mostly implementation from Timm, just changed to 3D
 
@@ -287,4 +288,24 @@ class SwinTransformerBlock(nn.Module):
         # FFN
         x = x + self.mlp(self.norm2(x))
 
+        return x
+
+
+class SwinBlock(nn.Module):
+    def __init__(self, d_main, nhead, num_layers, ffn_multiplier, window_size):
+        super().__init__()
+        self.num_layers = num_layers
+        self.layers_no_shift = nn.ModuleList([
+            SwinTransformerBlock(d_main, nhead, window_size, 0, ffn_multiplier, False, nn.RMSNorm)
+            for i in range(num_layers)
+        ])
+        self.layers_shift = nn.ModuleList([
+            SwinTransformerBlock(d_main, nhead, window_size, window_size // 2, ffn_multiplier, False, nn.RMSNorm)
+            for i in range(num_layers)
+        ])
+
+    def forward(self, x, input_resolution, attn_mask):
+        for layer_n, layer_s in zip(self.layers_no_shift, self.layers_shift):
+            x = layer_n(x, input_resolution, None) if not self.training else checkpoint(layer_n, x, input_resolution, None, use_reentrant=False)
+            x = layer_s(x, input_resolution, attn_mask) if not self.training else checkpoint(layer_s, x, input_resolution, attn_mask, use_reentrant=False)
         return x
