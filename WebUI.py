@@ -98,7 +98,6 @@ def start_work_flow(inputs):
            f"--predict_hw_overlap {inputs[predict_hw_overlap]} --predict_depth_overlap {inputs[predict_depth_overlap]} "
            f"--watershed_dynamic {inputs[watershed_dynamic]} "
            f"--result_folder_path {inputs[result_folder_path]} "
-           f"--mid_visualization_input {inputs[mid_visualization_input]} "
            f"--model_architecture {inputs[model_architecture]} "
            f"--model_patch_size_xy {inputs[model_patch_size_xy]} --model_patch_size_z {inputs[model_patch_size_z]} "
            #f"--model_window_size {inputs[model_window_size]} "
