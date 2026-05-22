@@ -68,11 +68,13 @@ class SwinTransformer(nn.Module):
         self.window_size = window_size
         self.instance = instance
         self.patch_dim = self.patch_size[0]*self.patch_size[1]*self.patch_size[2]
-        self.up = nn.Linear(self.patch_dim, self.patch_dim*2)
-        self.dit = SwinBlock(self.patch_dim*2, 2, depth, 2, self.window_size)
-        self.down_p = nn.Linear(self.patch_dim*2, self.patch_dim)
+        self.model_dim = 16 * ((self.patch_dim * 3) // 16)
+        self.up = nn.Linear(self.patch_dim, self.model_dim)
+        #self.abs = nn.Parameter(torch.zeros(1, 36288, self.model_dim))
+        self.dit = SwinBlock(self.model_dim, 2, depth, 2, self.window_size)
+        self.down_p = nn.Linear(self.model_dim, self.patch_dim)
         if instance:
-            self.down_c = nn.Linear(self.patch_dim*2, self.patch_dim)
+            self.down_c = nn.Linear(self.model_dim, self.patch_dim)
 
 
     def forward(self, x):
@@ -83,6 +85,7 @@ class SwinTransformer(nn.Module):
         x = unfold(x, self.patch_size)  # [B, num_patches, d]
 
         x = self.up(x)
+        #x = x + self.abs
         attn_mask = compute_attn_mask(grid_size, self.window_size, self.window_size//2, x.device)
         x = self.dit(x, grid_size, attn_mask)
 
@@ -94,11 +97,12 @@ class SwinTransformer(nn.Module):
             return p, c
         return p
 
+
 class SwinTransformerForSimMIM(SwinTransformer):
     def __init__(self, *kwargs):
         super().__init__(*kwargs)
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, self.patch_dim*2))
-        self.down_s = nn.Linear(self.patch_dim * 2, self.patch_dim)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, self.model_dim))
+        self.down_s = nn.Linear(self.model_dim, self.patch_dim)
         trunc_normal_(self.mask_token, std=.02)
 
     def forward(self, x, mask):
@@ -121,6 +125,36 @@ class SwinTransformerForSimMIM(SwinTransformer):
         x = fold(x, self.patch_size, (B, C, D, H, W))
         return x
 
+def norm_targets_3d(targets, patch_size):
+    """
+    Normalise each voxel by the mean and std of a local 3D patch.
+    patch_size: int (odd) or tuple of three odd ints (pd, ph, pw).
+    """
+    if isinstance(patch_size, int):
+        assert patch_size % 2 == 1
+        patch_size = (patch_size, patch_size, patch_size)
+    else:
+        assert all(p % 2 == 1 for p in patch_size)
+
+    pd, ph, pw = patch_size
+
+    # Average pooling over local neighbourhood
+    mean = F.avg_pool3d(targets, kernel_size=patch_size, stride=1,
+                        padding=(pd//2, ph//2, pw//2), count_include_pad=False)
+
+    # Variance using E[x^2] - E[x]^2, with unbiased correction
+    square_mean = F.avg_pool3d(targets ** 2, kernel_size=patch_size, stride=1,
+                               padding=(pd//2, ph//2, pw//2), count_include_pad=False)
+    # Count of valid (non‑padded) elements in each window
+    ones = torch.ones_like(targets)
+    count = F.avg_pool3d(ones, kernel_size=patch_size, stride=1,
+                         padding=(pd//2, ph//2, pw//2), count_include_pad=True) * (pd * ph * pw)
+
+    var = (square_mean - mean ** 2) * (count / (count - 1).clamp(min=1))
+    var = torch.clamp(var, min=0.0)
+
+    normed = (targets - mean) / (var + 1e-6).sqrt()
+    return normed
 
 class SimMIM(nn.Module):
     def __init__(self, encoder):
@@ -144,6 +178,9 @@ class SimMIM(nn.Module):
 
         # Add a singleton channel dimension
         mask_expanded = mask_expanded.unsqueeze(1)  # (B, 1, D, H, W)
+
+        #with torch.no_grad():  # normalisation is a fixed preprocessing
+        #    x = norm_targets_3d(x, 25)
 
         loss_recon = F.l1_loss(x, x_rec, reduction='none')
         loss = (loss_recon * mask_expanded).sum() / (mask_expanded.sum() + 1e-5)

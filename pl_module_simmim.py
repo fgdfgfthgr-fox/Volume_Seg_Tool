@@ -2,6 +2,7 @@ import math
 
 import lightning.pytorch as pl
 import torch
+import torch._logging
 import torch.utils.data
 import torch.utils.tensorboard
 
@@ -60,7 +61,7 @@ def get_parameter_groups_with_muon(model, weight_decay=0.0001):
     ]
 
 class PLModule(pl.LightningModule):
-    def __init__(self, arch_args, enable_mid_visual, logging):
+    def __init__(self, arch_args, enable_mid_visual, logging, mask_patch_size_multipliers):
         super().__init__()
         self.save_hyperparameters()
         self.patch_dim = arch_args[0]
@@ -70,6 +71,7 @@ class PLModule(pl.LightningModule):
         self.logging = logging
         self.train_metrics, self.val_metrics, self.test_metrics = [], [], []
         self.lr = 3e-2
+        self.mask_patch_size_multipliers = mask_patch_size_multipliers
 
     def forward(self, image, mask):
         return self.mim_loss_fn(image, mask)
@@ -88,24 +90,27 @@ class PLModule(pl.LightningModule):
             "lr_scheduler": {"scheduler": scheduler, "monitor": metrics, "interval": "epoch", "frequency": 1},
         }
 
+    @staticmethod
+    def to_visualisation_img(tensor):
+        tensor = tensor[0:1, :, 0:1, :, :].squeeze([0, 1])
+        return (tensor - tensor.min()) / (tensor.max() - tensor.min() + 1e-5)
+
     def _step(self, batch):
         img = batch[0]
-        mask = SimMIM.generate_simmim_mask(img, (s * 2 for s in self.patch_dim), self.patch_dim, (0.5, 0.75))
+        mask = SimMIM.generate_simmim_mask(img, (s * self.mask_patch_size_multipliers for s in self.patch_dim), self.patch_dim, (0.5, 0.75))
         loss, x_rec = self.forward(img, mask)
         with torch.no_grad():
-            if self.global_step % 64 == 0:
+            if self.global_step % 64 == 0 and self.enable_mid_visual:
                 original_shape = img.shape
                 unfolded_img = DiT.unfold(img, self.patch_dim)
                 mask2 = mask.unsqueeze(-1)
                 unfolded_img = (unfolded_img * (1-mask2))
                 folded_img = DiT.fold(unfolded_img, self.patch_dim, original_shape)
-                mid_visual_img = folded_img[0:1, :, 0:1, :, :].squeeze([0, 1])
-                mid_visual_img = (mid_visual_img - mid_visual_img.min()) / (mid_visual_img.max() - mid_visual_img.min() + 1e-5)
-                mid_visual_gt = (img - img.min()) / (img.max() - img.min() + 1e-5)
+                mid_visual_img = self.to_visualisation_img(folded_img)
+                mid_visual_gt = self.to_visualisation_img(img)
                 self.logger.experiment.add_image(f'Visualization/Input', mid_visual_img, self.global_step)
                 self.logger.experiment.add_image(f'Visualization/Ground Truth', mid_visual_gt, self.global_step)
-                mid_visual_out = x_rec[0:1, :, 0:1, :, :].squeeze([0, 1])
-                mid_visual_out = (mid_visual_out - mid_visual_out.min()) / (mid_visual_out.max() - mid_visual_out.min() + 1e-5)
+                mid_visual_out = self.to_visualisation_img(x_rec)
                 self.logger.experiment.add_image(f'Visualization/Output', mid_visual_out, self.global_step)
         return loss
 
@@ -136,33 +141,32 @@ class PLModule(pl.LightningModule):
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
             sch.step(self.trainer.callback_metrics["train_loss"])
 
-    '''def on_before_optimizer_step(self, optimizer):
-        norms = grad_norm(self.network, norm_type=2)
-        self.log_dict(norms, logger=True)'''
+    #def on_before_optimizer_step(self, optimizer):
+    #    norms = grad_norm(self.network, norm_type=2)
+    #    self.log_dict(norms, logger=True)
 
 
 if __name__ == "__main__":
     #tracemalloc.start()
     #snap1 = tracemalloc.take_snapshot()
-    #torch.backends.cudnn.enabled = False
-    unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/predict",
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision('medium')
+    unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
                                                                     "Augmentation Parameters Anisotropic.csv",
-                                                                    64,
-                                                                    40, 16)
+                                                                    128,
+                                                                    180, 56)
     train_loader = torch.utils.data.DataLoader(dataset=unsupervised_train_dataset, batch_size=2,
-                                               num_workers=0, pin_memory=True, persistent_workers=False)
+                                               num_workers=16, pin_memory=True, persistent_workers=True)
     callbacks = []
-    #model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="trained_model",
-    #                                                     filename="example_name",
-    #                                                     save_weights_only=True, enable_version_counter=False)
     #swa_callback = StochasticWeightAveraging([1e-3, 1e-5, 1e-3, 1e-5], 0.8, int(0.2 * 10 - 1))
     callbacks.append(LearningRateMonitor(logging_interval='epoch'))
-    #callbacks.append(model_checkpoint_last)
     #callbacks.append(swa_callback)
-    arch_args = ((2,5,5), 4, 8, False)
-    model = PLModule(arch_args, True, True)
-    trainer = pl.Trainer(max_epochs=64, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'test_drive'),
-                         accelerator="cpu", enable_checkpointing=True, gradient_clip_val=0.2,
-                         precision="32", enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
+    arch_args = ((2,5,5), 4, 9, False)
+    model = PLModule(arch_args, True, True, 4)
+    trainer = pl.Trainer(max_epochs=80, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'SimMIM_Pretraining_4_lowermaskratio'),
+                         accelerator="gpu", enable_checkpointing=True,# gradient_clip_val=0.2,
+                         precision="bf16-mixed", enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
     trainer.fit(model,
                 train_dataloaders=train_loader)
+    torch.save(model.network.state_dict(), f"trained_model/simmim_tester.pt")

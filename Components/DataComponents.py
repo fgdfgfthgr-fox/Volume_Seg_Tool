@@ -1155,7 +1155,7 @@ class CollectedDataset(torch.utils.data.Dataset):
 
 class CollectedSampler(torch.utils.data.Sampler):
     def __init__(self, data, batch_size, dataset_unsupervised=None):
-        super(CollectedSampler, self).__init__(data)
+        super().__init__()
         self.data = data
         self.batch_size = batch_size
         if dataset_unsupervised:
@@ -1188,6 +1188,8 @@ class CollectedSampler(torch.utils.data.Sampler):
         elif self.batch_size == 2:
             if self.dataset_unsupervised_size == 0:
                 original_array = np.arange(len(self.data))
+                if len(original_array) % 2 != 0:
+                    original_array = original_array[:-1]  # drop last index to make even
                 positive_array, negative_array = np.split(original_array, 2)
                 np.random.shuffle(positive_array)
                 positive_array = [[num, 'positive'] for num in positive_array]
@@ -1203,6 +1205,8 @@ class CollectedSampler(torch.utils.data.Sampler):
                 np.random.shuffle(unsupervised_array)
                 unsupervised_array = [[num, 'unsupervised'] for num in unsupervised_array]
                 supervised_array = np.arange(self.dataset_unsupervised_size, len(self.data))
+                if len(supervised_array) % 2 != 0:
+                    supervised_array = supervised_array[:-1]  # drop last index
                 positive_array, negative_array = np.split(supervised_array, 2)
                 np.random.shuffle(positive_array)
                 positive_array = [[num, 'positive'] for num in positive_array]
@@ -1234,7 +1238,7 @@ class CollectedSampler(torch.utils.data.Sampler):
             raise ValueError("Invalid batch size. We only support 1 or 2.")
 
     def __len__(self):
-        return len(self.data)
+        return 2 * (len(self.data)//2)
 
 
 def custom_collate(batch):
@@ -1383,6 +1387,15 @@ def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_s
         array = np.where(array >= 0.5, np.uint8(1), np.uint8(0))
         imageio.v3.imwrite(uri=f'{direc}/{volume[1]}', image=array)
 
+def tiff_size_estimate(tensor: np.ndarray):
+    threshold = 3.95*(1024**3)
+    nbytes = tensor.nbytes
+    if nbytes > threshold:
+        print('Detected an segmentation that will exceed 4GB when saved! Saving as BigTIFF format! Which not all image readers can open!')
+        return True
+    else:
+        return False
+
 
 def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16,
                                       depth_overlap=16, segmentation_mode='simple', dynamic=10, pixel_reclaim=True):
@@ -1420,11 +1433,11 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
     stitched_volumes_c = stitch_output_volumes(tensor_list_c, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
     del tensor_list_c
     for semantic, contour in zip(stitched_volumes_p, stitched_volumes_c):
-        imageio.v3.imwrite(uri=f'{direc}/Pixels_{semantic[1]}', image=np.float16(semantic[0].numpy()))
-        imageio.v3.imwrite(uri=f'{direc}/Contour_{contour[1]}', image=np.float16(contour[0].numpy()))
+        tifffile.imwrite(f'{direc}/Pixels_{semantic[1]}', data=np.float16(semantic[0].numpy()), bigtiff=tiff_size_estimate(semantic[0].numpy()))
+        tifffile.imwrite(f'{direc}/Contour_{contour[1]}', data=np.float16(contour[0].numpy()), bigtiff=tiff_size_estimate(contour[0].numpy()))
         print(f'Computing instance segmentation using contour data for {contour[1]}... Can take a while if the image is big.')
         instance_array = instance_segmentation_simple(semantic[0], contour[0], mode=segmentation_mode, dynamic=dynamic, pixel_reclaim=pixel_reclaim)
-        imageio.v3.imwrite(uri=f'{direc}/Instance_{contour[1]}', image=instance_array)
+        tifffile.imwrite(f'{direc}/Instance_{contour[1]}', data=instance_array, bigtiff=tiff_size_estimate(instance_array[0].numpy()))
 
 
 # Global variables to hold the shared memory objects in workers

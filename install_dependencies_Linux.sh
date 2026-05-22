@@ -69,19 +69,19 @@ if [[ -n "$gpu_info" && "$gpu_info" == *"NVIDIA"* ]] || [[ -n "$cuda_version" ]]
         cuda_major=${cuda_parts[0]}
         cuda_minor=${cuda_parts[1]}
 
-        if [ "$cuda_major" -eq 12 ] && [ "$cuda_minor" -ge 8 ]; then
-            export TORCH_COMMAND="pip install torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cu128"
+        if [ "$cuda_major" -eq 13 ] && [ "$cuda_minor" -ge 0 ]; then
+            export TORCH_COMMAND="pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu130"
+            torch_command_set=1
+        elif [ "$cuda_major" -eq 12 ] && [ "$cuda_minor" -ge 8 ]; then
+            export TORCH_COMMAND="pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128"
             torch_command_set=1
         elif [ "$cuda_major" -eq 12 ] && [ "$cuda_minor" -ge 6 ]; then
-            export TORCH_COMMAND="pip install torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cu126"
-            torch_command_set=1
-        elif [ "$cuda_major" -eq 11 ] && [ "$cuda_minor" -ge 8 ]; then
-            export TORCH_COMMAND="pip install torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cu118"
+            export TORCH_COMMAND="pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu126"
             torch_command_set=1
         fi
 
         if [ $torch_command_set -eq 0 ]; then
-            printf "\e[1m\e[33mWARNING: Detected CUDA version %s which is not supported by PyTorch 2.7.1\e[0m\n" "$cuda_version"
+            printf "\e[1m\e[33mWARNING: Detected CUDA version %s which is not supported by PyTorch 2.11.0\e[0m\n" "$cuda_version"
         fi
     else
         printf "\e[1m\e[33mWARNING: NVIDIA GPU detected but CUDA installation not found\e[0m\n"
