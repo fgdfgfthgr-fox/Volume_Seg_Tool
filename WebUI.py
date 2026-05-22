@@ -780,7 +780,7 @@ if __name__ == "__main__":
                 gr.Markdown("Note: Gradio doesn't support direct display of 3D image. The result are displayed in the tensorboard.")
                 gr.Markdown("Could slow down training process, especially if the image is big.")
                 gr.Markdown("Highly recommend cropping this image into the same size as the patches that feeds into the network.")
-                enable_mid_visualization = gr.Checkbox(label="Enable Visualisation", container=False)
+                enable_mid_visualization = gr.Checkbox(True, label="Enable Visualisation", container=False)
             with gr.Row():
                 save_model_name = gr.Textbox('example_name', label="File Name for Model Saved, do not include extension")
                 save_model_path = gr.Textbox("trained_model", scale=2, label="Path to Save the Model Weight",
