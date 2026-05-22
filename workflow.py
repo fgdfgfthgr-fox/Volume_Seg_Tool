@@ -267,7 +267,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_architecture", type=str, default="SwishTransformer",
                         help="Model Architecture")
     parser.add_argument("--model_depth_multiplier", type=int, default=1, help="Model Depth multiplier")
-    parser.add_argument("--model_patch_size_xy", type=int, default=5, help="Patch Height and Width (px)")
+    parser.add_argument("--model_patch_size_xy", type=int, default=6, help="Patch Height and Width (px)")
     parser.add_argument("--model_patch_size_z", type=int, default=2, help="Patch Depth (px)")
     #parser.add_argument("--find_max_channel_count", action="store_true", help="Automatically find the max channel count that won't result in an OOM error")
     parser.add_argument("--model_depth", type=int, default=8, help="Number of Transformer blocks in the Model")
