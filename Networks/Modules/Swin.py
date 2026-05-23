@@ -1,6 +1,9 @@
 import torch
+import numpy as np
 import torch.nn as nn
 from timm.layers import trunc_normal_
+from torch.utils.checkpoint import checkpoint
+from aule import scaled_dot_product_attention
 
 # Mostly implementation from Timm, just changed to 3D
 
@@ -10,6 +13,16 @@ def to_3tuple(x):
         return tuple(x)
     return (x, x, x)
 
+class DyT(nn.Module):
+    def __init__(self, num_features, alpha_init_value=0.5):
+        super(DyT, self).__init__()
+        self.alpha = nn.Parameter(torch.ones(1)*alpha_init_value)
+        self.weight = nn.Parameter(torch.ones(num_features))
+        self.bias = nn.Parameter(torch.zeros(num_features))
+
+    def forward(self, x):
+        x = torch.tanh(self.alpha * x)
+        return x * self.weight + self.bias
 
 def window_partition(x, window_size):
     """
@@ -81,23 +94,23 @@ def window_reverse(windows, window_size, D, H, W):
 class WindowAttention(nn.Module):
     """
     3D Window based multi-head self attention with relative position bias.
-    Supports both shifted and non-shifted windows.
 
     Args:
-        dim (int): Number of input channels.
+        dim (int): Number of input channels. Also the dim of the value.
         window_size (tuple[int]): Depth, height, width of the window.
         num_heads (int): Number of attention heads.
         qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: False
-        qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set.
+        qk_dim (int, optional): Dimension of query, key (before divide by num_heads). Default: None
     """
 
-    def __init__(self, dim, window_size, num_heads, qkv_bias=False, qk_scale=None):
+    def __init__(self, dim, window_size, num_heads, qkv_bias=False, qk_dim=None):
         super().__init__()
         self.dim = dim
         self.window_size = window_size  # (wd, wh, ww)
         self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim ** -0.5
+        self.qk_dim = qk_dim if qk_dim is not None else dim
+        assert self.qk_dim % num_heads == 0, "qk_dim must be divisible by num_heads"
+        self.head_dim_qk = self.qk_dim // num_heads
 
         # Relative position bias table: shape (2*wd-1)*(2*wh-1)*(2*ww-1), nH
         self.relative_position_bias_table = nn.Parameter(
@@ -122,39 +135,57 @@ class WindowAttention(nn.Module):
         relative_position_index = relative_coords.sum(-1)  # N, N
         self.register_buffer("relative_position_index", relative_position_index)
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.qkv = nn.Linear(dim, self.qk_dim * 2 + dim, bias=qkv_bias)
+        self.q_norm = DyT(self.head_dim_qk)
+        self.k_norm = DyT(self.head_dim_qk)
         self.proj = nn.Linear(dim, dim)
 
         trunc_normal_(self.relative_position_bias_table, std=.02)
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask=None):
-        """
-        Args:
-            x: input features with shape of (num_windows*B, N, C) where N = wd*wh*ww
-            mask: (0/-inf) mask with shape of (num_windows, N, N) or None
-        """
         B_, N, C = x.shape
-        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # B_, num_heads, N, head_dim
 
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))  # B_, num_heads, N, N
+        # Compute Q, K, V
+        qkv = self.qkv(x)
+        q, k, v = torch.split(qkv, [self.qk_dim, self.qk_dim, self.dim], dim=-1)  # each: (B_, num_heads, N, head_dim)
+        q = q.reshape(B_, N, self.num_heads, self.head_dim_qk).permute(0, 2, 1, 3)
+        k = k.reshape(B_, N, self.num_heads, self.head_dim_qk).permute(0, 2, 1, 3)
+        v = v.reshape(B_, N, self.num_heads, self.dim//self.num_heads).permute(0, 2, 1, 3)
 
-        # Add relative position bias
-        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
-            N, N, -1)  # N, N, num_heads
-        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # num_heads, N, N
-        attn = attn + relative_position_bias.unsqueeze(0)
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
-        # Apply mask if provided (for SW-MSA)
+        # Relative position bias: (num_heads, N, N)
+        rel_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)]
+        rel_bias = rel_bias.view(N, N, -1).permute(2, 0, 1).contiguous()  # (num_heads, N, N)
+
+        # Combine with optional shift mask (if given) to form the full attention mask
+        # mask from compute_attn_mask has shape (num_windows, N, N) with 0 or -inf
+        # expand to (B_, num_heads, N, N)
         if mask is not None:
-            nW = mask.shape[0]
-            attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N)
-        attn = self.softmax(attn)
+            # mask: (num_windows, N, N)  →  (B_, 1, N, N)  (broadcast over heads)
+            attn_mask = mask.unsqueeze(1)  # (num_windows, 1, N, N)
+            # Add relative bias (broadcasted to heads dimension)
+            attn_mask = attn_mask + rel_bias.unsqueeze(0)  # (num_windows, num_heads, N, N)
+        else:
+            attn_mask = rel_bias.unsqueeze(0)  # (1, num_heads, N, N)
 
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        # SDPA expects mask of shape (B_, num_heads, N, N) or broadcastable.
+        if mask is not None:
+            nW = mask.shape[0]                # windows per image
+            batch = B_ // nW
+            attn_mask = attn_mask.repeat(batch, 1, 1, 1)   # (B_, num_heads, N, N)
+
+        x = scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=False
+        )
+
+        # Reshape and project (same as original)
+        x = x.transpose(1, 2).reshape(B_, N, C)
         x = self.proj(x)
         return x
 
@@ -200,7 +231,7 @@ def compute_attn_mask(input_resolution, window_size, shift_size, device):
     mask_windows = window_partition(img_mask, window_size)          # (num_windows, wd, wh, ww, 1)
     mask_windows = mask_windows.view(-1, wd * wh * ww)              # (num_windows, N)
     attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)  # (num_windows, N, N)
-    attn_mask = torch.where(attn_mask != 0, -100.0, 0.0)
+    attn_mask = torch.where(attn_mask != 0, -torch.inf, 0.0)
     return attn_mask.to(device)
 
 
@@ -215,45 +246,46 @@ class SwinTransformerBlock(nn.Module):
         shift_size (int | tuple[int]): Shift size for SW-MSA (same for all dims if int, else per dim).
         mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
         qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: False
-        norm_layer (nn.Module, optional): Normalization layer. Default: nn.LayerNorm
+        qk_dim (int, optional): Dimension of query, key (before divide by num_heads). Default: None
+        more_ffn (bool, optional): If True, perform another mlp after the first mlp block. Default: False
     """
 
     def __init__(self, dim, num_heads, window_size=7, shift_size=0,
-                 mlp_ratio=2., qkv_bias=False, norm_layer=nn.LayerNorm):
+                 mlp_ratio=2., qkv_bias=False, qk_dim=None, more_ffn=False):
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
         self.window_size = to_3tuple(window_size)
         self.shift_size = to_3tuple(shift_size) if isinstance(shift_size, (tuple, list)) else (shift_size, shift_size, shift_size)
         self.mlp_ratio = mlp_ratio
+        self.more_ffn = more_ffn
 
         # Ensure shift_size is in [0, window_size)
         for i in range(3):
             assert 0 <= self.shift_size[i] < self.window_size[i], "shift_size must be in 0-window_size"
 
-        self.norm1 = norm_layer(dim, elementwise_affine=False)
+        self.attn = WindowAttention(dim, window_size=self.window_size, num_heads=num_heads, qkv_bias=qkv_bias, qk_dim=qk_dim)
+        self.gamma_1 = nn.Parameter(1e-4 * torch.ones((dim)),requires_grad=True)
 
-        self.attn = WindowAttention(
-            dim, window_size=self.window_size, num_heads=num_heads, qkv_bias=qkv_bias)
-
-        self.norm2 = norm_layer(dim, elementwise_affine=False)
         self.mlp = nn.Sequential(
             nn.Linear(dim, int(mlp_ratio * dim)),
             nn.SiLU(inplace=True),
             nn.Linear(int(mlp_ratio * dim), dim),
         )
+        self.gamma_2 = nn.Parameter(1e-4 * torch.ones((dim)),requires_grad=True)
+        if more_ffn:
+            self.mlp2 = nn.Sequential(
+            nn.Linear(dim, int(mlp_ratio * dim)),
+            nn.SiLU(inplace=True),
+            nn.Linear(int(mlp_ratio * dim), dim),
+        )
+            self.gamma_3 = nn.Parameter(1e-4 * torch.ones((dim)),requires_grad=True)
 
-
-    def forward(self, x, input_resolution, attn_mask=None):
-        """
-        x: (B, L, C) where L = D*H*W
-        """
+    def full_attn(self, x, input_resolution, attn_mask):
         D, H, W = input_resolution
         B, L, C = x.shape
-        assert L == D * H * W, "input feature has wrong size"
 
         shortcut = x
-        x = self.norm1(x)
         x = x.view(B, D, H, W, C)
 
         # Cyclic shift
@@ -282,9 +314,38 @@ class SwinTransformerBlock(nn.Module):
             x = shifted_x
 
         x = x.view(B, D * H * W, C)
-        x = shortcut + x
+        return shortcut + self.gamma_1 * x
+
+    def forward(self, x, input_resolution, attn_mask=None):
+        """
+        x: (B, L, C) where L = D*H*W
+        """
+        x = self.full_attn(x, input_resolution, attn_mask)
 
         # FFN
-        x = x + self.mlp(self.norm2(x))
+        x = x + self.gamma_2 * self.mlp(x)
+        if self.more_ffn:
+            x = x + self.gamma_3 * self.mlp2(x)
+        return x
 
+
+class SwinBlock(nn.Module):
+    def __init__(self, d_main, nhead, num_layers, ffn_multiplier, window_size):
+        super().__init__()
+        self.num_layers = num_layers
+        slope = np.linspace(0.5, 0.25, num_layers)
+        d_qk = [int((8*nhead) * (slope[i] * d_main // (8*nhead))) for i in range(num_layers)]
+        self.layers_no_shift = nn.ModuleList([
+            SwinTransformerBlock(d_main, nhead, window_size, 0, ffn_multiplier, False, d_qk[i], True)
+            for i in range(num_layers)
+        ])
+        self.layers_shift = nn.ModuleList([
+            SwinTransformerBlock(d_main, nhead, window_size, window_size // 2, ffn_multiplier, False, d_qk[i])
+            for i in range(num_layers)
+        ])
+
+    def forward(self, x, input_resolution, attn_mask):
+        for layer_n, layer_s in zip(self.layers_no_shift, self.layers_shift):
+            x = layer_n(x, input_resolution, None) if not self.training else checkpoint(layer_n, x, input_resolution, None, use_reentrant=False)
+            x = layer_s(x, input_resolution, attn_mask) if not self.training else checkpoint(layer_s, x, input_resolution, attn_mask, use_reentrant=False)
         return x

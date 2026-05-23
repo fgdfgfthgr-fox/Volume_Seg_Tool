@@ -10,6 +10,7 @@ from Components import Metrics
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
 from lightning.pytorch.callbacks import LearningRateMonitor
+from lightning.pytorch.utilities import grad_norm
 from pytorch_optimizer.optimizer import AdaMuon
 
 
@@ -60,35 +61,33 @@ def get_parameter_groups_with_muon(model, weight_decay=0.0001):
     ]
 
 class PLModule(pl.LightningModule):
-    def __init__(self, arch_args, enable_val, enable_mid_visual, mid_visual_image, instance_mode,
+    def __init__(self, arch_args, enable_val, enable_mid_visual, instance_mode,
                  use_sparse_label_train, use_sparse_label_val, use_sparse_label_test, logging):
         super().__init__()
         self.save_hyperparameters()
-        self.network = DiT.Network(*arch_args)
+        self.network = DiT.SwinTransformer(*arch_args)
         self.enable_val = enable_val
         self.enable_mid_visual = enable_mid_visual
-        self.mid_visual_image = mid_visual_image
         self.instance_mode = instance_mode
         self.use_sparse_label_train = use_sparse_label_train
         self.use_sparse_label_val = use_sparse_label_val
         self.use_sparse_label_test = use_sparse_label_test
         self.logging = logging
         self.train_metrics, self.val_metrics, self.test_metrics = [], [], []
-        self.lr = 3e-2
-        self.pixel_ramp_steps = 2048  # Ramp-up the weight of entropy minimisation during the initial 2048 steps
+        self.lr = 1e-2
+        self.pixel_ramp_steps = 2048
         self.unsupervised_weight = 0.1
         self.p_loss_fn = Metrics.BinaryMetrics("focal")
         self.c_loss_fn = Metrics.BinaryMetrics("dice+bce")
-        if enable_mid_visual:
-            self.mid_visual_tensor = torch.from_numpy(DataComponents.path_to_array(self.mid_visual_image)).unsqueeze(0).unsqueeze(0).to(device)
 
         self.dice_threshold_reached = False
         self.starting_step = None
+        self.require_next_mid_visual = False
 
     def forward(self, image):
         return self.network(image)
 
-    def compute_ramp_up_weight(self, ramp_steps):
+    def compute_ramp_up_weight(self):
         # Check if the dice score threshold has been reached
         if not self.dice_threshold_reached:
             return 0.0  # No ramp-up until dice score exceeds threshold
@@ -97,116 +96,138 @@ class PLModule(pl.LightningModule):
         if self.starting_step is None:
             self.starting_step = self.global_step
         current_step = self.global_step - self.starting_step
-        if current_step < ramp_steps:
-            return math.e ** (-5 * ((1 - (current_step / ramp_steps)) ** 2)) * self.unsupervised_weight
+        if current_step < self.pixel_ramp_steps:
+            return math.e ** (-5 * ((1 - (current_step / self.pixel_ramp_steps)) ** 2)) * self.unsupervised_weight
         else:
             return self.unsupervised_weight
-
-    @staticmethod
-    def entropy_preprocess(value):
-        return 0.999 * torch.sigmoid(value) + 5e-4
 
     def configure_optimizers(self):
         #fused = True if device == "cuda" else False
         param_groups = get_parameter_groups_with_muon(self, weight_decay=0.001)
-        optimizer = AdaMuon(param_groups, lr=self.lr, weight_decay=0.001, adamw_lr=3e-4, adamw_wd=0.001)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
+        optimizer = AdaMuon(param_groups, lr=self.lr, weight_decay=0.001, adamw_lr=3e-4, adamw_wd=0.001, foreach=True)
+        '''scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                                factor=0.5, patience=30,
                                                                threshold_mode='rel',
-                                                               cooldown=0, min_lr=[1e-3, 1e-5, 1e-3, 1e-5])
+                                                               cooldown=0, min_lr=[1e-3, 1e-5, 1e-3, 1e-5])'''
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, (50,), 0.5)
         metrics = "val_loss" if self.enable_val else "train_loss"
         return {
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "monitor": metrics, "interval": "epoch", "frequency": 1},
         }
 
-    def _step(self, batch, type, sparse):
-        pixel_ramp_weight = self.compute_ramp_up_weight(self.pixel_ramp_steps)
+    @staticmethod
+    def to_visualisation_img(tensor, norm='None'):
+        tensor = tensor[0:1, :, 0:1, :, :].squeeze([0, 1])
+        if norm == 'None':
+            return tensor
+        elif norm == 'Sigmoid':
+            return torch.sigmoid(tensor)
+        return (tensor - tensor.min()) / (tensor.max() - tensor.min() + 1e-5)
+
+    @staticmethod
+    def entropy_preprocess(value):
+        return 0.999 * torch.sigmoid(value) + 5e-4
+
+    @torch.no_grad()
+    @torch.compiler.disable()
+    def visualise_instance(self, img, lab, contour, p_out, c_out):
+        if self.training and ((self.global_step % 128 == 0 and self.enable_mid_visual) or self.require_next_mid_visual):
+            mid_img = self.to_visualisation_img(img, 'Norm')
+            mid_lab = self.to_visualisation_img(lab, 'None')
+            mid_contour = self.to_visualisation_img(contour, 'None')
+            mid_p_output = self.to_visualisation_img(p_out, 'Sigmoid')
+            mid_c_output = self.to_visualisation_img(c_out, 'Sigmoid')
+            self.logger.experiment.add_image(f'Visualization/Input', mid_img, self.global_step)
+            self.logger.experiment.add_image(f'Visualization/Pixel Ground Truth', mid_lab, self.global_step)
+            self.logger.experiment.add_image(f'Visualization/Contour Ground Truth', mid_contour, self.global_step)
+            self.logger.experiment.add_image(f'Visualization/Model Output (Pixel)', mid_p_output, self.global_step)
+            self.logger.experiment.add_image(f'Visualization/Model Output (Contour)', mid_c_output, self.global_step)
+
+    @torch.no_grad()
+    @torch.compiler.disable()
+    def visualise_semantic(self, img, lab, out):
+        if self.training and self.global_step % 128 == 0 and self.enable_mid_visual:
+            mid_img = self.to_visualisation_img(img, 'Norm')
+            mid_lab = self.to_visualisation_img(lab, 'None')
+            mid_output = self.to_visualisation_img(out, 'Sigmoid')
+            self.logger.experiment.add_image(f'Visualization/Input', mid_img, self.global_step)
+            self.logger.experiment.add_image(f'Visualization/Ground Truth', mid_lab, self.global_step)
+            self.logger.experiment.add_image(f'Visualization/Model Output', mid_output, self.global_step)
+
+    def unsupervised_step(self, batch):
+        pixel_ramp_weight = self.compute_ramp_up_weight()
+        img = batch[0]
+        if self.global_step % 128 == 0:
+            self.require_next_mid_visual = True
         if self.instance_mode:
-            if type == 'Supervised':
-                img, lab, contour = batch
-            else:
-                img = batch[0]
             p_output, c_output = self.forward(img)
-            if self.dice_threshold_reached:
-                sigmoid_p_output = self.entropy_preprocess(p_output)
-                entropy_loss_p = (-sigmoid_p_output * torch.log(sigmoid_p_output)).mean()
-
-                entropy = entropy_loss_p
-                entropy_loss = entropy * pixel_ramp_weight
-            else:
-                entropy = torch.tensor(0.0, requires_grad=False)
-                entropy_loss = torch.tensor(0.0, requires_grad=False)
-            if type == 'Supervised':
-                p_loss, p_i, p_u, p_tp, p_fn, p_tn, p_fp = self.p_loss_fn(p_output, lab, False)
-                c_loss, c_i, c_u, c_tp, c_fn, c_tn, c_fp = self.c_loss_fn(c_output, contour, False)
-                supervised_loss = p_loss + c_loss
-                loss = supervised_loss + entropy_loss
-
-                return loss, p_i, c_i, p_u, c_u, p_tp, c_tp, p_fn, c_fn, p_tn, c_tn, p_fp, c_fp, entropy
-            else:
-                return entropy_loss, *(torch.nan,) * 12, entropy
+            sigmoid_p_output = self.entropy_preprocess(p_output)
+            # Reducing the entropy of contour seems to perform worse
+            entropy = (-sigmoid_p_output * torch.log(sigmoid_p_output)).mean()
+            entropy_loss = entropy * pixel_ramp_weight
+            return entropy_loss, *(torch.nan,) * 12, entropy
         else:
-            if type == 'Supervised':
-                img, lab = batch
-            else:
-                img = batch[0]
             output = self.forward(img)
-            if self.dice_threshold_reached:
-                sigmoid_outputs = self.entropy_preprocess(output)
-                entropy = (-sigmoid_outputs * torch.log(sigmoid_outputs)).mean()
-                entropy_loss = entropy * pixel_ramp_weight
-            else:
-                entropy = torch.tensor(0.0, requires_grad=False)
-                entropy_loss = torch.tensor(0.0, requires_grad=False)
-            if type == 'Supervised':
-                supervised_loss, i, u, tp, fn, tn, fp = self.p_loss_fn(output, lab, sparse)
-                loss = supervised_loss + entropy_loss
-                return loss, i, u, tp, fn, tn, fp, entropy
-            else:
-                # loss, nan, nan, nan, nan, nan, nan
-                return entropy_loss, *(torch.nan,) * 6, entropy
+            sigmoid_outputs = self.entropy_preprocess(output)
+            entropy = (-sigmoid_outputs * torch.log(sigmoid_outputs)).mean()
+            entropy_loss = entropy * pixel_ramp_weight
+            return entropy_loss, *(torch.nan,) * 6, entropy
+
+    def _step(self, batch, sparse):
+        if self.instance_mode:
+            img, lab, contour = batch
+            p_output, c_output = self.forward(img)
+            p_loss, p_i, p_u, p_tp, p_fn, p_tn, p_fp = self.p_loss_fn(p_output, lab, False)
+            c_loss, c_i, c_u, c_tp, c_fn, c_tn, c_fp = self.c_loss_fn(c_output, contour, False)
+            loss = p_loss + c_loss
+            self.visualise_instance(img, lab, contour, p_output, c_output)
+            return loss, p_i, c_i, p_u, c_u, p_tp, c_tp, p_fn, c_fn, p_tn, c_tn, p_fp, c_fp, torch.nan
+        else:
+            img, lab = batch
+            output = self.forward(img)
+            loss, i, u, tp, fn, tn, fp = self.p_loss_fn(output, lab, sparse)
+            self.visualise_semantic(img, lab, output)
+            return loss, i, u, tp, fn, tn, fp, torch.nan
 
     def training_step(self, batch, batch_idx):
         if self.instance_mode:
             if len(batch) == 3:
-                type = 'Supervised'
+                result_tuple = self._step(batch, False)
+            elif self.dice_threshold_reached:
+                result_tuple = self.unsupervised_step(batch)
             else:
-                type = 'Unsupervised'
-            if not self.dice_threshold_reached and type == 'Unsupervised':
                 return None
-            result_tuple = self._step(batch, type, False)
             self.log("train_loss", result_tuple[0], logger=False)
             self.train_metrics.append(result_tuple)
         else:
             if len(batch) == 2:
-                type = 'Supervised'
+                result_tuple = self._step(batch, self.use_sparse_label_train)
+            elif self.dice_threshold_reached:
+                result_tuple = self.unsupervised_step(batch)
             else:
-                type = 'Unsupervised'
-            if not self.dice_threshold_reached and type == 'Unsupervised':
                 return None
-            result_tuple = self._step(batch, type, self.use_sparse_label_train)
             self.log("train_loss", result_tuple[0], logger=False)
             self.train_metrics.append(result_tuple)
         return {'loss': result_tuple[0]}
 
     def validation_step(self, batch, batch_idx):
         if self.instance_mode:
-            result_tuple = self._step(batch, 'Supervised', False)
+            result_tuple = self._step(batch, False)
             self.log("val_loss", result_tuple[0], logger=False)
             self.val_metrics.append(result_tuple)
         else:
-            result_tuple = self._step(batch, 'Supervised', self.use_sparse_label_val)
+            result_tuple = self._step(batch, self.use_sparse_label_val)
             self.log("val_loss", result_tuple[0], logger=False)
             self.val_metrics.append(result_tuple)
         return {'loss': result_tuple[0]}
 
     def test_step(self, batch, batch_idx):
         if self.instance_mode:
-            result_tuple = self._step(batch, 'Supervised', self.use_sparse_label_test)
+            result_tuple = self._step(batch, self.use_sparse_label_test)
             self.test_metrics.append(result_tuple)
         else:
-            result_tuple = self._step(batch, 'Supervised', self.use_sparse_label_test)
+            result_tuple = self._step(batch, self.use_sparse_label_test)
             self.test_metrics.append(result_tuple)
         return {'loss': result_tuple[0]}
 
@@ -276,7 +297,7 @@ class PLModule(pl.LightningModule):
                                                   self.current_epoch)
                 self.logger.experiment.add_scalar(f"{prefix}/Contour Specificity", c_specificity,
                                                   self.current_epoch)
-                if epoch_averages[13] != 0:
+                if epoch_averages[13] != 0 and not torch.any(torch.isnan(epoch_averages[13])):
                     self.logger.experiment.add_scalar(f"{prefix}/Entropy", epoch_averages[13], self.current_epoch)
                 self.log(f"{prefix}_epoch_dice", p_dice+c_dice, logger=False)
             else:
@@ -290,10 +311,10 @@ class PLModule(pl.LightningModule):
                 specificity = epoch_averages[5]/(epoch_averages[5]+epoch_averages[6])
                 self.logger.experiment.add_scalar(f"{prefix}/Loss", epoch_averages[0], self.current_epoch)
                 self.logger.experiment.add_scalar(f"{prefix}/Dice", dice, self.current_epoch)
-                if epoch_averages[7] != 0:
-                    self.logger.experiment.add_scalar(f"{prefix}/Entropy", epoch_averages[7], self.current_epoch)
                 self.logger.experiment.add_scalar(f"{prefix}/Sensitivity", sensitivity, self.current_epoch)
                 self.logger.experiment.add_scalar(f"{prefix}/Specificity", specificity, self.current_epoch)
+                if epoch_averages[7] != 0 and not torch.any(torch.isnan(epoch_averages[7])):
+                    self.logger.experiment.add_scalar(f"{prefix}/Entropy", epoch_averages[7], self.current_epoch)
                 self.log(f"{prefix}_epoch_dice", dice, logger=False)
 
     def on_validation_epoch_end(self):
@@ -313,19 +334,6 @@ class PLModule(pl.LightningModule):
                 vram_usage = (vram_data[1] - vram_data[0])/(1024**2)
                 self.logger.experiment.add_scalar(f"Other/VRAM Usage (MB)", vram_usage, self.current_epoch)
                 torch.cuda.reset_peak_memory_stats()
-            if self.enable_mid_visual:
-                if self.instance_mode:
-                    p_outputs, c_outputs = self.forward(self.mid_visual_tensor)
-                    sigmoid_p_outputs, sigmoid_c_outputs = self.entropy_preprocess(p_outputs), self.entropy_preprocess(c_outputs)
-                    mid_visual_pixel = sigmoid_p_outputs[:, :, 0:1, :, :].squeeze([0, 1])
-                    mid_visual_contour = sigmoid_c_outputs[:, :, 0:1, :, :].squeeze([0, 1])
-                    self.logger.experiment.add_image(f'Model Output/Pixel', mid_visual_pixel, self.current_epoch)
-                    self.logger.experiment.add_image(f'Model Output/Contour', mid_visual_contour, self.current_epoch)
-                    pass
-                else:
-                    output = self.forward(self.mid_visual_tensor)
-                    mid_visual_result = torch.sigmoid(output[:, :, 0:1, :, :].squeeze([0, 1]))
-                    self.logger.experiment.add_image(f'Model Output', mid_visual_result, self.current_epoch)
         sch = self.lr_schedulers()
         if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau) and not self.enable_val:
             sch.step(self.trainer.callback_metrics["train_loss"])

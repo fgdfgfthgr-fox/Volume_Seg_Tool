@@ -119,8 +119,7 @@ def start_work_flow(args):
         model = PLModule.load_from_checkpoint(args.existing_model_path, weights_only=False)
     else:
         model = PLModule(arch_args,
-                         'Validation' in args.workflow_box, args.mid_visualization,
-                         args.mid_visualization_input, instance_mode,
+                         'Validation' in args.workflow_box, args.mid_visualization, instance_mode,
                          sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
                          'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
     if 'Training' in args.workflow_box:
@@ -261,8 +260,6 @@ if __name__ == "__main__":
     parser.add_argument("--predict_depth_overlap", type=int, default=4, help="Expansion in Depth for each Patch (px) during prediction")
     parser.add_argument("--result_folder_path", type=str, default="Datasets/result", help="Result Folder Path")
     parser.add_argument("--mid_visualization", action="store_false", help="Store False, so this will disable Mid Visualization")
-    parser.add_argument("--mid_visualization_input", type=str, default="Datasets/mid_visualiser/image.tif",
-                        help="Path to the input image")
     parser.add_argument("--train_offload", action="store_true", help="Enable disk offloading of training data")
     parser.add_argument("--val_offload", action="store_true", help="Enable disk offloading of validation data")
     parser.add_argument("--test_offload", action="store_true", help="Enable disk offloading of test data")
@@ -270,7 +267,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_architecture", type=str, default="SwishTransformer",
                         help="Model Architecture")
     parser.add_argument("--model_depth_multiplier", type=int, default=1, help="Model Depth multiplier")
-    parser.add_argument("--model_patch_size_xy", type=int, default=5, help="Patch Height and Width (px)")
+    parser.add_argument("--model_patch_size_xy", type=int, default=6, help="Patch Height and Width (px)")
     parser.add_argument("--model_patch_size_z", type=int, default=2, help="Patch Depth (px)")
     #parser.add_argument("--find_max_channel_count", action="store_true", help="Automatically find the max channel count that won't result in an OOM error")
     parser.add_argument("--model_depth", type=int, default=8, help="Number of Transformer blocks in the Model")

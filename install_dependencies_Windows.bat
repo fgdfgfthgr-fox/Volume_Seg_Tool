@@ -67,21 +67,22 @@ if !errorlevel! equ 0 (
         )
 
         :: Check supported versions
+        if !cuda_major! equ 13 (
+            set TORCH_COMMAND=pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu130
+            set torch_command_set=1
+        )
         if !cuda_major! equ 12 (
             if !cuda_minor! geq 8 (
-                set TORCH_COMMAND=pip install torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cu128
+                set TORCH_COMMAND=pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
                 set torch_command_set=1
             ) else if !cuda_minor! geq 6 (
-                set TORCH_COMMAND=pip install torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cu126
+                set TORCH_COMMAND=pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu126
                 set torch_command_set=1
             )
-        ) else if !cuda_major! equ 11 if !cuda_minor! geq 8 (
-            set TORCH_COMMAND=pip install torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cu118
-            set torch_command_set=1
         )
 
         if !torch_command_set! equ 0 (
-            set gpu_failure_reason=Unsupported CUDA version !cuda_version! (requires >=11.8)
+            set gpu_failure_reason=Unsupported CUDA version !cuda_version! (requires >=12.6)
         )
     ) else (
         :: NVIDIA GPU present but nvidia-smi failed or CUDA not found

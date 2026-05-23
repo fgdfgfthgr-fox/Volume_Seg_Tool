@@ -98,7 +98,6 @@ def start_work_flow(inputs):
            f"--predict_hw_overlap {inputs[predict_hw_overlap]} --predict_depth_overlap {inputs[predict_depth_overlap]} "
            f"--watershed_dynamic {inputs[watershed_dynamic]} "
            f"--result_folder_path {inputs[result_folder_path]} "
-           f"--mid_visualization_input {inputs[mid_visualization_input]} "
            f"--model_architecture {inputs[model_architecture]} "
            f"--model_patch_size_xy {inputs[model_patch_size_xy]} --model_patch_size_z {inputs[model_patch_size_z]} "
            #f"--model_window_size {inputs[model_window_size]} "
@@ -777,15 +776,11 @@ if __name__ == "__main__":
                     return options
 
                 read_existing_model.change(show_hide_model_tab, inputs=[read_existing_model], outputs=[model_architecture, model_depth_multiplier])
-            with gr.Accordion("Visualising example network output on the fly"):
+            with gr.Accordion("Visualising example network output on the fly", visible=False):
                 gr.Markdown("Note: Gradio doesn't support direct display of 3D image. The result are displayed in the tensorboard.")
                 gr.Markdown("Could slow down training process, especially if the image is big.")
                 gr.Markdown("Highly recommend cropping this image into the same size as the patches that feeds into the network.")
-                enable_mid_visualization = gr.Checkbox(label="Enable Visualisation", container=False)
-                with gr.Row():
-                    mid_visualization_input = gr.Textbox('Datasets/mid_visualiser/image.tif', scale=1, label="Path to the input image")
-                    file_button = gr.Button(document_symbol, scale=0)
-                    file_button.click(open_file, outputs=mid_visualization_input)
+                enable_mid_visualization = gr.Checkbox(True, label="Enable Visualisation", container=False)
             with gr.Row():
                 save_model_name = gr.Textbox('example_name', label="File Name for Model Saved, do not include extension")
                 save_model_path = gr.Textbox("trained_model", scale=2, label="Path to Save the Model Weight",
@@ -830,7 +825,6 @@ if __name__ == "__main__":
                 predict_depth_overlap,
                 result_folder_path,
                 enable_mid_visualization,
-                mid_visualization_input,
                 model_architecture,
                 model_patch_size_xy,
                 model_patch_size_z,
