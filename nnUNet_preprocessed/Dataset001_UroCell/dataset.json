@@ -1,0 +1,11 @@
+{
+ "channel_names": {
+   "0": "GreyScale"
+ },
+ "labels": {
+   "background": 0,
+   "Mito": 1
+ },
+ "numTraining": 4,
+ "file_ending": ".tif"
+ }

@@ -1,0 +1,58 @@
+{
+    "foreground_intensity_properties_per_channel": {
+        "0": {
+            "max": 53178.0,
+            "mean": 24097.8671875,
+            "median": 23452.0,
+            "min": 1595.0,
+            "percentile_00_5": 9572.0,
+            "percentile_99_5": 45779.0,
+            "std": 6951.84814453125
+        }
+    },
+    "median_relative_size_after_cropping": 1.0,
+    "shapes_after_crop": [
+        [
+            256,
+            256,
+            256
+        ],
+        [
+            256,
+            256,
+            256
+        ],
+        [
+            256,
+            256,
+            256
+        ],
+        [
+            256,
+            256,
+            256
+        ]
+    ],
+    "spacings": [
+        [
+            1,
+            1,
+            1
+        ],
+        [
+            1,
+            1,
+            1
+        ],
+        [
+            1,
+            1,
+            1
+        ],
+        [
+            1,
+            1,
+            1
+        ]
+    ]
+}
