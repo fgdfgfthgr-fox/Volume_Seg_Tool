@@ -1437,7 +1437,7 @@ def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128
         tifffile.imwrite(f'{direc}/Contour_{contour[1]}', data=np.float16(contour[0].numpy()), bigtiff=tiff_size_estimate(contour[0].numpy()))
         print(f'Computing instance segmentation using contour data for {contour[1]}... Can take a while if the image is big.')
         instance_array = instance_segmentation_simple(semantic[0], contour[0], mode=segmentation_mode, dynamic=dynamic, pixel_reclaim=pixel_reclaim)
-        tifffile.imwrite(f'{direc}/Instance_{contour[1]}', data=instance_array, bigtiff=tiff_size_estimate(instance_array[0].numpy()))
+        tifffile.imwrite(f'{direc}/Instance_{contour[1]}', data=instance_array, bigtiff=tiff_size_estimate(instance_array[0]))
 
 
 # Global variables to hold the shared memory objects in workers
