@@ -2,6 +2,7 @@ import time
 from prepare_environment import run
 
 if __name__ == "__main__":
+    run("pip install nnunetv2")
     print('Start UroCell Dataset Validation using nnUNet')
     start_time = time.time()
     run("nnUNetv2_plan_and_preprocess -d 001 --verify_dataset_integrity")
