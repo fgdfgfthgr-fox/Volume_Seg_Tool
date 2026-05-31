@@ -225,10 +225,10 @@ if __name__ == "__main__":
     parser.add_argument("--train_dataset_path", type=str, default="Datasets/train", help="Train Dataset Path")
     parser.add_argument("--augmentation_csv_path", type=str, default="Augmentation Parameters Isotropic.csv",
                         help="Csv File for Data Augmentation Settings")
-    parser.add_argument("--train_multiplier", type=int, default=26, help="Train Multiplier (Repeats)")
+    parser.add_argument("--train_multiplier", type=int, default=32, help="Train Multiplier (Repeats)")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch Size")
     parser.add_argument("--pairing_samples", default=True, action="store_true", help="Pairing positive and negative samples in a batch")
-    parser.add_argument("--num_epochs", type=int, default=78, help="Number of Epochs") # Five epoch is enough
+    parser.add_argument("--num_epochs", type=int, default=80, help="Number of Epochs") # Five epoch is enough
     parser.add_argument("--enable_tensorboard", default=True, action="store_true", help="Enable TensorBoard Logging")
     parser.add_argument("--enable_unsupervised", action="store_true", help="Enable Unsupervised Pretraining")
     parser.add_argument("--memory_saving_mode", action="store_true", help="Try save some system memory by dataloading on just single core")
