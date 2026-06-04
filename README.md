@@ -31,7 +31,7 @@ For more information, please see the [CONTRIBUTING.md](CONTRIBUTING.md)
   - Custom implemented augmentations specialised in volumetric images
   - Process many depth slices all once, rather than slice by slice
   - Support fp16/bf16 training
-  - Up to 20x speedup compare to nnUNet
+  - Comparable to the faster speed of nnUNet
 - Versatile
   - Semantic Segmentation & Instance Segmentation
   - Isotropic & anisotropic images
