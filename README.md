@@ -3,6 +3,7 @@
 This repository holds the script for Volume Segmentation Tool and its Gradio-based Webui.
 
 Paper is available now: [A generalist deep-learning volume segmentation tool for volume electron microscopy of biological samples](https://www.sciencedirect.com/science/article/pii/S1047847725000498)
+and [VST: A Python-based deep learning tool for segmenting electron microscopy samples](https://doi.org/10.21105/joss.10084)
 
 VST is also available with [SBGrid](https://sbgrid.org/software/titles/vst)!
 
