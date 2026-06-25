@@ -73,29 +73,30 @@ def path_to_array(path, label=False, key='default', norm_strategy='std'):
         else: # I don't think anyone will use more than the maximum value of uint32...
             new_dtype = np.uint32
         img = img.astype(new_dtype, copy=False)
+        return img
     else:
-        non_zero = img.astype(np.bool_)
         if norm_strategy == 'std':
             # Take less memory than Numpy's Existing method.
-            mean, std = welford_mean_std(img, non_zero)
+            mean, std = welford_mean_std(img)
             mean, std = np.array(mean).astype(np.float32), np.array(std).astype(np.float32)
             # Take less memory than img = (img - mean) / std
+            out_img = np.empty_like(img, dtype=np.float16)
+            for i in range(0, img.shape[0]):
+                slice_img = img[i].astype(np.float32)
+                slice_img -= mean
+                np.divide(slice_img, std, slice_img)
+                out_img[i] = slice_img
+        '''elif norm_strategy == 'n1tp1':
             img = img.astype(np.float32, copy=False)
-            img -= mean
-            np.divide(img, std, img)
-        elif norm_strategy == 'n1tp1':
-            img = img.astype(np.float32, copy=False)
-            q1, q99 = np.percentile(non_zero, [1, 99])
+            q1, q99 = np.percentile(img[non_zero], [1, 99])
             # To 0 and 1
             img -= q1
             img /= (q99-q1)
             np.clip(img, 0, 1, img)
             # To -1 and 1
             img -= 0.5
-            img *= 2
-    if len(img.shape) != 3:
-        raise ValueError(f'Only 3D images are supported (Z, Y, X)! {path} seems to be {len(img.shape)}D! instead')
-    return img
+            img *= 2'''
+        return out_img
 
 def path_to_array_nonorm(path, key='default'):
     img = multiple_loader(path, key)
