@@ -76,12 +76,12 @@ def test_ValDatasetChunked():
 def test_PredictDataset():
     dataset = DataComponents.PredictDataset('Datasets/predict', 56, 12, 4, 2)
     example_output = dataset.__getitem__(0)
-    assert example_output.shape == (1, 16, 64, 64)
+    assert example_output[0].shape == (1, 16, 64, 64)
 
 def test_PredictDatasetChunked():
     dataset = DataComponents.PredictDatasetChunked('Datasets/predict', 56, 12, 4, 2)
     example_output = dataset.__getitem__(0)
-    assert example_output.shape == (1, 16, 64, 64)
+    assert example_output[0].shape == (1, 16, 64, 64)
 
 # Augmentations
 
