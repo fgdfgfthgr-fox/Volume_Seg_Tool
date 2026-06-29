@@ -175,10 +175,10 @@ def rotate_4d_tensor(tensor, planes=['xy', 'xz', 'yz'], angles=[0., 0., 0.],
     affine_4x4[:3, :3] = total_rotation
 
     # Create the affine grid
-    grid = F.affine_grid(affine_4x4[:3, :].unsqueeze(0), tensor.unsqueeze(0).shape, align_corners=False)
+    grid = F.affine_grid(affine_4x4[:3, :].unsqueeze(0), tensor.unsqueeze(0).shape, align_corners=False).to(torch.float16)
 
     # Apply the grid sample using the specified interpolation
-    rotated = F.grid_sample(tensor.to(torch.float32).unsqueeze(0), grid, mode=interpolation, padding_mode='reflection', align_corners=False)
+    rotated = F.grid_sample(tensor.to(torch.float16).unsqueeze(0), grid, mode=interpolation, padding_mode='reflection', align_corners=False)
 
     return rotated.squeeze(0)
 
@@ -262,7 +262,7 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
                                        w_offset:w_offset + width]
             if zarr:
                 cropped_tensor = torch.from_numpy(cropped_tensor)
-            cropped_tensors.append(cropped_tensor.to(torch.float32, copy=False))
+            cropped_tensors.append(cropped_tensor.to(torch.float16, copy=False))
         if zarr:
             cropped_tensors[0] = (cropped_tensors[0] - img_mean) / img_std
         return cropped_tensors
@@ -614,11 +614,11 @@ def gaussian_noise(input_tensor, strength=0.05, octaves=3):
         output_tensor (torch.Tensor)
     """
     origin_shape = input_tensor.shape
-    noises = torch.zeros_like(input_tensor, dtype=torch.float32)
+    noises = torch.zeros_like(input_tensor, dtype=torch.float16)
     for octave in range(0, octaves):
         # Since we are only dealing with images of single channel, don't worry the channel dim got downscaled as well.
         shape = [max(int(shape / 2**octave), 1) for shape in origin_shape]
-        noise = (torch.randn(shape, dtype=torch.float32) * random.uniform(0.5, 1.5) * (0.5**octave) * strength).unsqueeze(0)
+        noise = (torch.randn(shape, dtype=torch.float16) * random.uniform(0.5, 1.5) * (0.5**octave) * strength).unsqueeze(0)
         noises += F.interpolate(noise, origin_shape[1:], mode='trilinear', align_corners=False).squeeze(0)
     input_tensor += noises
     input_tensor = torch.clamp(input_tensor, -4, 4)
