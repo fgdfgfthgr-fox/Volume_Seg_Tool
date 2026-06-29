@@ -70,7 +70,6 @@ class SwinTransformer(nn.Module):
         self.patch_dim = self.patch_size[0]*self.patch_size[1]*self.patch_size[2]
         self.model_dim = 16 * ((self.patch_dim * 3) // 16)
         self.up = nn.Linear(self.patch_dim, self.model_dim)
-        #self.abs = nn.Parameter(torch.zeros(1, 36288, self.model_dim))
         self.dit = SwinBlock(self.model_dim, 2, depth, 2, self.window_size)
         self.down_p = nn.Linear(self.model_dim, self.patch_dim)
         if instance:

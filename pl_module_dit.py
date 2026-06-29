@@ -1,3 +1,4 @@
+import tifffile
 import math
 
 import lightning.pytorch as pl
@@ -231,42 +232,61 @@ class PLModule(pl.LightningModule):
             self.test_metrics.append(result_tuple)
         return {'loss': result_tuple[0]}
 
-    def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        def apply_augmentation(data, i):
-            if i % 2 == 0:
-                # D
-                data = torch.flip(data, [2])
-            if i % 4 <= 1:
-                # H
-                data = torch.flip(data, [3])
-            if i % 8 <= 3:
-                # W
-                data = torch.flip(data, [4])
-            return data
+    @staticmethod
+    def apply_tta_augmentation(data, i):
+        if i % 2 == 0:
+            # D
+            data = torch.flip(data, [2])
+        if i % 4 <= 1:
+            # H
+            data = torch.flip(data, [3])
+        if i % 8 <= 3:
+            # W
+            data = torch.flip(data, [4])
+        return data
 
+    @staticmethod
+    def remove_padding(tensor, hw_overlap, depth_overlap):
+        if hw_overlap or depth_overlap:
+            tensor = tensor[:, :, (depth_overlap if depth_overlap else slice(None)):
+                                   -(depth_overlap if depth_overlap else slice(None)),
+                                   (hw_overlap if hw_overlap else slice(None)):
+                                   -(hw_overlap if hw_overlap else slice(None)),
+                                   (hw_overlap if hw_overlap else slice(None)):
+                                   -(hw_overlap if hw_overlap else slice(None))]
+        return tensor
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        batch, hw_overlap, depth_overlap = batch
         TTA_results = []
         for i in range(8):
-            aug_batch = apply_augmentation(batch, i)
+            aug_batch = self.apply_tta_augmentation(batch, i)
             outputs = self.forward(aug_batch)
 
             if isinstance(outputs, tuple):
                 p_outputs = torch.sigmoid(outputs[0]).to(torch.float16)
                 #p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs[0], dim=0), dim=0)).to(torch.float16)
                 c_outputs = torch.sigmoid(outputs[1]).to(torch.float16)
-                p_outputs = apply_augmentation(p_outputs, i)
-                c_outputs = apply_augmentation(c_outputs, i)
+                p_outputs = self.remove_padding(self.apply_tta_augmentation(p_outputs, i), hw_overlap, depth_overlap)
+                c_outputs = self.remove_padding(self.apply_tta_augmentation(c_outputs, i), hw_overlap, depth_overlap)
                 TTA_results.append((p_outputs, c_outputs))
             else:
                 p_outputs = torch.sigmoid(outputs).to(torch.float16)
                 #p_outputs = torch.sigmoid(torch.mean(torch.stack(outputs, dim=0), dim=0)).to(torch.float16)
-                p_outputs = apply_augmentation(p_outputs, i)
+                p_outputs = self.remove_padding(self.apply_tta_augmentation(p_outputs, i), hw_overlap, depth_overlap)
                 TTA_results.append(p_outputs)
 
         if isinstance(TTA_results[0], tuple):
             p, c = zip(*TTA_results)
-            return torch.mean(torch.stack(p, dim=0), dim=0), torch.mean(torch.stack(c, dim=0), dim=0)
+            #return torch.mean(torch.stack(p, dim=0), dim=0), torch.mean(torch.stack(c, dim=0), dim=0)
+            p = torch.mean(torch.stack(p, dim=0), dim=0)
+            c = torch.mean(torch.stack(c, dim=0), dim=0)
+            tifffile.imwrite(f'Datasets/prediction_cache/Pixels_{batch_idx}.tiff', data=p.cpu().numpy(), compression='zlib')
+            tifffile.imwrite(f'Datasets/prediction_cache/Contour_{batch_idx}.tiff', data=c.cpu().numpy(), compression='zlib')
         else:
-            return torch.mean(torch.stack(TTA_results, dim=0), dim=0)
+            #return torch.mean(torch.stack(TTA_results, dim=0), dim=0)
+            out = torch.mean(torch.stack(TTA_results, dim=0), dim=0)
+            tifffile.imwrite(f'Datasets/prediction_cache/Semantic_{batch_idx}.tiff', data=out.cpu().numpy())
 
     def log_metrics(self, prefix, metrics_list):
         if metrics_list:
@@ -347,7 +367,6 @@ class PLModule(pl.LightningModule):
         norms = grad_norm(self.network, norm_type=2)
         self.log_dict(norms, logger=True)'''
 
-
 if __name__ == "__main__":
     #tracemalloc.start()
     #snap1 = tracemalloc.take_snapshot()
@@ -359,7 +378,7 @@ if __name__ == "__main__":
         for precision in precisions:
             for batch_size in batch_sizes:
                 #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
-                '''train_dataset = DataComponents.TrainDataset("Datasets/train",
+                train_dataset = DataComponents.TrainDataset("Datasets/train",
                                                             "Augmentation Parameters Anisotropic.csv",
                                                             32,
                                                             size[0], size[1], False, False, 'default')
@@ -389,7 +408,7 @@ if __name__ == "__main__":
                 #callbacks.append(swa_callback)
                 arch_args = ((4,4,4), 4, 10, False)
                 model = PLModule(arch_args,
-                                False, True, 'Datasets/mid_visualiser/fib1-4-3-0-crop.tif', False,
+                                False, True, False,
                                 False, False, False, True)
                 trainer = pl.Trainer(max_epochs=2, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'dit-4,8ps-384d-4layers-2heads-pcseperate-swin-64-window4'),
                                      accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
@@ -404,16 +423,4 @@ if __name__ == "__main__":
                 trainer.fit(model,
                             #val_dataloaders=val_loader,
                             train_dataloaders=train_loader)
-                torch.cuda.empty_cache()'''
-                model = PLModule.load_from_checkpoint("trained_model/UroCell_120_1.ckpt", weights_only=False)
-                trainer = pl.Trainer(precision=precision, enable_progress_bar=True, logger=False, accelerator="gpu")
-                predict_dataset = DataComponents.PredictDataset('Datasets/predict',
-                                                                 hw_size=144, depth_size=144,
-                                                                 hw_overlap=16, depth_overlap=16)
-                predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                meta_info = predict_dataset.__getmetainfo__()
-                predictions = trainer.predict(model, predict_loader)
-                #DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc='Datasets/result',
-                #                                                 hw_size=144, depth_size=144,
-                #                                                 hw_overlap=16, depth_overlap=16, segmentation_mode='watershed')
-    #model = PLModule.load_from_checkpoint('test.ckpt')
+                torch.cuda.empty_cache()

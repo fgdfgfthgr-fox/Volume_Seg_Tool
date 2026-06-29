@@ -33,6 +33,157 @@ def start_tensorboard(args):
     tensorboard_url = f'http://localhost:{tensorboard_port}'
     webbrowser.open(tensorboard_url)
 
+def generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, persistent_workers):
+    assert args.train_multiplier != "None", "Received None for train_multiplier! Did you forgot to press the 'Calculate Training Repeats and Epochs' button?'"
+    train_dataset = TD(args.train_dataset_path, args.augmentation_csv_path,
+                       int(args.train_multiplier),
+                       args.hw_size, args.d_size, instance_mode,
+                       args.contour_map_width, args.train_key_name)
+    if args.enable_unsupervised:
+        unsupervised_train_dataset = UTD(args.unsupervised_train_dataset_path,
+                                         args.augmentation_csv_path, int(args.unsupervised_train_multiplier),
+                                         args.hw_size, args.d_size, args.train_key_name)
+    else:
+        unsupervised_train_dataset = None
+    train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
+    sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size, unsupervised_train_dataset)
+    collate_fn = DataComponents.custom_collate
+    train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
+                              collate_fn=collate_fn, sampler=sampler,
+                              num_workers=desired_num_workers, persistent_workers=persistent_workers)
+                              #num_workers=0, persistent_workers=False)
+    del train_dataset
+    if 'Validation' in args.workflow_box:
+        val_dataset = VD(args.val_dataset_path, args.hw_size, args.d_size, instance_mode,
+                         args.contour_map_width, args.val_key_name)
+        val_loader = DataLoader(dataset=val_dataset, batch_size=1,
+                                #num_workers=12, persistent_workers=True, pin_memory=True)
+                                num_workers=0, pin_memory=True)
+        del val_dataset
+    else:
+        val_loader = None
+    if 'Test' in args.workflow_box:
+        test_dataset = TeD(args.test_dataset_path, args.hw_size, args.d_size, instance_mode,
+                           args.contour_map_width, args.test_key_name)
+        test_loader = DataLoader(dataset=test_dataset, batch_size=args.batch_size)
+        del test_dataset
+    gc.collect()
+    arch_args = ((args.model_patch_size_z, args.model_patch_size_xy, args.model_patch_size_xy), 4,
+                 args.model_depth * args.model_depth_multiplier, instance_mode)
+    if 'Sparsely Labelled' in args.train_dataset_mode:
+        sparse_train = True
+    else:
+        sparse_train = False
+    if args.read_existing_model:
+        model = PLModule.load_from_checkpoint(args.existing_model_path, weights_only=False)
+    else:
+        model = PLModule(arch_args,
+                         'Validation' in args.workflow_box, args.mid_visualization, instance_mode,
+                         sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
+                         'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
+    if 'Training' in args.workflow_box:
+        logger = create_logger(args)
+    else:
+        logger = False
+    if 'Training' in args.workflow_box:
+        '''if 'Validation' in args.workflow_box:
+            to_monitor = 'Val_epoch_dice'
+        else:
+            to_monitor = 'Train_epoch_dice'''
+        callbacks = []
+        '''model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
+                                                        filename=f"{args.save_model_name}",
+                                                        mode="max", monitor=to_monitor,
+                                                        save_weights_only=True, enable_version_counter=False)'''
+        model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
+                                                             filename=f"{args.save_model_name}",
+                                                             save_weights_only=False, enable_version_counter=False)
+        swa_callback = StochasticWeightAveraging([1e-3, 1e-5, 1e-3, 1e-5], 0.8, int(0.2*int(args.num_epochs)-1))
+        print(f'SWA starts at {int(0.8*int(args.num_epochs))}\n')
+        if logger:
+            callbacks.append(LearningRateMonitor(logging_interval='epoch'))
+        callbacks.append(model_checkpoint_last)
+        callbacks.append(swa_callback)
+        trainer = pl.Trainer(max_epochs=int(args.num_epochs), log_every_n_steps=1, logger=logger,
+                             accelerator="gpu", enable_checkpointing=True,
+                             precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
+                             gradient_clip_val=5,
+                             callbacks=callbacks,
+                             #profiler='simple',
+                             )
+        start_time = time.time()
+        if args.read_existing_model:
+            trainer.fit(model,
+                        ckpt_path=args.existing_model_path,
+                        val_dataloaders=val_loader,
+                        train_dataloaders=train_loader)
+        else:
+            trainer.fit(model,
+                        val_dataloaders=val_loader,
+                        train_dataloaders=train_loader)
+        del val_loader, train_loader
+
+        end_time = time.time()
+        print(f"Training Taken: {end_time - start_time} seconds")
+    if 'Test' in args.workflow_box:
+        trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=logger, accelerator="gpu")
+        trainer.test(model, dataloaders=test_loader)
+        del test_loader
+
+def load_data_and_predict(PD):
+    if 'Training' in args.workflow_box:
+        path = f"{args.save_model_path}/{args.save_model_name}.ckpt"
+    elif args.read_existing_model:
+        path = args.existing_model_path
+    else:
+        assert "No model specified for prediction!"
+    model = PLModule.load_from_checkpoint(path, weights_only=False)
+    trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=False, accelerator="gpu")
+    predict_dataset = PD(args.predict_dataset_path,
+                         hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
+                         hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
+                         hdf5_key=args.predict_key_name)
+    meta_info = predict_dataset.__getmetainfo__()
+    predict_loader = DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+    start_time = time.time()
+    trainer.predict(model, predict_loader, return_predictions=False)
+    end_time = time.time()
+    print(f"Prediction Taken: {end_time - start_time} seconds")
+    return meta_info
+
+def stitch_volumes(meta_info, instance_mode):
+    if instance_mode:
+        stitched_volumes_p = DataComponents.stitch_output_volumes("Pixels_", meta_info,
+                                                                    hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
+                                                                    hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap)
+        stitched_volumes_c = DataComponents.stitch_output_volumes("Contour_", meta_info,
+                                                                        hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
+                                                                        hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap)
+        return stitched_volumes_p, stitched_volumes_c
+    else:
+        stitched_volumes = DataComponents.stitch_output_volumes("Semantic_", meta_info,
+                                                                    hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
+                                                                    hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap)
+        return stitched_volumes
+
+
+def predict_and_stitch(PD, instance_mode):
+    meta_info = load_data_and_predict(PD)
+    torch.cuda.empty_cache()
+    return stitch_volumes(meta_info, instance_mode)
+
+def save_stitched_volumes(stitched_volumes, instance_mode):
+    if args.instance_seg_mode:
+        mode = 'watershed'
+    else:
+        mode = 'simple'
+    if instance_mode:
+        DataComponents.predictions_to_final_img_instance(stitched_volumes[0], stitched_volumes[1], direc=args.result_folder_path,
+                                                         segmentation_mode=mode, dynamic=args.watershed_dynamic,
+                                                         pixel_reclaim=args.pixel_reclaim)
+    else:
+        DataComponents.predictions_to_final_img(stitched_volumes, direc=args.result_folder_path)
+
 
 def start_work_flow(args):
     torch.set_float32_matmul_precision('medium')
@@ -75,139 +226,17 @@ def start_work_flow(args):
     else:
         desired_num_workers = 0
         persistent_workers = False
-    if 'Training' in args.workflow_box:
-        train_dataset = TD(args.train_dataset_path, args.augmentation_csv_path,
-                           args.train_multiplier,
-                           args.hw_size, args.d_size, instance_mode,
-                           args.contour_map_width, args.train_key_name)
-        if args.enable_unsupervised:
-            unsupervised_train_dataset = UTD(args.unsupervised_train_dataset_path,
-                                             args.augmentation_csv_path, args.unsupervised_train_multiplier,
-                                             args.hw_size, args.d_size, args.train_key_name)
-        else:
-            unsupervised_train_dataset = None
-        train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
-        sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size, unsupervised_train_dataset)
-        collate_fn = DataComponents.custom_collate
-        train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
-                                  collate_fn=collate_fn, sampler=sampler,
-                                  num_workers=desired_num_workers, persistent_workers=persistent_workers)
-                                  #num_workers=0, persistent_workers=False)
-        del train_dataset
-        if 'Validation' in args.workflow_box:
-            val_dataset = VD(args.val_dataset_path, args.hw_size, args.d_size, instance_mode,
-                             args.contour_map_width, args.val_key_name)
-            val_loader = DataLoader(dataset=val_dataset, batch_size=1,
-                                    #num_workers=12, persistent_workers=True, pin_memory=True)
-                                    num_workers=0, pin_memory=True)
-            del val_dataset
-        else:
-            val_loader = None
-        if 'Test' in args.workflow_box:
-            test_dataset = TeD(args.test_dataset_path, args.hw_size, args.d_size, instance_mode,
-                               args.contour_map_width, args.test_key_name)
-            test_loader = DataLoader(dataset=test_dataset, batch_size=args.batch_size)
-            del test_dataset
-    gc.collect()
-    arch_args = ((args.model_patch_size_z, args.model_patch_size_xy, args.model_patch_size_xy), 4,
-                 args.model_depth * args.model_depth_multiplier, instance_mode)
-    if 'Sparsely Labelled' in args.train_dataset_mode:
-        sparse_train = True
-    else:
-        sparse_train = False
-    if args.read_existing_model:
-        model = PLModule.load_from_checkpoint(args.existing_model_path, weights_only=False)
-    else:
-        model = PLModule(arch_args,
-                         'Validation' in args.workflow_box, args.mid_visualization, instance_mode,
-                         sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
-                         'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
+
     if 'Training' in args.workflow_box:
         tensorboard_thread = threading.Thread(target=start_tensorboard, args=[args])
         tensorboard_thread.daemon = True
         tensorboard_thread.start()
-        logger = create_logger(args)
-    else:
-        logger = False
-    if 'Training' in args.workflow_box:
-        '''if 'Validation' in args.workflow_box:
-            to_monitor = 'Val_epoch_dice'
-        else:
-            to_monitor = 'Train_epoch_dice'''
-        callbacks = []
-        '''model_checkpoint = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
-                                                        filename=f"{args.save_model_name}",
-                                                        mode="max", monitor=to_monitor,
-                                                        save_weights_only=True, enable_version_counter=False)'''
-        model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath=f"{args.save_model_path}",
-                                                             filename=f"{args.save_model_name}",
-                                                             save_weights_only=False, enable_version_counter=False)
-        swa_callback = StochasticWeightAveraging([1e-3, 1e-5, 1e-3, 1e-5], 0.8, int(0.2*args.num_epochs-1))
-        print(f'SWA starts at {int(0.8*args.num_epochs)}\n')
-        if logger:
-            callbacks.append(LearningRateMonitor(logging_interval='epoch'))
-        callbacks.append(model_checkpoint_last)
-        callbacks.append(swa_callback)
-        trainer = pl.Trainer(max_epochs=args.num_epochs, log_every_n_steps=1, logger=logger,
-                             accelerator="gpu", enable_checkpointing=True,
-                             precision=args.precision, enable_progress_bar=True, num_sanity_val_steps=0,
-                             gradient_clip_val=5,
-                             callbacks=callbacks,
-                             #profiler='simple',
-                             )
-        start_time = time.time()
-        #tuner = Tuner(trainer)
-        #lr_finder = tuner.lr_find(model, train_loader, min_lr=1e-5, max_lr=0.002)
-        #new_lr = lr_finder.suggestion()
-        #print(f'Learning Rate set to: {new_lr}.')
-        #model.hparams.lr = new_lr
-        if args.read_existing_model:
-            trainer.fit(model,
-                        ckpt_path=args.existing_model_path,
-                        val_dataloaders=val_loader,
-                        train_dataloaders=train_loader)
-        else:
-            trainer.fit(model,
-                        val_dataloaders=val_loader,
-                        train_dataloaders=train_loader)
-        del val_loader, train_loader
-        model = PLModule.load_from_checkpoint(f"{args.save_model_path}/{args.save_model_name}.ckpt", weights_only=False)
-        end_time = time.time()
-        print(f"Training Taken: {end_time - start_time} seconds")
-        gc.collect()
-    if 'Test' in args.workflow_box:
-        trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=logger, accelerator="gpu")
-        trainer.test(model, dataloaders=test_loader)
-        del test_loader
+        generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, persistent_workers)
+
     if 'Predict' in args.workflow_box:
-        trainer = pl.Trainer(precision=args.precision, enable_progress_bar=True, logger=False, accelerator="gpu")
-        predict_dataset = PD(args.predict_dataset_path,
-                             hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
-                             hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                             hdf5_key=args.predict_key_name)
-        meta_info = predict_dataset.__getmetainfo__()
-        predict_loader = DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-        del predict_dataset
         start_time = time.time()
-        predictions = trainer.predict(model, predict_loader)
-        end_time = time.time()
-        del predict_loader
-        print(f"Prediction Taken: {end_time - start_time} seconds")
-        start_time = time.time()
-        if 'Semantic' in args.segmentation_mode:
-            DataComponents.predictions_to_final_img(predictions, meta_info, direc=args.result_folder_path,
-                                                    hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
-                                                    hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap)
-        else:
-            if args.instance_seg_mode:
-                mode = 'watershed'
-            else:
-                mode = 'simple'
-            DataComponents.predictions_to_final_img_instance(predictions, meta_info, direc=args.result_folder_path,
-                                                             hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
-                                                             hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap,
-                                                             segmentation_mode=mode, dynamic=args.watershed_dynamic,
-                                                             pixel_reclaim=args.pixel_reclaim)
+        stitch_volumes = predict_and_stitch(PD, instance_mode)
+        save_stitched_volumes(stitch_volumes, instance_mode)
         end_time = time.time()
         print(f"Converting and saving taken: {end_time - start_time} seconds")
 
@@ -225,15 +254,15 @@ if __name__ == "__main__":
     parser.add_argument("--train_dataset_path", type=str, default="Datasets/train", help="Train Dataset Path")
     parser.add_argument("--augmentation_csv_path", type=str, default="Augmentation Parameters Anisotropic.csv",
                         help="Csv File for Data Augmentation Settings")
-    parser.add_argument("--train_multiplier", type=int, default=128, help="Train Multiplier (Repeats)")
+    parser.add_argument("--train_multiplier", type=str, default="128", help="Train Multiplier (Repeats)")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch Size")
     parser.add_argument("--pairing_samples", default=True, action="store_true", help="Pairing positive and negative samples in a batch")
-    parser.add_argument("--num_epochs", type=int, default=5, help="Number of Epochs") # Five epoch is enough
+    parser.add_argument("--num_epochs", type=str, default="5", help="Number of Epochs") # Five epoch is enough
     parser.add_argument("--enable_tensorboard", default=True, action="store_true", help="Enable TensorBoard Logging")
     parser.add_argument("--enable_unsupervised", action="store_true", help="Enable Unsupervised Pretraining")
     parser.add_argument("--memory_saving_mode", action="store_true", help="Try save some system memory by dataloading on just single core")
     parser.add_argument("--unsupervised_train_dataset_path", type=str, default="Datasets/unsupervised_train", help="Unsupervised Dataset Path")
-    parser.add_argument("--unsupervised_train_multiplier", type=int, default=128, help="Unsupervised Train Multiplier (Repeats)")
+    parser.add_argument("--unsupervised_train_multiplier", type=str, default="128", help="Unsupervised Train Multiplier (Repeats)")
     parser.add_argument("--tensorboard_path", type=str, default="lightning_logs",
                         help="Path to the folder which the log will be saved to")
     parser.add_argument("--val_dataset_path", type=str, default="Datasets/val", help="Validation Dataset Path")

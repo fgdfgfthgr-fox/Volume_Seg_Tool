@@ -1,4 +1,5 @@
 import gc
+import re
 import math
 import os
 import torch
@@ -12,6 +13,7 @@ import multiprocessing
 import mrcfile
 import zarr
 import shutil
+import bisect
 
 import torch.nn.functional as F
 import torchvision.transforms.v2.functional as T_F
@@ -102,8 +104,7 @@ def path_to_array_nonorm(path, key='default'):
     img = multiple_loader(path, key)
     if len(img.shape) != 3:
         raise ValueError(f'Only 3D images are supported (Z, Y, X)! {path} seems to be {len(img.shape)}D! instead')
-    non_zero = img.astype(np.bool_)
-    mean, std = welford_mean_std(img, non_zero)
+    mean, std = welford_mean_std(img)
     mean, std = np.array(mean).astype(np.float32), np.array(std).astype(np.float32)
     return img, mean, std
 
@@ -941,62 +942,103 @@ def calculate_predict_start_end(multiplier, required_size, full_size, idx, requi
 
 class PredictDataset(torch.utils.data.Dataset):
     """
-    A torch.utils.data.Dataset class that handles the predict dataset.\n
-    Note if the image is larger than the size specified in the augmentation_csv, it will get cropped into several
-    (potentially) overlapping smaller images. The final results will be stitched together from predictions of these smaller images.\n
-    The actual height and width of each patch is hw_size + 2 * hw_overlap. Same goes for depth.
+    A torch.utils.data.Dataset class that handles the predict dataset.
+    Creates patches on the fly to avoid storing all patches in memory.
+    Each image is loaded once and kept as a padded array.
 
     Args:
         images_dir (str): Path to the directory where images are stored.
-        hw_size (int): The height and width patches the prediction image will be cropped to. In pixels.
-        depth_size (int): The depth of patches the prediction image will be cropped to. In pixels.
-        hw_overlap (int): The additional gain in height and width of the patches. In pixels. Helps smooth out borders between patches.
-        depth_overlap (int): The additional gain in depth of the patches. In pixels. Helps smooth out borders between patches.
-        hdf5_key (str): If trying to load from a hdf5 file, will load the File object with this name.
+        hw_size (int): Height and width of the central patch (without overlap).
+        depth_size (int): Depth of the central patch (without overlap).
+        hw_overlap (int): Overlap in height and width (added to each side).
+        depth_overlap (int): Overlap in depth (added to each side).
+        hdf5_key (str): Key used when loading from HDF5 files.
     """
-
-    def __init__(self, images_dir, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16, hdf5_key='Default'):
+    def __init__(self, images_dir, hw_size=128, depth_size=128,
+                 hw_overlap=16, depth_overlap=16, hdf5_key='Default'):
         self.file_list = make_dataset_predict(images_dir)
-        self.patches_list = []
-        self.meta_list = []
-        for file in self.file_list:
-            image = path_to_array(str(file), key=hdf5_key, label=False)[None, :]
-            c, depth, height, width = image.shape
-            file_name = file.name
+        self.hw_size = hw_size
+        self.depth_size = depth_size
+        self.hw_overlap = hw_overlap
+        self.depth_overlap = depth_overlap
+        self.hdf5_key = hdf5_key
 
-            # Calculate the multipliers for padding and cropping
-            depth_multiplier = math.ceil(depth / depth_size)
-            height_multiplier = math.ceil(height / hw_size)
-            width_multiplier = math.ceil(width / hw_size)
-            # Padding and cropping
+        # Store per‑file metadata and padded images
+        self.padded_images = []      # list of padded arrays (1, D_pad, H_pad, W_pad)
+        self.meta_list = []          # list of (file_name, original_shape) for stitching
+        self.patch_infos = []        # list of (depth_mult, height_mult, width_mult,
+                                     #           orig_depth, orig_height, orig_width)
+        self.cum_patch_counts = []   # cumulative number of patches per file
+
+        total_patches = 0
+        for file_path in self.file_list:
+            # Load image (3D) and add channel dimension
+            image = path_to_array(str(file_path), key=hdf5_key, label=False)  # (D, H, W)
+            image = image[None, :]  # (1, D, H, W)
+            c, depth, height, width = image.shape
+            file_name = file_path.name
+
+            # Calculate number of patches needed
+            depth_mult = math.ceil(depth / depth_size)
+            height_mult = math.ceil(height / hw_size)
+            width_mult = math.ceil(width / hw_size)
+
+            # Symmetric padding
             paddings = ((0, 0),
                         (depth_overlap, depth_overlap),
                         (hw_overlap, hw_overlap),
                         (hw_overlap, hw_overlap))
-            padded_image = np.pad(image, paddings, mode="symmetric")
-            # Loop through each depth, height, and width index
-            for depth_idx, height_idx, width_idx in product(range(depth_multiplier),
-                                                            range(height_multiplier),
-                                                            range(width_multiplier)):
-                depth_start, depth_end = calculate_predict_start_end(depth_multiplier, depth_size, depth, depth_idx, depth_overlap)
-                height_start, height_end = calculate_predict_start_end(height_multiplier, hw_size, height, height_idx, hw_overlap)
-                width_start, width_end = calculate_predict_start_end(width_multiplier, hw_size, width, width_idx, hw_overlap)
-                patch = padded_image[:,
-                                    depth_start:depth_end,
-                                    height_start:height_end,
-                                    width_start:width_end]
-                self.patches_list.append(torch.from_numpy(patch))
+            padded_image = torch.from_numpy(np.pad(image, paddings, mode="symmetric"))
+
+            # Store everything
+            self.padded_images.append(padded_image)
             self.meta_list.append((file_name, image.shape))
-        super().__init__()
+            self.patch_infos.append((depth_mult, height_mult, width_mult,
+                                     depth, height, width))
+            total_patches += depth_mult * height_mult * width_mult
+            self.cum_patch_counts.append(total_patches)
+
+        self.total_patches = total_patches
 
     def __len__(self):
-        return len(self.patches_list)
+        return self.total_patches
 
     def __getitem__(self, idx):
-        return self.patches_list[idx]
+        file_idx = bisect.bisect_right(self.cum_patch_counts, idx)
+        if file_idx == 0:
+            local_idx = idx
+        else:
+            local_idx = idx - self.cum_patch_counts[file_idx - 1]
+
+        # Retrieve metadata for that file
+        depth_mult, height_mult, width_mult, depth, height, width = self.patch_infos[file_idx]
+
+        # Reconstruct the three patch indices (order: depth, height, width)
+        width_idx = local_idx % width_mult
+        height_idx = (local_idx // width_mult) % height_mult
+        depth_idx = local_idx // (width_mult * height_mult)
+
+        # Compute start/end coordinates using the same function as before
+        depth_start, depth_end = calculate_predict_start_end(
+            depth_mult, self.depth_size, depth, depth_idx, self.depth_overlap)
+        height_start, height_end = calculate_predict_start_end(
+            height_mult, self.hw_size, height, height_idx, self.hw_overlap)
+        width_start, width_end = calculate_predict_start_end(
+            width_mult, self.hw_size, width, width_idx, self.hw_overlap)
+
+        # Extract the patch from the pre‑padded image
+        padded_img = self.padded_images[file_idx]  # shape (1, D_pad, H_pad, W_pad)
+        patch = padded_img[:,
+                           depth_start:depth_end,
+                           height_start:height_end,
+                           width_start:width_end]
+
+        return patch, self.hw_overlap, self.depth_overlap
 
     def __getmetainfo__(self):
+        """Return metadata (file name, original shape) for each original image."""
         return self.meta_list
+
 
 
 class PredictDatasetChunked(torch.utils.data.Dataset):
@@ -1122,7 +1164,7 @@ class PredictDatasetChunked(torch.utils.data.Dataset):
         patch_path = self.patch_paths[idx]
         # Load TIFF patch and convert to tensor
         patch = tifffile.imread(patch_path)
-        return torch.from_numpy(patch[None, :])  # Add channel dimension
+        return torch.from_numpy(patch[None, :]), self.hw_overlap, self.depth_overlap  # Add channel dimension
 
     def __getmetainfo__(self):
         # Return metadata for each original file
@@ -1299,12 +1341,12 @@ def get_contour_maps(label_file_path, folder_path='generated_contour_maps', cont
     return contour_img
 
 
-def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
+def stitch_output_volumes(prefix, meta_list, hw_size=128, depth_size=128, hw_overlap=16, depth_overlap=16):
     """
     Stitch the patches of output volumes and reconstruct the original image tensor(s).
 
     Args:
-        tensor_list (list): List of image tensors with shape (C, D, H, W).
+        prefix (str): The filename prefix (e.g., "Pixels_", "Contour_", "Semantic_").
         meta_list (list): The meta information auto generated by Predict_Dataset class.
         hw_size (int): The height and width of the patches. In pixels.
         depth_size (int): The depth of the patches. In pixels.
@@ -1315,6 +1357,31 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
         list: stitched tensors with shape (C, D, H, W).
     """
     output_list = []
+
+    folder = Path("Datasets/prediction_cache/") # Hardcoded for now
+
+    # Find all files starting with the prefix (any extension)
+    # Use glob pattern: prefix*
+    all_files = list(folder.glob(f"{prefix}*"))
+
+    # Filter out directories and keep only files (optionally check extension)
+    files = [f for f in all_files if f.is_file()]
+
+    # Extract batch index from filename: prefix_{index} (ignoring extension)
+    pattern = re.compile(rf"^{re.escape(prefix)}(\d+)(\.tiff?)?$")
+    indexed_files = []
+    for f in files:
+        match = pattern.match(f.name)
+        if match:
+            idx = int(match.group(1))
+            indexed_files.append((idx, f))
+        else:
+            # If the filename doesn't match the pattern, skip or you may warn
+            # For robustness, we skip such files; you can change this behavior.
+            print(f"Warning: file '{f.name}' does not match expected pattern, skipping.")
+
+    # Sort by index and load arrays
+    indexed_files.sort(key=lambda x: x[0])
 
     for meta_info in meta_list:
         depth, height, width = meta_info[1][1:]
@@ -1331,8 +1398,9 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
                                      width), dtype=torch.float16)
 
         for i in range(total_multiplier):
-            tensor_work_with = tensor_list[i]
-            if hw_overlap or depth_overlap:
+            #tensor_work_with = tensor_list[i]
+            tensor_work_with = torch.from_numpy(tifffile.imread(indexed_files[i][1])).squeeze((0,1))
+            '''if hw_overlap or depth_overlap:
                 tensor_work_with = tensor_work_with[
                                    (depth_overlap if depth_overlap else slice(None)):
                                    -(depth_overlap if depth_overlap else slice(None)),
@@ -1340,7 +1408,7 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
                                    -(hw_overlap if hw_overlap else slice(None)),
                                    (hw_overlap if hw_overlap else slice(None)):
                                    -(hw_overlap if hw_overlap else slice(None))
-                                   ]
+                                   ]'''
 
             depth_idx, height_idx, width_idx = (i // (height_multiplier * width_multiplier)) % depth_multiplier, \
                                                (i // width_multiplier) % height_multiplier, \
@@ -1359,30 +1427,22 @@ def stitch_output_volumes(tensor_list, meta_list, hw_size=128, depth_size=128, h
 
         output_list.append((result_volume, file_name))
 
+        for _, file_path in indexed_files:
+            try:
+                file_path.unlink()
+            except OSError as e:
+                print(f"Warning: Could not delete {file_path}: {e}")
     return output_list
 
 
-def predictions_to_final_img(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16,
-                             depth_overlap=16):
+def predictions_to_final_img(stitched_volumes, direc):
     """
-    Stitch the patches of prediction output from network and save it in the selected directory.\n
+    Save the switched patches into the selected directory.\n
     This one is for semantic segmentation.
 
     Args:
-        predictions (list): Output from trainer.predict()
-        meta_list (list): The meta information auto generated by Predict_Dataset class.
         direc (str): Directory where the final images will be saved to.
-        hw_size (int): The height and width of the patches. In pixels.
-        depth_size (int): The depth of the patches. In pixels.
-        hw_overlap (int): The additional gain in height and width of the patches. In pixels.
-        depth_overlap (int): The additional gain in depth of the patches. In pixels.
     """
-    tensor_list = [torch.squeeze(tensor, (0, 1))
-                   for prediction in predictions
-                   for tensor in torch.split(prediction[0], 1, dim=0)]
-
-    stitched_volumes = stitch_output_volumes(tensor_list, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
-    del tensor_list
     for volume in stitched_volumes:
         array = volume[0].numpy()
         array = np.where(array >= 0.5, np.uint8(1), np.uint8(0))
@@ -1398,44 +1458,20 @@ def tiff_size_estimate(tensor: np.ndarray):
         return False
 
 
-def predictions_to_final_img_instance(predictions, meta_list, direc, hw_size=128, depth_size=128, hw_overlap=16,
-                                      depth_overlap=16, segmentation_mode='simple', dynamic=10, pixel_reclaim=True):
+def predictions_to_final_img_instance(stitched_volumes_p, stitched_volumes_c, direc, segmentation_mode='simple', dynamic=10, pixel_reclaim=True):
     """
-    Stitch the patches of prediction output from network and save it in the selected directory.\n
+    Save the switched patches into the selected directory.\n
     This one is for instance segmentation.
 
     Args:
-        predictions (list): Output from trainer.predict()
-        meta_list (list): The meta information auto generated by Predict_Dataset class.
         direc (str): Directory where the final images will be saved to.
-        hw_size (int): The height and width of the patches. In pixels.
-        depth_size (int): The depth of the patches. In pixels.
-        hw_overlap (int): The additional gain in height and width of the patches. In pixels.
-        depth_overlap (int): The additional gain in depth of the patches. In pixels.
         segmentation_mode (str): If 'simple', will identify objects via simple connected component labelling. If 'watershed', will use a distance transform watershed instead, which is slower but yield much less under-segment.
         dynamic (int): Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges. Default: 10.
         pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
     """
-    tensor_list_p = [
-        torch.squeeze(tensor, (0, 1))
-        for prediction in predictions
-        for tensor in torch.split(prediction[0], 1, dim=0)
-    ]
-
-    tensor_list_c = [
-        torch.squeeze(tensor, (0, 1))
-        for prediction in predictions
-        for tensor in torch.split(prediction[1], 1, dim=0)
-    ]
-
-    del predictions
-    stitched_volumes_p = stitch_output_volumes(tensor_list_p, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
-    del tensor_list_p
-    stitched_volumes_c = stitch_output_volumes(tensor_list_c, meta_list, hw_size, depth_size, hw_overlap, depth_overlap)
-    del tensor_list_c
     for semantic, contour in zip(stitched_volumes_p, stitched_volumes_c):
-        tifffile.imwrite(f'{direc}/Pixels_{semantic[1]}', data=np.float16(semantic[0].numpy()), bigtiff=tiff_size_estimate(semantic[0].numpy()))
-        tifffile.imwrite(f'{direc}/Contour_{contour[1]}', data=np.float16(contour[0].numpy()), bigtiff=tiff_size_estimate(contour[0].numpy()))
+        tifffile.imwrite(f'{direc}/Pixels_{semantic[1]}', data=semantic[0].numpy(), bigtiff=tiff_size_estimate(semantic[0].numpy()))
+        tifffile.imwrite(f'{direc}/Contour_{contour[1]}', data=contour[0].numpy(), bigtiff=tiff_size_estimate(contour[0].numpy()))
         print(f'Computing instance segmentation using contour data for {contour[1]}... Can take a while if the image is big.')
         instance_array = instance_segmentation_simple(semantic[0], contour[0], mode=segmentation_mode, dynamic=dynamic, pixel_reclaim=pixel_reclaim)
         tifffile.imwrite(f'{direc}/Instance_{contour[1]}', data=instance_array, bigtiff=tiff_size_estimate(instance_array))
@@ -1474,8 +1510,20 @@ def allocate_pixels_global(batch_indices_and_args):
             closest_object = np.argmax(object_counts) + 1
             segmentation_shared[z, y, x] = closest_object.item()
 
+def perform_watershed(segmentation, dynamic):
+    """
+    Perform watershed segmentation on the pre‑segmented mask.
+    """
+    distance_map = Morph.chamfer_distance_transform_parallel(segmentation)
+    distance_map = Morph.inverter(distance_map)
 
-def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, mode='simple', dynamic=10, pixel_reclaim='old', distance_threshold=2):
+    hmin = Morph.geodesicreconstructionbyerosion3d(distance_map, dynamic)
+    hmin = morph.local_minima(hmin).astype(np.uint16)
+    label(hmin, output=hmin)
+    segmentation = Morph.watershed_3d(distance_map, markers=hmin, mask=segmentation)
+    return segmentation
+
+def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, mode='simple', dynamic=10, pixel_reclaim=True, distance_threshold=2):
     """
     Using a semantic segmentation map and a contour map to separate touching objects and perform instance segmentation.
     Pixels in touching areas are assigned to the closest object based on the largest proportion of pixels within 5 pixel distance to the pixel.
@@ -1501,7 +1549,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
     # Remove touching area between foreground objects
     segmentation = torch.logical_xor(semantic_map, touching_map)
     del semantic_map, contour_map
-    segmentation = segmentation.numpy().astype(np.uint16, copy=False)
+    segmentation = segmentation.numpy().astype(np.uint16)
     gc.collect()
 
     structure = np.array([
@@ -1518,73 +1566,15 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
     if mode == 'simple':
         label(segmentation, structure=structure, output=segmentation)
     elif mode == 'watershed':
-        distance_map = Morph.chamferdistancetransform3duint16(segmentation)
-        distance_map = Morph.inverter(distance_map)
-        marker = distance_map + dynamic
-        hmin = Morph.geodesicreconstructionbyerosion3d(marker, distance_map)
-        del marker
-        gc.collect()
-        hmin = morph.local_minima(hmin).astype(np.uint16)
-        label(hmin, output=hmin)
-        print("Starts watershed flooding...")
-        segmentation = Morph.watershed_3d(distance_map, markers=hmin, mask=segmentation)
-        del distance_map, hmin
-        gc.collect()
-    morph.remove_small_objects(segmentation, min_size=size_threshold, connectivity=structure, out=segmentation)
+        segmentation = perform_watershed(segmentation, dynamic)
 
+    morph.remove_small_objects(segmentation, min_size=size_threshold, connectivity=structure, out=segmentation)
     del structure
 
     if pixel_reclaim:
-        '''touching_pixels = torch.nonzero(touching_map, as_tuple=False).to(torch.uint16).numpy()
-        del touching_map
-        num_touching_pixels = len(touching_pixels)
-        minlength = segmentation.max().item()
-        map_size = segmentation.shape
-
-        # Create shared memory for segmentation
-        shm_segmentation = shared_memory.SharedMemory(create=True,
-                                                      size=segmentation.size * np.dtype(np.uint16).itemsize)
-        segmentation_shared = np.ndarray(map_size, dtype=np.uint16, buffer=shm_segmentation.buf)
-        segmentation_shared[:] = segmentation
-        del segmentation  # Free memory
-        gc.collect()
-
-        # Create shared memory for touching_pixels
-        shm_touching = shared_memory.SharedMemory(create=True, size=touching_pixels.nbytes)
-        touching_pixels_shared = np.ndarray(touching_pixels.shape, dtype=touching_pixels.dtype,
-                                            buffer=shm_touching.buf)
-        touching_pixels_shared[:] = touching_pixels[:]
-        del touching_pixels  # Free memory
-        gc.collect()
-
-        batch_indices = [list(range(i, min(i + batch_size, num_touching_pixels)))
-                         for i in range(0, num_touching_pixels, batch_size)]
-
-        # Prepare a simplified list of arguments that each worker needs
-        worker_args = [
-            (batch, map_size, distance_threshold, minlength)
-            for batch in batch_indices
-        ]
-
-        start_time = time.time()
-        # Create the pool with an initializer that attaches the shared memories
-        with Pool(cpu_count(), initializer=pool_initializer,
-                  initargs=(shm_segmentation.name,
-                            shm_touching.name, touching_pixels_shared.shape, touching_pixels_shared.dtype)) as pool:
-            pool.map(allocate_pixels_global, worker_args)
-        elapsed_time = time.time() - start_time
-        print(f"Time taken for pixel reclaim: {elapsed_time}")
-        # Convert shared memory to tensor
-        segmentation_result = np.copy(segmentation_shared)
-        # Clean up shared memory
-        shm_segmentation.close()
-        shm_segmentation.unlink()
-        shm_touching.close()
-        shm_touching.unlink()
-        segmentation_result = segmentation_result.astype(new_dtype, copy=False)
-        return segmentation_result'''
         start_time = time.time()
         segmentation = Morph.pixel_reclaim(touching_map.numpy(), segmentation, distance_threshold)
+        del touching_map
         elapsed_time = time.time() - start_time
         print(f"Time taken for pixel reclaim: {elapsed_time}")
         img_max = segmentation.max()
@@ -1610,6 +1600,63 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
         segmentation = segmentation.astype(new_dtype, copy=False)
     return segmentation
 
+
+def load_tiff_stack(folder_path: str, prefix: str) -> torch.Tensor:
+    """
+    Load all TIFF files in `folder_path` whose names start with `prefix`,
+    stack them into a single PyTorch tensor, and return it.
+
+    Files are assumed to have names like `prefix_{batch_idx}` (optionally with
+    .tif or .tiff extension). They are sorted by `batch_idx` before stacking.
+    """
+    folder = Path(folder_path)
+
+    # Find all files starting with the prefix (any extension)
+    # Use glob pattern: prefix*
+    all_files = list(folder.glob(f"{prefix}*"))
+
+    # Filter out directories and keep only files (optionally check extension)
+    files = [f for f in all_files if f.is_file()]
+
+    # Extract batch index from filename: prefix_{index} (ignoring extension)
+    pattern = re.compile(rf"^{re.escape(prefix)}(\d+)(\.tiff?)?$")
+    indexed_files = []
+    for f in files:
+        match = pattern.match(f.name)
+        if match:
+            idx = int(match.group(1))
+            indexed_files.append((idx, f))
+        else:
+            # If the filename doesn't match the pattern, skip or you may warn
+            # For robustness, we skip such files; you can change this behavior.
+            print(f"Warning: file '{f.name}' does not match expected pattern, skipping.")
+
+    if not indexed_files:
+        raise ValueError(f"No files matched the expected pattern '{prefix}<integer>' in {folder_path}")
+
+    # Sort by index and load arrays
+    indexed_files.sort(key=lambda x: x[0])
+    # Load the first file to determine shape and dtype
+    first_idx, first_path = indexed_files[0]
+    first_arr = tifffile.imread(first_path)
+    # Pre‑allocate the output tensor
+    num_files = len(indexed_files)
+    out_tensor = torch.empty((num_files, *first_arr.shape), dtype=torch.from_numpy(first_arr).dtype)
+    out_tensor[0] = torch.from_numpy(first_arr)
+
+    # Load the remaining files and fill the tensor
+    for i, (idx, file_path) in enumerate(indexed_files[1:], start=1):
+        arr = tifffile.imread(file_path)
+        out_tensor[i] = torch.from_numpy(arr)
+
+    # Delete all loaded files
+    for _, file_path in indexed_files:
+        try:
+            file_path.unlink()
+        except OSError as e:
+            print(f"Warning: Could not delete {file_path}: {e}")
+
+    return out_tensor
 
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn', force=True)

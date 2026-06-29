@@ -1,24 +1,24 @@
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from heapq import heappush, heappop
 
 
-def geodesicreconstructionbyerosion3d(marker, mask):
-    result = np.maximum(marker, mask)
+def geodesicreconstructionbyerosion3d(mask, dynamic):
+    result = mask + dynamic
     mod_if = True
     print("Geodesic Reconstructing...")
     while mod_if:
         mod_if = False
-        result, mod_if = _forward_scan_c6(marker, mask, result, mod_if)
-        result, mod_if = _backward_scan_c6(marker, mask, result, mod_if)
+        result, mod_if = _forward_scan_c6(mask, result, mod_if)
+        result, mod_if = _backward_scan_c6(mask, result, mod_if)
     return result
 
 
 @njit
-def _forward_scan_c6(marker, mask, result, mod_if):
-    for z in range(marker.shape[0]):
-        for y in range(marker.shape[1]):
-            for x in range(marker.shape[2]):
+def _forward_scan_c6(mask, result, mod_if):
+    for z in range(mask.shape[0]):
+        for y in range(mask.shape[1]):
+            for x in range(mask.shape[2]):
                 current_value = result[z, y, x]
                 min_value = current_value
 
@@ -37,18 +37,18 @@ def _forward_scan_c6(marker, mask, result, mod_if):
 
 
 @njit
-def _backward_scan_c6(marker, mask, result, mod_if):
-    for z in range(marker.shape[0] - 1, -1, -1):
-        for y in range(marker.shape[1] - 1, -1, -1):
-            for x in range(marker.shape[2] - 1, -1, -1):
+def _backward_scan_c6(mask, result, mod_if):
+    for z in range(mask.shape[0] - 1, -1, -1):
+        for y in range(mask.shape[1] - 1, -1, -1):
+            for x in range(mask.shape[2] - 1, -1, -1):
                 current_value = result[z, y, x]
                 min_value = current_value
 
-                if x < marker.shape[2] - 1:
+                if x < mask.shape[2] - 1:
                     min_value = min(min_value, result[z, y, x+1])
-                if y < marker.shape[1] - 1:
+                if y < mask.shape[1] - 1:
                     min_value = min(min_value, result[z, y+1, x])
-                if z < marker.shape[0] - 1:
+                if z < mask.shape[0] - 1:
                     min_value = min(min_value, result[z+1, y, x])
 
                 min_value = max(min_value, mask[z, y, x])
@@ -64,39 +64,38 @@ def chamferdistancetransform3duint16(img):
     result = _backward_scan_cham_c6(img, result)
     return result
 
+# Borgefors 3D chamfer weights (26‑neighbourhood)
+# Define the Borgefors weights and offsets
+offsets = (
+    (1, 0, 0, 3),
+    (0, 1, 0, 3),
+    (0, 0, 1, 3),
+    (-1, 0, 0, 3),
+    (0, -1, 0, 3),
+    (0, 0, -1, 3),
+    (1, 1, 0, 4),
+    (1, -1, 0, 4),
+    (-1, 1, 0, 4),
+    (-1, -1, 0, 4),
+    (1, 0, 1, 4),
+    (1, 0, -1, 4),
+    (-1, 0, 1, 4),
+    (-1, 0, -1, 4),
+    (0, 1, 1, 4),
+    (0, 1, -1, 4),
+    (0, -1, 1, 4),
+    (0, -1, -1, 4),
+    (1, 1, 1, 5),
+    (1, 1, -1, 5),
+    (1, -1, 1, 5),
+    (1, -1, -1, 5),
+    (-1, -1, 1, 5),
+    (-1, 1, 1, 5),
+    (-1, 1, -1, 5),
+    (-1, -1, -1, 5))
 
-@njit
+@njit(nogil=True)
 def _forward_scan_cham_c6(img, result):
-    # Define the Borgefors weights and offsets
-    offsets = [
-        (1, 0, 0, 3),
-        (0, 1, 0, 3),
-        (0, 0, 1, 3),
-        (-1, 0, 0, 3),
-        (0, -1, 0, 3),
-        (0, 0, -1, 3),
-        (1, 1, 0, 4),
-        (1, -1, 0, 4),
-        (-1, 1, 0, 4),
-        (-1, -1, 0, 4),
-        (1, 0, 1, 4),
-        (1, 0, -1, 4),
-        (-1, 0, 1, 4),
-        (-1, 0, -1, 4),
-        (0, 1, 1, 4),
-        (0, 1, -1, 4),
-        (0, -1, 1, 4),
-        (0, -1, -1, 4),
-        (1, 1, 1, 5),
-        (1, 1, -1, 5),
-        (1, -1, 1, 5),
-        (1, -1, -1, 5),
-        (-1, -1, 1, 5),
-        (-1, 1, 1, 5),
-        (-1, 1, -1, 5),
-        (-1, -1, -1, 5),
-    ]
-
     for z in range(img.shape[0]):
         for y in range(img.shape[1]):
             for x in range(img.shape[2]):
@@ -123,38 +122,8 @@ def _forward_scan_cham_c6(img, result):
     return result
 
 
-@njit
+@njit(nogil=True)
 def _backward_scan_cham_c6(img, result):
-    # Define the Borgefors weights and offsets
-    offsets = [
-        (1, 0, 0, 3),
-        (0, 1, 0, 3),
-        (0, 0, 1, 3),
-        (-1, 0, 0, 3),
-        (0, -1, 0, 3),
-        (0, 0, -1, 3),
-        (1, 1, 0, 4),
-        (1, -1, 0, 4),
-        (-1, 1, 0, 4),
-        (-1, -1, 0, 4),
-        (1, 0, 1, 4),
-        (1, 0, -1, 4),
-        (-1, 0, 1, 4),
-        (-1, 0, -1, 4),
-        (0, 1, 1, 4),
-        (0, 1, -1, 4),
-        (0, -1, 1, 4),
-        (0, -1, -1, 4),
-        (1, 1, 1, 5),
-        (1, 1, -1, 5),
-        (1, -1, 1, 5),
-        (1, -1, -1, 5),
-        (-1, -1, 1, 5),
-        (-1, 1, 1, 5),
-        (-1, 1, -1, 5),
-        (-1, -1, -1, 5),
-    ]
-
     for z in range(img.shape[0] - 1, -1, -1):
         for y in range(img.shape[1] - 1, -1, -1):
             for x in range(img.shape[2] - 1, -1, -1):
@@ -181,6 +150,97 @@ def _backward_scan_cham_c6(img, result):
     return result
 
 
+@njit(parallel=True, nogil=True)
+def chamfer_distance_transform_parallel(binary_mask, num_core=16):
+    """
+    Parallel chamfer distance transform with early stopping.
+    """
+    Z, Y, X = binary_mask.shape
+    num_bands = num_core
+    chunk_size = (Z // num_bands) + 1
+    max_val = np.iinfo(np.uint16).max
+
+    result = np.where(binary_mask > 0, np.uint16(max_val), np.uint16(0))
+    print(f"Need maximum {Z} Iteration for Chamfer Distance Transform")
+
+    # 3D chamfer weights: face=3, edge=4, corner=5
+    causal = [
+        (-1, -1, -1, 5), (-1, -1, 0, 4), (-1, -1, 1, 5),
+        (-1, 0, -1, 4), (-1, 0, 0, 3), (-1, 0, 1, 4),
+        (-1, 1, -1, 5), (-1, 1, 0, 4), (-1, 1, 1, 5),
+        (0, -1, -1, 4), (0, -1, 0, 3), (0, -1, 1, 4),
+        (0, 0, -1, 3),
+    ]
+    anti_causal = [
+        (1, -1, -1, 5), (1, -1, 0, 4), (1, -1, 1, 5),
+        (1, 0, -1, 4), (1, 0, 0, 3), (1, 0, 1, 4),
+        (1, 1, -1, 5), (1, 1, 0, 4), (1, 1, 1, 5),
+        (0, 1, -1, 4), (0, 1, 0, 3), (0, 1, 1, 4),
+        (0, 0, 1, 3),
+    ]
+
+    # We'll iterate at most Z times (worst‑case path length)
+    for it in range(Z):
+        print(f"Iteration {it} for Chamfer Distance Transform")
+        changed = np.zeros(num_bands, dtype=np.bool_)   # reset for this iteration
+
+        # ---- Forward pass (parallel over bands) ----
+        for band in prange(num_bands):
+            start_z = band * chunk_size
+            end_z = min(start_z + chunk_size, Z)
+            for z in range(start_z, end_z):
+                for y in range(Y):
+                    for x in range(X):
+                        if binary_mask[z, y, x] == 0:
+                            continue
+                        cur = result[z, y, x]
+                        new_val = cur
+                        for dz, dy, dx, w in causal:
+                            nz = z + dz
+                            ny = y + dy
+                            nx = x + dx
+                            if (0 <= nz < Z and 0 <= ny < Y and 0 <= nx < X):
+                                neigh = result[nz, ny, nx]
+                                if neigh != max_val:
+                                    cand = neigh + w
+                                    if cand < new_val:
+                                        new_val = cand
+                        if new_val < cur:
+                            result[z, y, x] = new_val
+                            changed[band] = True   # record that this band was updated
+
+        # ---- Backward pass (parallel over bands) ----
+        for band in prange(num_bands):
+            start_z = band * chunk_size
+            end_z = min(start_z + chunk_size, Z)
+            for z in range(end_z - 1, start_z - 1, -1):
+                for y in range(Y - 1, -1, -1):
+                    for x in range(X - 1, -1, -1):
+                        if binary_mask[z, y, x] == 0:
+                            continue
+                        cur = result[z, y, x]
+                        new_val = cur
+                        for dz, dy, dx, w in anti_causal:
+                            nz = z + dz
+                            ny = y + dy
+                            nx = x + dx
+                            if (0 <= nz < Z and 0 <= ny < Y and 0 <= nx < X):
+                                neigh = result[nz, ny, nx]
+                                if neigh != max_val:
+                                    cand = neigh + w
+                                    if cand < new_val:
+                                        new_val = cand
+                        if new_val < cur:
+                            result[z, y, x] = new_val
+                            changed[band] = True   # record that this band was updated
+
+        # After both passes, check if any change occurred anywhere
+        if not np.any(changed):
+            print("No more change detected! Stopping Early.")
+            break   # converged
+
+    return result
+
 def __heapify_markers_3d(markers, image):
     """Create a priority queue heap with the markers on it for 3D."""
     stride = np.array(image.strides, dtype=np.uint32) // image.itemsize
@@ -200,7 +260,7 @@ def __heapify_markers_3d(markers, image):
     return (pq, ncoords)
 
 
-@njit
+@njit(nogil=True)
 def _watershed_loop(pq, labels, connect_increments, mask, image, age):
     max_x, max_y, max_z = labels.shape
     while len(pq):
@@ -229,19 +289,25 @@ def watershed_3d(image, markers, mask=None):
     connect_increments = [
         (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)
     ]
+    print("Starts watershed flooding...")
     pq, age = __heapify_markers_3d(markers, image)
     print('Watersheding...')
     return _watershed_loop(pq, markers, connect_increments, mask, image, age)
 
 
 def inverter(img):
-    min = img.min()
-    max = img.max()
-    img = max - (img - min)
+    min_val = img.min()
+    max_val = img.max()
+
+    img -= min_val
+    np.negative(img, out=img)
+    img += max_val
+
     return img
 
 
-@njit
+
+@njit(parallel=True)
 def pixel_reclaim(touching_map, segmentation, distance_threshold, z_to_xy_ratio=1.01):
     touching_pixels = np.argwhere(touching_map)
     map_size = segmentation.shape
@@ -263,9 +329,11 @@ def pixel_reclaim(touching_map, segmentation, distance_threshold, z_to_xy_ratio=
                 # Weight is inversely proportional to distance
                 kernel[z_rel, y_rel, x_rel] = 1.0 / (1.0 + dist)
 
-    for pixel_idx in touching_pixels:
-        z, y, x = pixel_idx[0], pixel_idx[1], pixel_idx[2]
-        # Define local region boundaries
+    for i in prange(touching_pixels.shape[0]):
+        z = touching_pixels[i, 0]
+        y = touching_pixels[i, 1]
+        x = touching_pixels[i, 2]
+
         z_start = max(z - distance_threshold, 0)
         z_end = min(z + distance_threshold + 1, map_size[0])
         y_start = max(y - distance_threshold, 0)
@@ -273,10 +341,9 @@ def pixel_reclaim(touching_map, segmentation, distance_threshold, z_to_xy_ratio=
         x_start = max(x - distance_threshold, 0)
         x_end = min(x + distance_threshold + 1, map_size[2])
 
-        # Initialize weighted counts for segments
+        # Thread‑local weighted counts
         weighted_counts = np.zeros(max_segment_id + 1, dtype=np.float32)
 
-        # Iterate over the local region
         for z0 in range(z_start, z_end):
             dz = z0 - z
             k_z = dz + distance_threshold
@@ -287,10 +354,8 @@ def pixel_reclaim(touching_map, segmentation, distance_threshold, z_to_xy_ratio=
                     dx = x0 - x
                     k_x = dx + distance_threshold
                     segment_id = segmentation[z0, y0, x0]
-                    # Add kernel weight to the segment's count
                     weighted_counts[segment_id] += kernel[k_z, k_y, k_x]
 
-        # Ignore background (segment ID 0)
         segment_weights = weighted_counts[1:]
         total_weight = np.sum(segment_weights)
         if total_weight > 0:

@@ -111,7 +111,7 @@ def gaussian_blur_3d(tensor, kernel_size=3, sigma=0.8):
     kernel = kernel / kernel.sum()
 
     # Extend the kernel to the 5D filter required for torch.nn.functional.conv3d
-    kernel = kernel.unsqueeze(0).unsqueeze(0).repeat(input_channels, input_channels, 1, 1, 1)
+    kernel = kernel.unsqueeze(0).unsqueeze(0).repeat(input_channels, input_channels, 1, 1, 1).to(torch.float16)
 
     # Apply 3D convolution
     blurred_output = torch.nn.functional.conv3d(tensor.unsqueeze(0), kernel, padding=kernel_size // 2).squeeze(0)
