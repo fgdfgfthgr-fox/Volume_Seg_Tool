@@ -3,19 +3,20 @@ from numba import njit, prange
 from heapq import heappush, heappop
 
 
-def geodesicreconstructionbyerosion3d(mask, dynamic):
+def geodesic_reconstruction_by_erosion(mask, dynamic):
     result = mask + dynamic
-    mod_if = True
-    print("Geodesic Reconstructing...")
-    while mod_if:
-        mod_if = False
-        result, mod_if = _forward_scan_c6(mask, result, mod_if)
-        result, mod_if = _backward_scan_c6(mask, result, mod_if)
+    changed = True
+    i = 0
+    while changed:
+        changed = False
+        print(f"Iteration {i} of Geodesic Reconstruction...")
+        result, changed = reconstruct_forward_scan(mask, result, changed)
+        result, changed = reconstruct_backward_scan(mask, result, changed)
     return result
 
 
 @njit
-def _forward_scan_c6(mask, result, mod_if):
+def reconstruct_forward_scan(mask, result, changed):
     for z in range(mask.shape[0]):
         for y in range(mask.shape[1]):
             for x in range(mask.shape[2]):
@@ -32,12 +33,12 @@ def _forward_scan_c6(mask, result, mod_if):
                 min_value = max(min_value, mask[z, y, x])
                 if min_value < current_value:
                     result[z, y, x] = min_value
-                    mod_if = True
-    return result, mod_if
+                    changed = True
+    return result, changed
 
 
 @njit
-def _backward_scan_c6(mask, result, mod_if):
+def reconstruct_backward_scan(mask, result, changed):
     for z in range(mask.shape[0] - 1, -1, -1):
         for y in range(mask.shape[1] - 1, -1, -1):
             for x in range(mask.shape[2] - 1, -1, -1):
@@ -54,18 +55,18 @@ def _backward_scan_c6(mask, result, mod_if):
                 min_value = max(min_value, mask[z, y, x])
                 if min_value < current_value:
                     result[z, y, x] = min_value
-                    mod_if = True
-    return result, mod_if
+                    changed = True
+    return result, changed
 
 
-def chamferdistancetransform3duint16(img):
-    result = np.where(img > 0, np.uint16(np.iinfo(np.uint16).max), np.uint16(0))
-    result = _forward_scan_cham_c6(img, result)
-    result = _backward_scan_cham_c6(img, result)
+def chamfer_distancetransform(img, dtype):
+    max_val = np.iinfo(dtype).max
+    result = np.where(img > 0, dtype(max_val), dtype(0))
+    result = cham_forward_scan(img, result)
+    result = cham_backward_scan(img, result)
     return result
 
 # Borgefors 3D chamfer weights (26‑neighbourhood)
-# Define the Borgefors weights and offsets
 offsets = (
     (1, 0, 0, 3),
     (0, 1, 0, 3),
@@ -95,7 +96,7 @@ offsets = (
     (-1, -1, -1, 5))
 
 @njit(nogil=True)
-def _forward_scan_cham_c6(img, result):
+def cham_forward_scan(img, result):
     for z in range(img.shape[0]):
         for y in range(img.shape[1]):
             for x in range(img.shape[2]):
@@ -123,7 +124,7 @@ def _forward_scan_cham_c6(img, result):
 
 
 @njit(nogil=True)
-def _backward_scan_cham_c6(img, result):
+def cham_backward_scan(img, result):
     for z in range(img.shape[0] - 1, -1, -1):
         for y in range(img.shape[1] - 1, -1, -1):
             for x in range(img.shape[2] - 1, -1, -1):
@@ -151,16 +152,16 @@ def _backward_scan_cham_c6(img, result):
 
 
 @njit(parallel=True, nogil=True)
-def chamfer_distance_transform_parallel(binary_mask, num_core=16):
+def chamfer_distance_transform_parallel(img, dtype, num_core=16):
     """
     Parallel chamfer distance transform with early stopping.
     """
-    Z, Y, X = binary_mask.shape
+    Z, Y, X = img.shape
     num_bands = num_core
     chunk_size = (Z // num_bands) + 1
-    max_val = np.iinfo(np.uint16).max
+    max_val = np.iinfo(dtype).max
 
-    result = np.where(binary_mask > 0, np.uint16(max_val), np.uint16(0))
+    result = np.where(img > 0, dtype(max_val), dtype(0))
     print(f"Need maximum {Z} Iteration for Chamfer Distance Transform")
 
     # 3D chamfer weights: face=3, edge=4, corner=5
@@ -179,7 +180,6 @@ def chamfer_distance_transform_parallel(binary_mask, num_core=16):
         (0, 0, 1, 3),
     ]
 
-    # We'll iterate at most Z times (worst‑case path length)
     for it in range(Z):
         print(f"Iteration {it} for Chamfer Distance Transform")
         changed = np.zeros(num_bands, dtype=np.bool_)   # reset for this iteration
@@ -191,7 +191,7 @@ def chamfer_distance_transform_parallel(binary_mask, num_core=16):
             for z in range(start_z, end_z):
                 for y in range(Y):
                     for x in range(X):
-                        if binary_mask[z, y, x] == 0:
+                        if img[z, y, x] == 0:
                             continue
                         cur = result[z, y, x]
                         new_val = cur
@@ -216,7 +216,7 @@ def chamfer_distance_transform_parallel(binary_mask, num_core=16):
             for z in range(end_z - 1, start_z - 1, -1):
                 for y in range(Y - 1, -1, -1):
                     for x in range(X - 1, -1, -1):
-                        if binary_mask[z, y, x] == 0:
+                        if img[z, y, x] == 0:
                             continue
                         cur = result[z, y, x]
                         new_val = cur
@@ -263,9 +263,17 @@ def __heapify_markers_3d(markers, image):
 @njit(nogil=True)
 def _watershed_loop(pq, labels, connect_increments, mask, image, age):
     max_x, max_y, max_z = labels.shape
+    total_pixels = image.size if mask is None else np.count_nonzero(mask)
+    processed = 0
+    print_interval = max(1, total_pixels // 100)  # print every 1%
     while len(pq):
         pix_value, pix_age, _, pix_x, pix_y, pix_z = heappop(pq)
+        processed += 1
         pix_label = labels[pix_x, pix_y, pix_z]
+
+        if processed % print_interval == 0:
+            progress = processed * 100 // total_pixels
+            print(f"Watershed Progress: {progress}% ({processed}/{total_pixels})")
 
         for dx, dy, dz in connect_increments:
             x, y, z = pix_x + dx, pix_y + dy, pix_z + dz
@@ -284,14 +292,13 @@ def _watershed_loop(pq, labels, connect_increments, mask, image, age):
 
 
 # The "Slower" watershed taken from scikits-image. Is faster after using Numba.
-def watershed_3d(image, markers, mask=None):
+def marker_controlled_watershed(image, markers, mask=None):
     """Watershed algorithm optimized with Numba for 3D images with 6-connectivity."""
     connect_increments = [
         (1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)
     ]
     print("Starts watershed flooding...")
     pq, age = __heapify_markers_3d(markers, image)
-    print('Watersheding...')
     return _watershed_loop(pq, markers, connect_increments, mask, image, age)
 
 

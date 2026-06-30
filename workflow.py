@@ -1,4 +1,5 @@
 import os
+import math
 import gc
 import time
 import threading
@@ -151,38 +152,46 @@ def load_data_and_predict(PD):
     print(f"Prediction Taken: {end_time - start_time} seconds")
     return meta_info
 
-def stitch_volumes(meta_info, instance_mode):
+def stitch(indexed_files, image_meta, current_offset, instance_mode):
+    out_file_name = "Mask_" + image_meta[0]
+    depth, height, width = image_meta[1][1:]
+    depth_multiplier = math.ceil(depth / args.predict_depth_size)
+    height_multiplier = math.ceil(height / args.predict_hw_size)
+    width_multiplier = math.ceil(width / args.predict_hw_size)
+    total_multiplier = depth_multiplier * height_multiplier * width_multiplier
+    dim_info = depth, height, width, depth_multiplier, height_multiplier, width_multiplier, total_multiplier
     if instance_mode:
-        stitched_volumes_p = DataComponents.stitch_output_volumes("Pixels_", meta_info,
-                                                                    hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
-                                                                    hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap)
-        stitched_volumes_c = DataComponents.stitch_output_volumes("Contour_", meta_info,
-                                                                        hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
-                                                                        hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap)
-        return stitched_volumes_p, stitched_volumes_c
+        stitched_volume_p = DataComponents.stitch_output_volume(indexed_files[0], dim_info, args.predict_hw_size,
+                                                              args.predict_hw_size, current_offset)
+        stitched_volume_c = DataComponents.stitch_output_volume(indexed_files[1], dim_info, args.predict_hw_size,
+                                                              args.predict_hw_size, current_offset)
+        current_offset += total_multiplier
+        return ((stitched_volume_p, out_file_name), (stitched_volume_c, out_file_name)), current_offset
     else:
-        stitched_volumes = DataComponents.stitch_output_volumes("Semantic_", meta_info,
-                                                                    hw_size=args.predict_hw_size, depth_size=args.predict_depth_size,
-                                                                    hw_overlap=args.predict_hw_overlap, depth_overlap=args.predict_depth_overlap)
-        return stitched_volumes
+        stitched_volume = DataComponents.stitch_output_volume(indexed_files[0], dim_info, args.predict_hw_size,
+                                                              args.predict_hw_size, current_offset)
+        current_offset += total_multiplier
+        return (stitched_volume, out_file_name), current_offset
 
 
-def predict_and_stitch(PD, instance_mode):
-    meta_info = load_data_and_predict(PD)
-    torch.cuda.empty_cache()
-    return stitch_volumes(meta_info, instance_mode)
-
-def save_stitched_volumes(stitched_volumes, instance_mode):
+def save_stitched_volume(stitched_volume, instance_mode):
     if args.instance_seg_mode:
         mode = 'watershed'
     else:
         mode = 'simple'
     if instance_mode:
-        DataComponents.predictions_to_final_img_instance(stitched_volumes[0], stitched_volumes[1], direc=args.result_folder_path,
+        DataComponents.predictions_to_final_img_instance(stitched_volume[0], stitched_volume[1], direc=args.result_folder_path,
                                                          segmentation_mode=mode, dynamic=args.watershed_dynamic,
                                                          pixel_reclaim=args.pixel_reclaim)
     else:
-        DataComponents.predictions_to_final_img(stitched_volumes, direc=args.result_folder_path)
+        DataComponents.predictions_to_final_img(stitched_volume, direc=args.result_folder_path)
+
+def delete_indexed_files(indexed_files):
+    for _, file_path in indexed_files:
+        try:
+            file_path.unlink()
+        except OSError as e:
+            print(f"Warning: Could not delete {file_path}: {e}")
 
 
 def start_work_flow(args):
@@ -235,10 +244,25 @@ def start_work_flow(args):
 
     if 'Predict' in args.workflow_box:
         start_time = time.time()
-        stitch_volumes = predict_and_stitch(PD, instance_mode)
-        save_stitched_volumes(stitch_volumes, instance_mode)
+        meta_info = load_data_and_predict(PD)
+        if instance_mode:
+            indexed_files_p = DataComponents.load_indexed_files_for_stitching("Pixels_")
+            indexed_files_c = DataComponents.load_indexed_files_for_stitching("Contour_")
+            indexed_files = (indexed_files_p, indexed_files_c)
+        else:
+            indexed_files = DataComponents.load_indexed_files_for_stitching("Semantic_")
+        for image_meta in meta_info:
+            current_offset = 0
+            stitched_volume, current_offset = stitch(indexed_files, image_meta, current_offset, instance_mode)
+            save_stitched_volume(stitched_volume, instance_mode)
         end_time = time.time()
         print(f"Converting and saving taken: {end_time - start_time} seconds")
+        if instance_mode:
+            delete_indexed_files(indexed_files_p)
+            delete_indexed_files(indexed_files_c)
+        else:
+            delete_indexed_files(indexed_files)
+
 
 
 if __name__ == "__main__":
