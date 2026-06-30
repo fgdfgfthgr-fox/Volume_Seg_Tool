@@ -86,7 +86,7 @@ class PLModule(pl.LightningModule):
         self.require_next_mid_visual = False
 
     def forward(self, image):
-        return self.network(image)
+        return self.network(image.to(self.dtype, copy=False))
 
     def compute_ramp_up_weight(self):
         # Check if the dice score threshold has been reached

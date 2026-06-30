@@ -602,12 +602,12 @@ class TrainDatasetChunked(torch.utils.data.Dataset):
             img_tensor, lab_tensor, contour_tensor = apply_aug(img_vol, lab_vol, contour_vol,
                                                                self.augmentation_params, self.hw_size, self.d_size,
                                                                foreground_threshold, background_threshold, True, img_mean, img_std)
-            return img_tensor, lab_tensor, contour_tensor
+            return img_tensor, lab_tensor.to(torch.float32), contour_tensor
         else:
             img_tensor, lab_tensor = apply_aug(img_vol, lab_vol, None,
                                                self.augmentation_params, self.hw_size, self.d_size,
                                                foreground_threshold, background_threshold, True, img_mean, img_std)
-            return img_tensor, lab_tensor
+            return img_tensor, lab_tensor.to(torch.float32)
 
 
 class UnsupervisedDataset(torch.utils.data.Dataset):
@@ -762,9 +762,9 @@ class ValDataset(torch.utils.data.Dataset):
         img_tensor, lab_tensor = self.chopped_array_pairs[idx][0][None, :], self.chopped_array_pairs[idx][1][None, :].to(torch.float32)
         if self.instance_mode:
             contour_tensor = self.chopped_array_pairs[idx][2][None, :].to(torch.float32)
-            return img_tensor, lab_tensor, contour_tensor
+            return img_tensor, lab_tensor.to(torch.float32), contour_tensor
         else:
-            return img_tensor, lab_tensor
+            return img_tensor, lab_tensor.to(torch.float32)
 
 
 class ValDatasetChunked(torch.utils.data.Dataset):
@@ -925,9 +925,9 @@ class ValDatasetChunked(torch.utils.data.Dataset):
         if self.instance_mode:
             contour_patch = tifffile.imread(patch_entry['contour_path'])
             contour_tensor = torch.from_numpy(contour_patch[None, :]).float()
-            return img_tensor, lab_tensor, contour_tensor
+            return img_tensor, lab_tensor.to(torch.float32), contour_tensor
         else:
-            return img_tensor, lab_tensor
+            return img_tensor, lab_tensor.to(torch.float32)
 
 
 def calculate_predict_start_end(multiplier, required_size, full_size, idx, required_overlap):
