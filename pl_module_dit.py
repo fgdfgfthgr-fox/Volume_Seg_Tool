@@ -6,7 +6,8 @@ import torch
 import torch.utils.data
 import torch.utils.tensorboard
 
-from Components import DataComponents
+import Components.Datasets
+from Components import Utils
 from Components import Metrics
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
@@ -86,7 +87,7 @@ class PLModule(pl.LightningModule):
         self.require_next_mid_visual = False
 
     def forward(self, image):
-        return self.network(image.to(self.dtype, copy=False))
+        return self.network(image)
 
     def compute_ramp_up_weight(self):
         # Check if the dice score threshold has been reached
@@ -378,14 +379,14 @@ if __name__ == "__main__":
         for precision in precisions:
             for batch_size in batch_sizes:
                 #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
-                train_dataset = DataComponents.TrainDataset("Datasets/train",
+                train_dataset = Components.Datasets.TrainDataset("Datasets/train",
                                                             "Augmentation Parameters Anisotropic.csv",
-                                                            32,
-                                                            size[0], size[1], False, False, 'default')
-                unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
+                                                                 32,
+                                                                 size[0], size[1], False, False, 'default')
+                unsupervised_train_dataset = Components.Datasets.UnsupervisedDataset("Datasets/unsupervised_train",
                                                                                 "Augmentation Parameters Anisotropic.csv",
-                                                                                64,
-                                                                                size[0], size[1])
+                                                                                     64,
+                                                                                     size[0], size[1])
                 train_dataset = DataComponents.CollectedDataset(train_dataset, None)
                 sampler = DataComponents.CollectedSampler(train_dataset, batch_size, None)
                 collate_fn = DataComponents.custom_collate

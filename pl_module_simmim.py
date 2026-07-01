@@ -6,7 +6,8 @@ import torch._logging
 import torch.utils.data
 import torch.utils.tensorboard
 
-from Components import DataComponents
+import Components.Datasets
+from Components import Utils
 from Components import SimMIM
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
@@ -152,10 +153,10 @@ if __name__ == "__main__":
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
     torch.set_float32_matmul_precision('medium')
-    unsupervised_train_dataset = DataComponents.UnsupervisedDataset("Datasets/unsupervised_train",
+    unsupervised_train_dataset = Components.Datasets.UnsupervisedDataset("Datasets/unsupervised_train",
                                                                     "Augmentation Parameters Anisotropic.csv",
-                                                                    128,
-                                                                    180, 56)
+                                                                         128,
+                                                                         180, 56)
     train_loader = torch.utils.data.DataLoader(dataset=unsupervised_train_dataset, batch_size=2,
                                                num_workers=16, pin_memory=True, persistent_workers=True)
     callbacks = []

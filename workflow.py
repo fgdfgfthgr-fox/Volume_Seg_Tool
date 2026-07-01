@@ -12,8 +12,9 @@ import multiprocessing
 import lightning.pytorch as pl
 
 from torch.utils.data import DataLoader
+
 from pl_module_dit import PLModule
-from Components import DataComponents
+from Components import Utils, Datasets, Datasets_Chunked
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks import StochasticWeightAveraging
@@ -46,9 +47,9 @@ def generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, pers
                                          args.hw_size, args.d_size, args.train_key_name)
     else:
         unsupervised_train_dataset = None
-    train_dataset = DataComponents.CollectedDataset(train_dataset, unsupervised_train_dataset)
-    sampler = DataComponents.CollectedSampler(train_dataset, args.batch_size, unsupervised_train_dataset)
-    collate_fn = DataComponents.custom_collate
+    train_dataset = Utils.CollectedDataset(train_dataset, unsupervised_train_dataset)
+    sampler = Utils.CollectedSampler(train_dataset, args.batch_size, unsupervised_train_dataset)
+    collate_fn = Utils.custom_collate
     train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
                               collate_fn=collate_fn, sampler=sampler,
                               num_workers=desired_num_workers, persistent_workers=persistent_workers)
@@ -161,15 +162,15 @@ def stitch(indexed_files, image_meta, current_offset, instance_mode):
     total_multiplier = depth_multiplier * height_multiplier * width_multiplier
     dim_info = depth, height, width, depth_multiplier, height_multiplier, width_multiplier, total_multiplier
     if instance_mode:
-        stitched_volume_p = DataComponents.stitch_output_volume(indexed_files[0], dim_info, args.predict_hw_size,
-                                                              args.predict_hw_size, current_offset)
-        stitched_volume_c = DataComponents.stitch_output_volume(indexed_files[1], dim_info, args.predict_hw_size,
-                                                              args.predict_hw_size, current_offset)
+        stitched_volume_p = Utils.stitch_output_volume(indexed_files[0], dim_info, args.predict_hw_size,
+                                                       args.predict_depth_size, current_offset)
+        stitched_volume_c = Utils.stitch_output_volume(indexed_files[1], dim_info, args.predict_hw_size,
+                                                       args.predict_depth_size, current_offset)
         current_offset += total_multiplier
         return ((stitched_volume_p, out_file_name), (stitched_volume_c, out_file_name)), current_offset
     else:
-        stitched_volume = DataComponents.stitch_output_volume(indexed_files[0], dim_info, args.predict_hw_size,
-                                                              args.predict_hw_size, current_offset)
+        stitched_volume = Utils.stitch_output_volume(indexed_files, dim_info, args.predict_hw_size,
+                                                     args.predict_depth_size, current_offset)
         current_offset += total_multiplier
         return (stitched_volume, out_file_name), current_offset
 
@@ -180,11 +181,11 @@ def save_stitched_volume(stitched_volume, instance_mode):
     else:
         mode = 'simple'
     if instance_mode:
-        DataComponents.predictions_to_final_img_instance(stitched_volume[0], stitched_volume[1], direc=args.result_folder_path,
-                                                         segmentation_mode=mode, dynamic=args.watershed_dynamic,
-                                                         pixel_reclaim=args.pixel_reclaim)
+        Utils.predictions_to_final_img_instance(stitched_volume[0], stitched_volume[1], direc=args.result_folder_path,
+                                                segmentation_mode=mode, dynamic=args.watershed_dynamic,
+                                                pixel_reclaim=args.pixel_reclaim)
     else:
-        DataComponents.predictions_to_final_img(stitched_volume, direc=args.result_folder_path)
+        Utils.predictions_to_final_img(stitched_volume, direc=args.result_folder_path)
 
 def delete_indexed_files(indexed_files):
     for _, file_path in indexed_files:
@@ -207,23 +208,23 @@ def start_work_flow(args):
         #torch.cuda.tunable.enable()
         #torch.cuda.tunable.set_filename('TunableOp_results')
     if args.train_offload:
-        TD = DataComponents.TrainDatasetChunked
-        UTD = DataComponents.UnsupervisedDatasetChunked
+        TD = Datasets_Chunked.TrainDatasetChunked
+        UTD = Datasets_Chunked.UnsupervisedDatasetChunked
     else:
-        TD = DataComponents.TrainDataset
-        UTD = DataComponents.UnsupervisedDataset
+        TD = Datasets.TrainDataset
+        UTD = Datasets.UnsupervisedDataset
     if args.val_offload:
-        VD = DataComponents.ValDatasetChunked
+        VD = Datasets_Chunked.ValDatasetChunked
     else:
-        VD = DataComponents.ValDataset
+        VD = Datasets.ValDataset
     if args.test_offload:
-        TeD = DataComponents.ValDatasetChunked
+        TeD = Datasets_Chunked.ValDatasetChunked
     else:
-        TeD = DataComponents.ValDataset
+        TeD = Datasets.ValDataset
     if args.predict_offload:
-        PD = DataComponents.PredictDatasetChunked
+        PD = Datasets_Chunked.PredictDatasetChunked
     else:
-        PD = DataComponents.PredictDataset
+        PD = Datasets.PredictDataset
 
     if 'Semantic' in args.segmentation_mode:
         instance_mode = False
@@ -246,13 +247,13 @@ def start_work_flow(args):
         start_time = time.time()
         meta_info = load_data_and_predict(PD)
         if instance_mode:
-            indexed_files_p = DataComponents.load_indexed_files_for_stitching("Pixels_")
-            indexed_files_c = DataComponents.load_indexed_files_for_stitching("Contour_")
+            indexed_files_p = Utils.load_indexed_files_for_stitching("Pixels_")
+            indexed_files_c = Utils.load_indexed_files_for_stitching("Contour_")
             indexed_files = (indexed_files_p, indexed_files_c)
         else:
-            indexed_files = DataComponents.load_indexed_files_for_stitching("Semantic_")
+            indexed_files = Utils.load_indexed_files_for_stitching("Semantic_")
+        current_offset = 0
         for image_meta in meta_info:
-            current_offset = 0
             stitched_volume, current_offset = stitch(indexed_files, image_meta, current_offset, instance_mode)
             save_stitched_volume(stitched_volume, instance_mode)
         end_time = time.time()
@@ -313,10 +314,10 @@ if __name__ == "__main__":
     parser.add_argument("--predict_depth_overlap", type=int, default=4, help="Expansion in Depth for each Patch (px) during prediction")
     parser.add_argument("--result_folder_path", type=str, default="Datasets/result", help="Result Folder Path")
     parser.add_argument("--mid_visualization", action="store_false", help="Store False, so this will disable Mid Visualization")
-    parser.add_argument("--train_offload", action="store_true", help="Enable disk offloading of training data")
-    parser.add_argument("--val_offload", action="store_true", help="Enable disk offloading of validation data")
+    parser.add_argument("--train_offload", action="store_false", help="Enable disk offloading of training data")
+    parser.add_argument("--val_offload", action="store_false", help="Enable disk offloading of validation data")
     parser.add_argument("--test_offload", action="store_true", help="Enable disk offloading of test data")
-    parser.add_argument("--predict_offload", action="store_true", help="Enable disk offloading of prediction data")
+    parser.add_argument("--predict_offload", action="store_false", help="Enable disk offloading of prediction data")
     parser.add_argument("--model_architecture", type=str, default="SwishTransformer",
                         help="Model Architecture")
     parser.add_argument("--model_depth_multiplier", type=int, default=1, help="Model Depth multiplier")

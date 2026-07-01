@@ -8,7 +8,8 @@ import torch.nn.functional as F
 
 from joblib import Parallel, delayed
 from scipy.ndimage import distance_transform_edt
-
+from torch.nn import functional as F
+from torchvision.transforms.v2 import functional as T_F
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 # Various customize image augmentation implementations specialised in 4 dimensional tensors.
@@ -111,7 +112,7 @@ def gaussian_blur_3d(tensor, kernel_size=3, sigma=0.8):
     kernel = kernel / kernel.sum()
 
     # Extend the kernel to the 5D filter required for torch.nn.functional.conv3d
-    kernel = kernel.unsqueeze(0).unsqueeze(0).repeat(input_channels, input_channels, 1, 1, 1).to(torch.float16)
+    kernel = kernel.unsqueeze(0).unsqueeze(0).repeat(input_channels, input_channels, 1, 1, 1).to(torch.float32)
 
     # Apply 3D convolution
     blurred_output = torch.nn.functional.conv3d(tensor.unsqueeze(0), kernel, padding=kernel_size // 2).squeeze(0)
@@ -175,10 +176,10 @@ def rotate_4d_tensor(tensor, planes=['xy', 'xz', 'yz'], angles=[0., 0., 0.],
     affine_4x4[:3, :3] = total_rotation
 
     # Create the affine grid
-    grid = F.affine_grid(affine_4x4[:3, :].unsqueeze(0), tensor.unsqueeze(0).shape, align_corners=False).to(torch.float16)
+    grid = F.affine_grid(affine_4x4[:3, :].unsqueeze(0), tensor.unsqueeze(0).shape, align_corners=False).to(torch.float32)
 
     # Apply the grid sample using the specified interpolation
-    rotated = F.grid_sample(tensor.to(torch.float16).unsqueeze(0), grid, mode=interpolation, padding_mode='reflection', align_corners=False)
+    rotated = F.grid_sample(tensor.to(torch.float32).unsqueeze(0), grid, mode=interpolation, padding_mode='reflection', align_corners=False)
 
     return rotated.squeeze(0)
 
@@ -262,7 +263,7 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
                                        w_offset:w_offset + width]
             if zarr:
                 cropped_tensor = torch.from_numpy(cropped_tensor)
-            cropped_tensors.append(cropped_tensor.to(torch.float16, copy=False))
+            cropped_tensors.append(cropped_tensor.to(torch.float32, copy=False))
         if zarr:
             cropped_tensors[0] = (cropped_tensors[0] - img_mean) / img_std
         return cropped_tensors
@@ -614,11 +615,11 @@ def gaussian_noise(input_tensor, strength=0.05, octaves=3):
         output_tensor (torch.Tensor)
     """
     origin_shape = input_tensor.shape
-    noises = torch.zeros_like(input_tensor, dtype=torch.float16)
+    noises = torch.zeros_like(input_tensor, dtype=torch.float32)
     for octave in range(0, octaves):
         # Since we are only dealing with images of single channel, don't worry the channel dim got downscaled as well.
         shape = [max(int(shape / 2**octave), 1) for shape in origin_shape]
-        noise = (torch.randn(shape, dtype=torch.float16) * random.uniform(0.5, 1.5) * (0.5**octave) * strength).unsqueeze(0)
+        noise = (torch.randn(shape, dtype=torch.float32) * random.uniform(0.5, 1.5) * (0.5**octave) * strength).unsqueeze(0)
         noises += F.interpolate(noise, origin_shape[1:], mode='trilinear', align_corners=False).squeeze(0)
     input_tensor += noises
     input_tensor = torch.clamp(input_tensor, -4, 4)
@@ -650,3 +651,220 @@ def remove_black_borders(volumes):
     if non_list:
         return volumes[0]
     return volumes
+
+
+def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
+              hw_size, d_size, foreground_threshold, background_threshold, zarr=False, img_mean=0, img_std=1):
+    """
+    Apply Image Augmentations to an image tensor and its label tensor using the augmentation parameters from a DataFrame.
+    Can have an optional contour tensor processed as well.
+
+    Args:
+        img_tensor (np.Array): Image tensor, should be float32.
+        lab_tensor (np.Array): Label tensor, should be the same shape as img_tensor. Bool.
+        contour_tensor (torch.Tensor or None): Optional Contour tensor, should be the same shape as img_tensor. Bool.
+        augmentation_params (DataFrame): The DataFrame which the augmentation parameters will be used from.
+        hw_size (int): The height and width of each generated patch.
+        d_size (int): The depth of each generated patch.
+        foreground_threshold (float): Proportion of desired minimal foreground pixels in the produced label tensor.
+        background_threshold (float): Proportion of desired minimal background pixels in the produced label tensor.
+
+    Returns:
+        Transformed Image and Label Tensor.
+    """
+    rotation_methods = []
+    rotation_angles = []
+    for _, row in augmentation_params.iterrows():
+        augmentation_method, prob = row['Augmentation'], row['Probability']
+        if augmentation_method == 'Rotate xy' and random.random() < prob:
+            rotation_methods.append('xy')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate xz' and random.random() < prob:
+            rotation_methods.append('xz')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate yz' and random.random() < prob:
+            rotation_methods.append('yz')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rescaling':
+            if random.random() < prob:
+                scale = random.uniform(row['Low Bound'], row['High Bound'])
+                if contour_tensor is not None:
+                    img_tensor, lab_tensor, contour_tensor = custom_rand_crop_rotate(
+                        [img_tensor, lab_tensor, contour_tensor],
+                        int(scale * d_size), int(scale * hw_size), int(scale * hw_size),
+                        rotation_angles, rotation_methods,
+                        ('bilinear', 'nearest', 'nearest'),
+                        minimal_foreground=foreground_threshold,
+                        minimal_background=background_threshold,
+                        zarr=zarr, img_mean=img_mean, img_std=img_std)
+                    contour_tensor = contour_tensor[None, :]
+                    contour_tensor = F.interpolate(contour_tensor, size=(d_size, hw_size, hw_size),
+                                                   mode="nearest-exact")
+                    contour_tensor = torch.squeeze(contour_tensor, 0)
+                else:
+                    img_tensor, lab_tensor = custom_rand_crop_rotate([img_tensor, lab_tensor],
+                                                                         int(scale * d_size),
+                                                                         int(scale * hw_size),
+                                                                         int(scale * hw_size),
+                                                                         rotation_angles, rotation_methods,
+                                                                         ('bilinear', 'nearest'),
+                                                                         minimal_foreground=foreground_threshold,
+                                                                         minimal_background=background_threshold,
+                                                                         zarr=zarr, img_mean=img_mean, img_std=img_std)
+                img_tensor = img_tensor[None, :]
+                img_tensor = F.interpolate(img_tensor, size=(d_size, hw_size, hw_size), mode="trilinear",
+                                           align_corners=True)
+                lab_tensor = lab_tensor[None, :]
+                if lab_tensor.dtype != torch.uint8:
+                    lab_tensor = nearest_interpolate(lab_tensor, (d_size, hw_size, hw_size))
+                else:
+                    lab_tensor = F.interpolate(lab_tensor, size=(d_size, hw_size, hw_size), mode="nearest-exact")
+                img_tensor = torch.squeeze(img_tensor, 0)
+                lab_tensor = torch.squeeze(lab_tensor, 0)
+            else:
+                if contour_tensor is not None:
+                    img_tensor, lab_tensor, contour_tensor = custom_rand_crop_rotate(
+                        [img_tensor, lab_tensor, contour_tensor],
+                        d_size, hw_size, hw_size,
+                        rotation_angles, rotation_methods,
+                        ('bilinear', 'nearest', 'nearest'),
+                        minimal_foreground=foreground_threshold, minimal_background=background_threshold,
+                        zarr=zarr, img_mean=img_mean, img_std=img_std)
+                else:
+                    img_tensor, lab_tensor = custom_rand_crop_rotate(
+                        [img_tensor, lab_tensor],
+                        d_size, hw_size, hw_size,
+                        rotation_angles, rotation_methods,
+                        ('bilinear', 'nearest'),
+                        minimal_foreground=foreground_threshold, minimal_background=background_threshold,
+                        zarr=zarr, img_mean=img_mean, img_std=img_std)
+        elif augmentation_method == 'Edge Replicate Pad' and random.random() < prob:
+            if contour_tensor is not None:
+                img_tensor, lab_tensor, contour_tensor = edge_replicate_pad((img_tensor, lab_tensor, contour_tensor), row['Value'])
+            else:
+                img_tensor, lab_tensor = edge_replicate_pad((img_tensor, lab_tensor), row['Value'])
+        elif augmentation_method == 'Vertical Flip' and random.random() < prob:
+            img_tensor, lab_tensor = T_F.vflip(img_tensor), T_F.vflip(lab_tensor)
+            if contour_tensor is not None:
+                contour_tensor = T_F.vflip(contour_tensor)
+        elif augmentation_method == 'Horizontal Flip' and random.random() < prob:
+            img_tensor, lab_tensor = T_F.hflip(img_tensor), T_F.hflip(lab_tensor)
+            if contour_tensor is not None:
+                contour_tensor = T_F.hflip(contour_tensor)
+        elif augmentation_method == 'Depth Flip' and random.random() < prob:
+            img_tensor, lab_tensor = img_tensor.flip([1]), lab_tensor.flip([1])
+            if contour_tensor is not None:
+                contour_tensor = contour_tensor.flip([1])
+        elif augmentation_method == 'Simulate Low Resolution' and random.random() < prob:
+            img_tensor = sim_low_res(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gaussian Noise' and random.random() < prob:
+            img_tensor = gaussian_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gaussian Blur' and random.random() < prob:
+            img_tensor = gaussian_blur_3d(img_tensor, int(row['Value']),
+                                              random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gradient Gamma' and random.random() < prob:
+            img_tensor = random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), 'gamma')
+        elif augmentation_method == 'Gradient Contrast' and random.random() < prob:
+            img_tensor = random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), 'contrast')
+        elif augmentation_method == 'Gradient Brightness' and random.random() < prob:
+            img_tensor = random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), 'brightness')
+        elif augmentation_method == 'Adjust Gamma' and random.random() < prob:
+            img_tensor = adj_gamma(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Adjust Contrast' and random.random() < prob:
+            img_tensor = adj_contrast(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Adjust Brightness' and random.random() < prob:
+            img_tensor = adj_brightness(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Salt And Pepper' and random.random() < prob:
+            img_tensor = salt_and_pepper_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Label Blur' and random.random() < prob:
+            lab_tensor = gaussian_blur_3d(lab_tensor, int(row['Value']),
+                                              random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Contour Blur' and random.random() < prob and contour_tensor is not None:
+            contour_tensor = gaussian_blur_3d(contour_tensor, int(row['Value']),
+                                                  random.uniform(row['Low Bound'], row['High Bound']))
+    if contour_tensor is not None:
+        return img_tensor, lab_tensor, contour_tensor
+    else:
+        return img_tensor, lab_tensor
+
+
+def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size, zarr=False, img_mean=0, img_std=1):
+    """
+        Apply Image Augmentations to an image tensor using the augmentation parameters from a DataFrame.
+
+        Args:
+            img_tensor (torch.Tensor) Image tensor, should be float32.
+            augmentation_params (DataFrame): The DataFrame which the augmentation parameters will be used from.
+            hw_size (int): The height and width of each generated patch.
+            d_size (int): The depth of each generated patch.
+
+        Returns:
+            Transformed Image Tensor.
+        """
+    rotation_methods = []
+    rotation_angles = []
+    for _, row in augmentation_params.iterrows():
+        augmentation_method, prob = row['Augmentation'], row['Probability']
+        if augmentation_method == 'Rotate xy' and random.random() < prob:
+            rotation_methods.append('xy')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate xz' and random.random() < prob:
+            rotation_methods.append('xz')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rotate yz' and random.random() < prob:
+            rotation_methods.append('yz')
+            rotation_angles.append((row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Rescaling':
+            if random.random() < prob:
+                scale = random.uniform(row['Low Bound'], row['High Bound'])
+                img_tensor = custom_rand_crop_rotate(
+                    [img_tensor],
+                    int(scale * d_size),
+                    int(scale * hw_size),
+                    int(scale * hw_size),
+                    rotation_angles, rotation_methods,
+                    ('bilinear',),
+                    ensure_bothground=False, zarr=zarr, img_mean=img_mean, img_std=img_std)
+                img_tensor = img_tensor[0]
+                img_tensor = img_tensor[None, :]
+                img_tensor = F.interpolate(img_tensor, size=(d_size, hw_size, hw_size), mode="trilinear",
+                                           align_corners=True)
+                img_tensor = torch.squeeze(img_tensor, 0)
+            else:
+                img_tensor = custom_rand_crop_rotate(
+                    [img_tensor],
+                    d_size, hw_size, hw_size,
+                    rotation_angles, rotation_methods,
+                    ('bilinear',),
+                    ensure_bothground=False, zarr=zarr, img_mean=img_mean, img_std=img_std)
+                img_tensor = img_tensor[0]
+        elif augmentation_method == 'Edge Replicate Pad' and random.random() < prob:
+            img_tensor = edge_replicate_pad((img_tensor,), row['Value'])
+        elif augmentation_method == 'Vertical Flip' and random.random() < prob:
+            img_tensor = T_F.vflip(img_tensor)
+        elif augmentation_method == 'Horizontal Flip' and random.random() < prob:
+            img_tensor = T_F.hflip(img_tensor)
+        elif augmentation_method == 'Depth Flip' and random.random() < prob:
+            img_tensor = img_tensor.flip([1])
+        elif augmentation_method == 'Simulate Low Resolution' and random.random() < prob:
+            img_tensor = sim_low_res(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gaussian Noise' and random.random() < prob:
+            img_tensor = gaussian_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gaussian Blur' and random.random() < prob:
+            img_tensor = gaussian_blur_3d(img_tensor, int(row['Value']),
+                                              random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Gradient Gamma' and random.random() < prob:
+            img_tensor = random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), 'gamma')
+        elif augmentation_method == 'Gradient Contrast' and random.random() < prob:
+            img_tensor = random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), 'contrast')
+        elif augmentation_method == 'Gradient Brightness' and random.random() < prob:
+            img_tensor = random_gradient(img_tensor, (row['Low Bound'], row['High Bound']), 'brightness')
+        elif augmentation_method == 'Adjust Gamma' and random.random() < prob:
+            img_tensor = adj_gamma(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Adjust Contrast' and random.random() < prob:
+            img_tensor = adj_contrast(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Adjust Brightness' and random.random() < prob:
+            img_tensor = adj_brightness(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+        elif augmentation_method == 'Salt And Pepper' and random.random() < prob:
+            img_tensor = salt_and_pepper_noise(img_tensor, random.uniform(row['Low Bound'], row['High Bound']))
+    return img_tensor

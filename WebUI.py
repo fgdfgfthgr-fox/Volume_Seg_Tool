@@ -8,8 +8,7 @@ import tkinter as tk
 import matplotlib.pyplot as plt
 import numpy as np
 
-from Components import DataComponents
-from Components import Metrics
+from Components import Utils, Metrics, Datasets
 from tkinter import filedialog
 from read_tensorboard import read_all_tensorboard_event_files, write_to_excel
 from torchvision.datasets.folder import has_file_allowed_extension
@@ -231,8 +230,8 @@ def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_cs
     else:
         instance_mode = True
         img_each_col = 3
-    dataset = DataComponents.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size,
-                                          instance_mode, contour_map_width, train_key_name)
+    dataset = Components.Datasets.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size,
+                                               instance_mode, contour_map_width, train_key_name)
     if pairing_samples:
         types = [' - positive', ' - negative']
     else:
@@ -443,7 +442,7 @@ if __name__ == "__main__":
 
                     def calculate_val_num_patch(val_dataset_path, hw_size, d_size):
                         print('Calculating the number of patches for validation set!')
-                        file_list = DataComponents.make_dataset_tv(val_dataset_path)
+                        file_list = DataComponents.make_label_pair_tv(val_dataset_path)
                         counter = 0
                         for file in file_list:
                             file = DataComponents.multiple_loader(file[0], val_key_name)
