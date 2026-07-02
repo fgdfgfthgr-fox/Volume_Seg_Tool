@@ -230,8 +230,8 @@ def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_cs
     else:
         instance_mode = True
         img_each_col = 3
-    dataset = Components.Datasets.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size,
-                                               instance_mode, contour_map_width, train_key_name)
+    dataset = Datasets.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size,
+                                    instance_mode, contour_map_width, train_key_name)
     if pairing_samples:
         types = [' - positive', ' - negative']
     else:
@@ -297,8 +297,8 @@ available_architectures = ['SwinTransformer']
 
 
 def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_threshold):
-    ground_truth = DataComponents.path_to_array(groundtruth_path, label=True)
-    predicted = DataComponents.path_to_array(predicted_path, label=True)
+    ground_truth = Utils.path_to_array(groundtruth_path, label=True)
+    predicted = Utils.path_to_array(predicted_path, label=True)
     if stat_mode == 'Semantic':
         ground_truth, predicted = torch.clamp(torch.from_numpy(ground_truth), 0, 1), torch.clamp(torch.from_numpy(predicted), 0, 1)
         intersection = 2 * torch.sum(ground_truth * predicted) + 0.001
@@ -442,10 +442,10 @@ if __name__ == "__main__":
 
                     def calculate_val_num_patch(val_dataset_path, hw_size, d_size):
                         print('Calculating the number of patches for validation set!')
-                        file_list = DataComponents.make_label_pair_tv(val_dataset_path)
+                        file_list = Utils.make_label_pair_tv(val_dataset_path)
                         counter = 0
                         for file in file_list:
-                            file = DataComponents.multiple_loader(file[0], val_key_name)
+                            file = Utils.multiple_loader(file[0], val_key_name)
                             depth, height, width = file.shape
                             depth_multiplier = max(math.ceil(depth / d_size), 1)
                             height_multiplier = max(math.ceil(height / hw_size), 1)
@@ -846,8 +846,7 @@ if __name__ == "__main__":
                 #stop_button.click(stop_training_callback)
                 stop_button.click(command_executor.kill_command)
 
-        '''
-        with gr.Tab("Activations Visualisation"):
+        '''with gr.Tab("Activations Visualisation"):
             gr.Markdown("Given an example image and a trained model weight, visualize the model output in each activation layers.")
             gr.Markdown("As well as the sigmoid layer (the layer right before the output).")
             with gr.Row():
