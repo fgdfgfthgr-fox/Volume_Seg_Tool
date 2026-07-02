@@ -1,5 +1,6 @@
 import numpy as np
-from numba import njit, prange
+from numba import njit, prange, jit, types
+from numba.typed import List
 from heapq import heappush, heappop
 
 
@@ -12,6 +13,7 @@ def geodesic_reconstruction_by_erosion(mask, dynamic):
         print(f"Iteration {i} of Geodesic Reconstruction...")
         result, changed = reconstruct_forward_scan(mask, result, changed)
         result, changed = reconstruct_backward_scan(mask, result, changed)
+        i += 1
     return result
 
 
