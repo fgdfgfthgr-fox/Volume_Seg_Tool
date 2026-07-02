@@ -6,9 +6,11 @@ VST is also available with [SBGrid](https://sbgrid.org/software/titles/vst)!
 
 Supporting Operating Systems includes: Windows and Linux.
 
-## Download Link (latest release: 0.12.1): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.12.1/VST.Release.v0.12.1.zip)
+## Download Link (latest release: 0.13.0): [Link](https://github.com/fgdfgfthgr-fox/Volume_Seg_Tool/releases/download/v0.13.0/VST.Release.v0.13.0.zip)
 
 ## Latest major changes
+2/7/2026: Massively reduces RAM consumption during prediction! It should now actually work with larger-than-RAM datasets.
+
 2/03/2026: VST switched its network backbone from U-Net to Swin-transformer,
 which should take way less video memory and at the same time being faster.
 
