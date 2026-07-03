@@ -457,12 +457,13 @@ def perform_watershed(segmentation, dynamic):
     """
     Perform watershed segmentation on the pre‑segmented mask.
     """
-    distance_map = Morph.chamfer_distance_transform_parallel(segmentation)
+    distance_map = Morph.chamfer_distance_transform_parallel(segmentation, dtype=np.uint16, num_core=min(max((os.cpu_count()//2)-1, 1), 32))
     distance_map = Morph.inverter(distance_map)
 
     hmin = Morph.geodesic_reconstruction_by_erosion(distance_map, dynamic)
-    hmin = morph.local_minima(hmin).astype(np.uint16)
-    label(hmin, output=hmin)
+    #hmin = morph.local_minima(hmin).astype(np.uint16)
+    #label(hmin, output=hmin)
+    hmin = Morph.label_h_minima(hmin, distance_map, dynamic)
     segmentation = Morph.marker_controlled_watershed(distance_map, markers=hmin, mask=segmentation)
     return segmentation
 

@@ -19,18 +19,31 @@ def geodesic_reconstruction_by_erosion(mask, dynamic):
 
 @njit
 def reconstruct_forward_scan(mask, result, changed):
+    # 26‑connectivity forward pass: neighbours with lower raster indices
     for z in range(mask.shape[0]):
         for y in range(mask.shape[1]):
             for x in range(mask.shape[2]):
                 current_value = result[z, y, x]
                 min_value = current_value
 
-                if x > 0:
-                    min_value = min(min_value, result[z, y, x-1])
-                if y > 0:
-                    min_value = min(min_value, result[z, y-1, x])
-                if z > 0:
-                    min_value = min(min_value, result[z-1, y, x])
+                # All 13 neighbours that are "before" (z,y,x) in raster order
+                for dz in (-1, 0, 1):
+                    nz = z + dz
+                    if nz < 0 or nz >= mask.shape[0]:
+                        continue
+                    for dy in (-1, 0, 1):
+                        ny = y + dy
+                        if ny < 0 or ny >= mask.shape[1]:
+                            continue
+                        for dx in (-1, 0, 1):
+                            if dz == 0 and dy == 0 and dx == 0:
+                                continue
+                            # Condition: nz < z, or (nz == z and ny < y), or (nz == z and ny == y and nx < x)
+                            if dz < 0 or (dz == 0 and dy < 0) or (dz == 0 and dy == 0 and dx < 0):
+                                nx = x + dx
+                                if nx < 0 or nx >= mask.shape[2]:
+                                    continue
+                                min_value = min(min_value, result[nz, ny, nx])
 
                 min_value = max(min_value, mask[z, y, x])
                 if min_value < current_value:
@@ -41,18 +54,31 @@ def reconstruct_forward_scan(mask, result, changed):
 
 @njit
 def reconstruct_backward_scan(mask, result, changed):
+    # 26‑connectivity backward pass: neighbours with higher raster indices
     for z in range(mask.shape[0] - 1, -1, -1):
         for y in range(mask.shape[1] - 1, -1, -1):
             for x in range(mask.shape[2] - 1, -1, -1):
                 current_value = result[z, y, x]
                 min_value = current_value
 
-                if x < mask.shape[2] - 1:
-                    min_value = min(min_value, result[z, y, x+1])
-                if y < mask.shape[1] - 1:
-                    min_value = min(min_value, result[z, y+1, x])
-                if z < mask.shape[0] - 1:
-                    min_value = min(min_value, result[z+1, y, x])
+                # All 13 neighbours that are "after" (z,y,x) in raster order
+                for dz in (-1, 0, 1):
+                    nz = z + dz
+                    if nz < 0 or nz >= mask.shape[0]:
+                        continue
+                    for dy in (-1, 0, 1):
+                        ny = y + dy
+                        if ny < 0 or ny >= mask.shape[1]:
+                            continue
+                        for dx in (-1, 0, 1):
+                            if dz == 0 and dy == 0 and dx == 0:
+                                continue
+                            # Condition: nz > z, or (nz == z and ny > y), or (nz == z and ny == y and nx > x)
+                            if dz > 0 or (dz == 0 and dy > 0) or (dz == 0 and dy == 0 and dx > 0):
+                                nx = x + dx
+                                if nx < 0 or nx >= mask.shape[2]:
+                                    continue
+                                min_value = min(min_value, result[nz, ny, nx])
 
                 min_value = max(min_value, mask[z, y, x])
                 if min_value < current_value:
@@ -157,6 +183,7 @@ def cham_backward_scan(img, result):
 def chamfer_distance_transform_parallel(img, dtype, num_core=16):
     """
     Parallel chamfer distance transform with early stopping.
+    Taken from the paper "PARALLEL IMPLEMENTATION OF GEODESIC DISTANCE TRANSFORM WITH APPLICATION IN SUPERPIXEL SEGMENTATION"
     """
     Z, Y, X = img.shape
     num_bands = num_core
@@ -243,6 +270,70 @@ def chamfer_distance_transform_parallel(img, dtype, num_core=16):
 
     return result
 
+@njit
+def label_h_minima(reconstructed, original, threshold):
+    """
+    Find connected components of pixels where (reconstructed - original) >= threshold,
+    and label them with unique integers (0 for background).
+
+    Parameters
+    ----------
+    reconstructed : 3D ndarray
+        Result of reconstruction by erosion (e.g. from geodesic_reconstruction_by_erosion).
+    original : 3D ndarray
+        The mask image used in the reconstruction.
+    threshold : int or float
+        The h value (dynamic) used in reconstruction. Only residual >= threshold are kept.
+
+    Returns
+    -------
+    labels : 3D ndarray of int32
+        Labelled regions (0 = background, positive integers = individual minima).
+    """
+    Z, Y, X = reconstructed.shape
+    labels = np.zeros((Z, Y, X), dtype=np.uint16)
+
+    dirs = ((-1, -1, -1), (-1, -1, 0), (-1, -1, 1),
+     (-1, 0, -1), (-1, 0, 0), (-1, 0, 1),
+     (-1, 1, -1), (-1, 1, 0), (-1, 1, 1),
+     (0, -1, -1), (0, -1, 0), (0, -1, 1),
+     (0, 0, -1), (0, 0, 1), (0, 1, -1),
+     (0, 1, 0), (0, 1, 1), (1, -1, -1),
+     (1, -1, 0), (1, -1, 1), (1, 0, -1),
+     (1, 0, 0), (1, 0, 1), (1, 1, -1),
+     (1, 1, 0), (1, 1, 1))
+
+    current_label = 0
+
+    for z in range(Z):
+        for y in range(Y):
+            for x in range(X):
+                # Skip already labelled or pixels that do not satisfy the condition
+                if labels[z, y, x] != 0:
+                    continue
+                if reconstructed[z, y, x] - original[z, y, x] < threshold:
+                    continue
+
+                # Start a new region
+                current_label += 1
+                stack = [(z, y, x)]
+                labels[z, y, x] = current_label
+
+                # Flood fill (DFS) – uses a list as a stack
+                while stack:
+                    cz, cy, cx = stack.pop()
+                    for dz, dy, dx in dirs:
+                        nz = cz + dz
+                        ny = cy + dy
+                        nx = cx + dx
+                        if 0 <= nz < Z and 0 <= ny < Y and 0 <= nx < X:
+                            if labels[nz, ny, nx] == 0:
+                                if reconstructed[nz, ny, nx] - original[nz, ny, nx] >= threshold:
+                                    labels[nz, ny, nx] = current_label
+                                    stack.append((nz, ny, nx))
+
+    return labels
+
 def __heapify_markers_3d(markers, image):
     """Create a priority queue heap with the markers on it for 3D."""
     stride = np.array(image.strides, dtype=np.uint32) // image.itemsize
@@ -267,7 +358,8 @@ def _watershed_loop(pq, labels, connect_increments, mask, image, age):
     max_x, max_y, max_z = labels.shape
     total_pixels = image.size if mask is None else np.count_nonzero(mask)
     processed = 0
-    print_interval = max(1, total_pixels // 100)  # print every 1%
+    print_interval = max(1, total_pixels // 20)  # print every 5%
+    print(f"A total of {total_pixels} needs to be processed.")
     while len(pq):
         pix_value, pix_age, _, pix_x, pix_y, pix_z = heappop(pq)
         processed += 1
