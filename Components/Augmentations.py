@@ -82,7 +82,7 @@ def adj_brightness(tensor, brightness):
     Returns:
         torch.Tensor: Brightness-adjusted 3D tensor.
     """
-    return torch.clamp(brightness + tensor)
+    return brightness + tensor
 
 
 def gaussian_blur_3d(tensor, kernel_size=3, sigma=0.8):
@@ -341,9 +341,9 @@ def random_gradient(tensor, range=(0.5, 1.5), mode='gamma'):
         tensor = (tensor * (tensor_max - tensor_min)) + tensor_min
         return tensor
     elif mode == 'contrast':
-        return torch.clamp(gradient * tensor, -4, 4)
+        return gradient * tensor
     elif mode == 'brightness':
-        return torch.clamp(gradient + tensor, -4, 4)
+        return gradient + tensor
 
 
 def salt_and_pepper_noise(tensor, prob=0.01):
@@ -577,7 +577,7 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
     Can have an optional contour tensor processed as well.
 
     Args:
-        img_tensor (np.Array): Image tensor, should be float32.
+        img_tensor (np.Array): Image tensor, should be float16 or float32.
         lab_tensor (np.Array): Label tensor, should be the same shape as img_tensor. Bool.
         contour_tensor (torch.Tensor or None): Optional Contour tensor, should be the same shape as img_tensor. Bool.
         augmentation_params (DataFrame): The DataFrame which the augmentation parameters will be used from.
@@ -713,7 +713,7 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size, zar
         Apply Image Augmentations to an image tensor using the augmentation parameters from a DataFrame.
 
         Args:
-            img_tensor (torch.Tensor) Image tensor, should be float32.
+            img_tensor (torch.Tensor) Image tensor, should be float16 or float32.
             augmentation_params (DataFrame): The DataFrame which the augmentation parameters will be used from.
             hw_size (int): The height and width of each generated patch.
             d_size (int): The depth of each generated patch.

@@ -61,9 +61,9 @@ class TrainDataset(torch.utils.data.Dataset):
             background_threshold = 0.01
             foreground_threshold = 0
         idx = math.floor(idx / self.train_multiplier)
-        img_tensor, lab_tensor = self.img_tensors[idx][None, :].to(torch.float32), self.lab_tensors[idx][None, :].to(torch.float32)
+        img_tensor, lab_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :]
         if self.instance_mode:
-            contour_tensor = self.contour_tensors[idx][None, :].to(torch.float32)
+            contour_tensor = self.contour_tensors[idx][None, :]
             img_tensor, lab_tensor, contour_tensor = apply_aug(img_tensor, lab_tensor, contour_tensor,
                                                                self.augmentation_params, self.hw_size, self.d_size,
                                                                foreground_threshold, background_threshold)
@@ -117,7 +117,7 @@ class UnsupervisedDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         idx = math.floor(idx / self.train_multiplier)
-        img_tensor = self.img_tensors[idx][None, :].to(torch.float32)
+        img_tensor = self.img_tensors[idx][None, :]
         img_tensor = apply_aug_unsupervised(img_tensor, self.augmentation_params, self.hw_size, self.d_size)
         return (img_tensor,)
 
@@ -186,12 +186,12 @@ class ValDataset(torch.utils.data.Dataset):
         return self.total_patches
 
     def __getitem__(self, idx):
-        img_tensor, lab_tensor = self.chopped_array_pairs[idx][0][None, :].to(torch.float32), self.chopped_array_pairs[idx][1][None, :].to(torch.float32)
+        img_tensor, lab_tensor = self.chopped_array_pairs[idx][0][None, :], self.chopped_array_pairs[idx][1][None, :]
         if self.instance_mode:
-            contour_tensor = self.chopped_array_pairs[idx][2][None, :].to(torch.float32)
-            return img_tensor, lab_tensor, contour_tensor
+            contour_tensor = self.chopped_array_pairs[idx][2][None, :]
+            return img_tensor.to(torch.float32), lab_tensor.to(torch.float32), contour_tensor.to(torch.float32)
         else:
-            return img_tensor, lab_tensor
+            return img_tensor.to(torch.float32), lab_tensor.to(torch.float32)
 
 
 class PredictDataset(torch.utils.data.Dataset):
