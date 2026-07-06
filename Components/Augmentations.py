@@ -1,3 +1,4 @@
+import os
 import random
 import torch
 import math
@@ -413,60 +414,77 @@ def binarisation(tensor):
     return tensor
 
 
-def instance_contour_transform(input_array, contour_inward=0, contour_outward=1):
+def instance_contour_transform(input_array, contour_outward=1):
     """
-    Transform an instance segmented map into a contour map.\n
+    Transform an instance segmented map into a contour map.
     The contour is generated using morphological erosion and dilation.
 
     Args:
         input_array (np.Array): The input instance segmented map with a shape of (D, H, W).
-                                     0 is background and every other value is a distinct object.
-        contour_inward (int): Size of morphological erosion. No longer used.
+                                0 is background and every other value is a distinct object.
         contour_outward (int): Size of morphological dilation.
 
     Returns:
-        torch.Tensor: Contour map where 0 are background or inside of objects while 1 are the boundaries.
+        np.ndarray: Contour map where 0 are background or inside of objects while 1 are the boundaries.
     """
-    input_array = input_array
-    unique_values = np.unique(input_array)
+    # Get bounding box slices for all labels in a single pass
+    # find_objects returns list of slices, index 0 corresponds to label 1
+    object_slices = scipy.ndimage.find_objects(input_array)
+
+    if not object_slices:  # No objects found
+        return np.zeros_like(input_array, dtype=np.bool_)
+
+    # Prepare list of (label, slice) tuples for non-None slices
+    tasks = [(i + 1, sl) for i, sl in enumerate(object_slices) if sl is not None]
+
+    if not tasks:
+        return np.zeros_like(input_array, dtype=np.bool_)
+
+    # Pre-allocate the output array
     transformed_tensor = np.zeros_like(input_array, dtype=np.bool_)
-    structure = np.ones((3, 3, 3), dtype=transformed_tensor.dtype)
-    def process_object(value):
-        if value == 0:
-            return  # Skip background
+    structure = np.ones((3, 3, 3), dtype=np.bool_)
 
-        # Create a binary mask for the current object
-        object_mask = (input_array == value)
-
-        # Calculate bounding box for the object
-        non_zero_indices = np.nonzero(object_mask)
-        min_indices = np.min(non_zero_indices[0]), np.min(non_zero_indices[1]), np.min(non_zero_indices[2])
-        max_indices = np.max(non_zero_indices[0]), np.max(non_zero_indices[1]), np.max(non_zero_indices[2])
-
+    def process_object(label, sl):
+        """Process a single object given its label and bounding box slice."""
         # Add padding for dilation
         pad = contour_outward
-        min_indices = np.clip(np.array([min_indices[0] - pad, min_indices[1] - pad, min_indices[2] - pad]), 0, None)
-        max_indices = np.clip(np.array([max_indices[0] + pad+1, max_indices[1] + pad+1, max_indices[2] + pad+1]),
-                              None,
-                              np.array([input_array.shape[0], input_array.shape[1], input_array.shape[2]]))
+        # Expand the slice to accommodate dilation
+        expanded_sl = []
+        for i in range(3):
+            start = max(0, sl[i].start - pad)
+            stop = min(input_array.shape[i], sl[i].stop + pad)
+            expanded_sl.append(slice(start, stop))
+        expanded_sl = tuple(expanded_sl)
 
-        # Crop the map according to the bounding box
-        cropped_object = object_mask[min_indices[0]:max_indices[0],
-                                     min_indices[1]:max_indices[1],
-                                     min_indices[2]:max_indices[2]]
+        # Extract expanded region and create mask in expanded space
+        expanded_region = input_array[expanded_sl]
+        expanded_mask = (expanded_region == label)
 
-        # Perform dilation on the cropped object
-        dilated_object = scipy.ndimage.binary_dilation(cropped_object, iterations=contour_outward, structure=structure)
+        # Perform dilation
+        dilated = scipy.ndimage.binary_dilation(
+            expanded_mask,
+            iterations=contour_outward,
+            structure=structure
+        )
 
-        # Mark boundary area as one
-        excluded_regions = (cropped_object == 0) & (dilated_object == 1)
+        # Calculate boundary
+        boundary = dilated & ~expanded_mask
 
-        transformed_tensor[min_indices[0]:max_indices[0],
-                           min_indices[1]:max_indices[1],
-                           min_indices[2]:max_indices[2]] += excluded_regions
+        # Return the slice and boundary for the main thread to write
+        return (expanded_sl, boundary)
 
     # Use joblib to parallelize the loop
-    Parallel(backend='threading', n_jobs=-1)(delayed(process_object)(value) for value in unique_values)
+    n_jobs = min(max((os.cpu_count() // 2) - 1, 1), 32)
+    results = Parallel(backend='threading', n_jobs=n_jobs)(
+        delayed(process_object)(label, sl) for label, sl in tasks
+    )
+
+    # Single-threaded write-back to avoid race conditions
+    for result in results:
+        if result is not None:
+            expanded_sl, boundary = result
+            transformed_tensor[expanded_sl] |= boundary
+
     return transformed_tensor
 
 
