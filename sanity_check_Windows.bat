@@ -43,16 +43,16 @@ if not defined VIRTUAL_ENV (
 :: Start script
 echo Starting the coverage test...
 !python_cmd! -u !workflow_script! %*
-:: set exit_code=%errorlevel%
+set exit_code=%errorlevel%
 
 :: Report the result
-:: echo.
-:: if !exit_code! equ 0 (
+::echo.
+::if !exit_code! equ 0 (
 ::    echo Workflow completed successfully (exit code 0).
 ::) else (
 ::    echo Workflow failed with exit code !exit_code!.
 ::)
 
-echo Press any key to exit...
-pause >nul
-exit /b 0
+echo Testing finished... You can close the terminal now.
+::pause >nul
+::exit 0
