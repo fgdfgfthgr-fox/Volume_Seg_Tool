@@ -1,8 +1,8 @@
-import numba
+from numba import njit
 import numpy as np
 
 
-@numba.njit
+@njit
 def welford_mean_std_w_mask(arr, where=None):
     """Calculate mean and standard deviation of a Numpy array using the Welford algorithm.
 
@@ -44,7 +44,7 @@ def welford_mean_std_w_mask(arr, where=None):
         std = np.sqrt(variance)
         return (mean, std)
 
-@numba.njit
+@njit
 def welford_mean_std(arr):
     """
     Calculate mean and standard deviation of a Numpy array using the Welford algorithm. Doesn't include 0.

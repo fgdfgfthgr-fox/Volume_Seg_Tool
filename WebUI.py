@@ -846,7 +846,8 @@ if __name__ == "__main__":
                 #stop_button.click(stop_training_callback)
                 stop_button.click(command_executor.kill_command)
 
-        '''with gr.Tab("Activations Visualisation"):
+        '''
+        with gr.Tab("Activations Visualisation"):
             gr.Markdown("Given an example image and a trained model weight, visualize the model output in each activation layers.")
             gr.Markdown("As well as the sigmoid layer (the layer right before the output).")
             with gr.Row():
@@ -860,26 +861,8 @@ if __name__ == "__main__":
             slice_to_show = gr.Number(0, label="Depth Slice to show", precision=0, minimum=0)
             outputs = gr.Gallery(label="Output Images", preview=True, selected_index=0)
             start_button = gr.Button("Show Visualization")
-            start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show], outputs=outputs)'''
-
+            start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show], outputs=outputs)
         '''
-        with gr.Tab("Augmentations Visualisation"):
-            gr.Markdown("Given your Training Dataset and Augmentation CSV, show some examples of augmented images that will be fed into the network.")
-            with gr.Row():
-                train_dataset_path_av = gr.Textbox('Datasets/train', label="Path to the Training Dataset")
-                folder_button = gr.Button(document_symbol, scale=0)
-                folder_button.click(open_folder, outputs=train_dataset_path_av)
-            with gr.Row():
-                augmentation_csv_path_av = gr.Textbox('Augmentation Parameters.csv', scale=2, label="Csv File for Data Augmentation Settings")
-                file_button = gr.Button(document_symbol, scale=0)
-                file_button.click(open_file, outputs=augmentation_csv_path_av)
-            with gr.Row():
-                slice_to_show = gr.Number(0, label="Depth Slice to show", precision=0, minimum=0)
-                num_copies = gr.Number(6, label="Number of examples for each file", precision=0, minimum=6)
-            outputs = gr.Gallery(label="Output Images", format="png", preview=True, selected_index=0)
-            start_button = gr.Button("Show Visualization")
-            start_button.click(visualise_augmentations, inputs=[train_dataset_path_av, hw_size, d_size,
-                                                                augmentation_csv_path_av, slice_to_show, num_copies], outputs=outputs)'''
 
         with gr.Tab("Extras"):
             with gr.Accordion("Output TensorBoard log to Excel"):

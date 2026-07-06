@@ -7,7 +7,6 @@ import torch.utils.data
 import torch.utils.tensorboard
 
 import Components.Datasets
-from Components import Utils
 from Components import Metrics
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
@@ -379,7 +378,7 @@ if __name__ == "__main__":
         for precision in precisions:
             for batch_size in batch_sizes:
                 #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
-                train_dataset = Components.Datasets.TrainDataset("Datasets/train",
+                '''train_dataset = Components.Datasets.TrainDataset("Datasets/train",
                                                             "Augmentation Parameters Anisotropic.csv",
                                                                  32,
                                                                  size[0], size[1], False, False, 'default')
@@ -424,4 +423,4 @@ if __name__ == "__main__":
                 trainer.fit(model,
                             #val_dataloaders=val_loader,
                             train_dataloaders=train_loader)
-                torch.cuda.empty_cache()
+                torch.cuda.empty_cache()'''

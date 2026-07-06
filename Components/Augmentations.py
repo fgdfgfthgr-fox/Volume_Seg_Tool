@@ -22,7 +22,7 @@ def sim_low_res(tensor, scale=2):
     interpolation.
 
     Args:
-        tensor (torch.Tensor): Input tensor of shape (C, D, H, W) or (C, H, W).
+        tensor (torch.Tensor): Input tensor of shape (C, D, H, W).
         scale (float): Scale factor for down-sampling and up-sampling. Default is 2.
 
     Returns:
@@ -31,24 +31,21 @@ def sim_low_res(tensor, scale=2):
     shape = tensor.shape
     tensor = tensor.unsqueeze(0)
     tensor = F.interpolate(tensor, scale_factor=scale, mode='nearest-exact')
-    if len(shape) == 4:
-        tensor = F.interpolate(tensor, size=[shape[1], shape[2], shape[3]], mode='trilinear')
-    if len(shape) == 3:
-        tensor = F.interpolate(tensor, size=[shape[1], shape[2]], mode='bicubic')
+    tensor = F.interpolate(tensor, size=[shape[1], shape[2], shape[3]], mode='trilinear')
     return tensor.squeeze(0)
 
 
 def adj_gamma(tensor, gamma, gain=1):
     """
-    Adjust gamma correction for a tensor of shape (C, D, H, W).
+    Adjust gamma correction.
 
     Args:
         tensor (torch.Tensor): Input tensor of shape (C, D, H, W).
         gamma (float): Non-negative gamma correction factor.
-        gain (float, optional): Multiplicative gain. Default is 1.
+        gain (float): Multiplicative gain. Default is 1.
 
     Returns:
-        torch.Tensor: Gamma-adjusted 3D tensor with the same shape as the input.
+        torch.Tensor: Gamma-adjusted 3D tensor.
     """
     min, max = tensor.min(), tensor.max()
     if min - max == 0:
@@ -61,14 +58,14 @@ def adj_gamma(tensor, gamma, gain=1):
 
 def adj_contrast(tensor, contrast):
     """
-    Adjust contrast for a tensor of shape (C, D, H, W).
+    Adjust contrast for a tensor.
 
     Args:
         tensor (torch.Tensor): Input tensor of shape (C, D, H, W).
         contrast (float): Contrast adjustment factor.
 
     Returns:
-        torch.Tensor: Contrast-adjusted 3D tensor with the same shape as the input.
+        torch.Tensor: Contrast-adjusted 3D tensor.
     """
     tensor *= contrast
     return tensor
@@ -76,30 +73,30 @@ def adj_contrast(tensor, contrast):
 
 def adj_brightness(tensor, brightness):
     """
-    Adjust brightness for a tensor of shape (C, D, H, W).
+    Adjust brightness for a tensor.
 
     Args:
         tensor (torch.Tensor): Input tensor of shape (C, D, H, W).
         brightness (float): Brightness adjustment factor.
 
     Returns:
-        torch.Tensor: Brightness-adjusted 3D tensor with the same shape as the input.
+        torch.Tensor: Brightness-adjusted 3D tensor.
     """
-    return torch.clamp(brightness + tensor, -4, 4)
+    return torch.clamp(brightness + tensor)
 
 
 def gaussian_blur_3d(tensor, kernel_size=3, sigma=0.8):
     """
-    Apply 3D Gaussian blur to a 3D tensor.
+    Apply 3D Gaussian blur to a tensor.
     High kernel_size could slow down augmentation significantly.
 
     Args:
-        tensor (torch.Tensor): Input 3D tensor of shape {C, D, H, W}.
+        tensor (torch.Tensor): Input tensor of shape {C, D, H, W}.
         kernel_size (int): Size of the Gaussian kernel. Default: 3.
         sigma (float): Sigma of the Gaussian blur. Default: 0.8.
 
     Returns:
-        torch.Tensor: 3D tensor after applying Gaussian blur with the same shape as the input.
+        torch.Tensor
     """
     # Generate 1D Gaussian kernel along each dimension
     input_channels = tensor.shape[0]
@@ -190,13 +187,14 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
                             ensure_bothground=True, max_attempts=50, minimal_foreground=0.01, minimal_background=0.02,
                             zarr=False, img_mean=0, img_std=1):
     """
-    Randomly crop then rotate a list of 3D PyTorch tensors given the desired depth, height, and width, preferably with at least some foreground object.\n
-    Whether it contains foreground object is determined by the second tensor in the list,
+    Randomly crop then rotate a list of 3D PyTorch tensors given the desired depth, height, and width,
+    preferably within the required foreground or background proportion.\n
+    The foreground object is determined by the second tensor in the list,
     pixels with values larger or equal to 1 are considered foreground.\n
     If no foreground object is found after max_attempts attempts, it will output a warning message and crop a random volume.
 
     Args:
-        tensors (list of torch.Tensor or torch.Tensor): List of input tensors of shape (Channel, Depth, Height, Width).
+        tensors (list of torch.Tensor): List of input tensors of shape (Channel, Depth, Height, Width).
         depth (int): Desired depth of the cropped tensors.
         height (int): Desired height of the cropped tensors.
         width (int): Desired width of the cropped tensors.
@@ -204,13 +202,15 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         planes (list or None): The plane(s) on which the random rotation will be applied: ['xy', 'xz', 'yz']. Default: ['xy']
         interpolations (tuple): Interpolation methods for each tensor ('nearest' or 'bilinear').
         ensure_bothground (bool): If True, will try to ensure that the output contains both foreground and background objects according to the settings below. (default: True)
-        max_attempts (int): Maximum number of attempts to find a crop with at least 1% foreground object (default: 50).
+        max_attempts (int): Maximum number of attempts to find a crop which satisfy the required foreground/background condition (default: 50).
         minimal_foreground (float): Proportion of desired minimal foreground pixels (default: 0.01).
         minimal_background (float): Proportion of desired minimal background pixels (default: 0.02).
         zarr (bool): Needs to be set to true if the input are not torch tensor but zarr arrays. (default: False)
+        img_mean (float): Used if zarr is True, for normalisation of the input volume. (default: 0)
+        img_std (float): Used if zarr is True, for normalisation of the input volume. (default: 1)
 
     Returns:
-        List of cropped tensors or just the cropped tensor itself.
+        List of cropped tensors.
     """
 
     def contains_bothground(tensor):
@@ -252,7 +252,6 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         return rotated_tensors
 
     def cropping(tensors):
-        # Randomly select crop starting locations within the valid range
         d_offset = random.randint(0, d - depth)
         h_offset = random.randint(0, h - height)
         w_offset = random.randint(0, w - width)
@@ -291,7 +290,7 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
         return rotated_tensors
 
 
-def random_gradient(tensor, e_range=(0.5, 1.5), mode='gamma'):
+def random_gradient(tensor, range=(0.5, 1.5), mode='gamma'):
     """
     Apply random gamma or contrast or brightness adjustment to a PyTorch tensor, with a gradient pattern.
 
@@ -304,7 +303,7 @@ def random_gradient(tensor, e_range=(0.5, 1.5), mode='gamma'):
         torch.Tensor: Adjusted image tensor.
     """
 
-    a, b = random.uniform(e_range[0], e_range[1]), random.uniform(e_range[0], e_range[1])
+    a, b = random.uniform(range[0], range[1]), random.uniform(range[0], range[1])
     low, high = min(a, b), max(a, b)
 
     # Generate a random side (left, right, top, bottom, front, back) for the gradient effect
@@ -332,6 +331,7 @@ def random_gradient(tensor, e_range=(0.5, 1.5), mode='gamma'):
         gradient = torch.linspace(low, high, tensor.shape[1])
         gradient = gradient.view(1, -1, 1, 1)
         gradient = gradient.flip(dims=(1,))
+
     if mode == 'gamma':
         tensor_min, tensor_max = tensor.min(), tensor.max()
         if tensor_max - tensor_min == 0:
@@ -355,7 +355,7 @@ def salt_and_pepper_noise(tensor, prob=0.01):
         prob (float): Probability of adding 'salt' (maximum) and 'pepper' (minimum) noise to each element.
 
     Returns:
-        torch.Tensor: Tensor with salt and pepper noise added.
+        torch.Tensor
     """
 
     # Add salt noise
@@ -371,15 +371,15 @@ def salt_and_pepper_noise(tensor, prob=0.01):
 
 def exclude_border_labels(array, inward, outward):
     """
-    Exclude the borders of the objects in the label tensor. Also transform it to sparsely annotated form.
+    Exclude the borders of the objects in the label array. Also transform it to sparsely annotated form.
 
     Args:
-        array (np.Array): Input tensor of shape (D,H,W). 0 for background, 1 for foreground
+        array (np.Array): Input array of shape (D,H,W). 0 for background, 1 for foreground
         inward (int): Size of morphological erosion.
         outward (int):  Size of morphological dilation.
 
     Returns:
-        torch.Tensor: transformed Tensor. 0 for unlabeled (excluded label), 1 for foreground, 2 for background
+        torch.Tensor: transformed array. 0 for unlabeled (excluded label), 1 for foreground, 2 for background
     """
 
     structuring_element = np.ones((3, 3, 3), dtype=np.int8)
@@ -411,66 +411,6 @@ def binarisation(tensor):
     #tensor = np.clip(tensor, 0, 1).astype(np.bool_)
     tensor = np.where(tensor>=1, np.bool_(True), np.bool_(False))
     return tensor
-
-
-def binary_dilation_torch(input, structure=None, iterations=1, mask=None,
-                          output=None):
-    """
-    Multidimensional binary dilation with the given structuring element.
-    Similar to scipy.ndimage.binary_dilation but is for Pytorch Tensors.
-
-    Parameters
-    ----------
-    input : torch.Tensor
-        Binary tensor to be dilated. Non-zero (True) elements form
-        the subset to be dilated.
-    structure : torch.Tensor, optional
-        Structuring element used for the dilation. Non-zero elements are
-        considered True. If no structuring element is provided an element
-        is generated with a square connectivity equal to one.
-    iterations : int, optional
-        The dilation is repeated `iterations` times (one, by default).
-        If iterations is less than 1, the dilation is repeated until the
-        result does not change anymore. Only an integer of iterations is
-        accepted.
-    mask : torch.Tensor, optional
-        If a mask is given, only those elements with a True value at
-        the corresponding mask element are modified at each iteration.
-    output : torch.Tensor, optional
-        Tensor of the same shape as input, into which the output is placed.
-        By default, a new tensor is created.
-
-    Returns
-    -------
-    binary_dilation : torch.Tensor of bools
-        Dilation of the input by the structuring element.
-    """
-
-    if structure is None:
-        structure = {
-            1: torch.ones(3, dtype=input.dtype, device=input.device),
-            2: torch.ones((3, 3), dtype=input.dtype, device=input.device),
-            3: torch.ones((3, 3, 3), dtype=input.dtype, device=input.device)
-        }[input.dim()]
-    unsqueezed_structure = structure.unsqueeze(0).unsqueeze(0).float()
-
-    # Determine the appropriate convolution function based on the dimensionality of the input
-    conv_function = {1: F.conv1d, 2: F.conv2d, 3: F.conv3d}[input.dim()]
-
-    # Perform binary dilation using convolution
-    for _ in range(iterations):
-        unsqueezed_input = input.unsqueeze(0).unsqueeze(0).float()
-        dilated_input = conv_function(unsqueezed_input, unsqueezed_structure, padding=1)
-        dilated_input = dilated_input.squeeze().bool()
-
-        # Apply mask if provided
-        if mask is not None:
-            dilated_input[mask == 0] = input[mask == 0]
-
-        input = dilated_input
-
-    # Return the result
-    return input if output is None else input.copy_(output)
 
 
 def instance_contour_transform(input_array, contour_inward=0, contour_outward=1):
@@ -579,29 +519,6 @@ def edge_replicate_pad(input_tensors, padding_percentile=0.1):
     return output_tensors
 
 
-def middle_z_normalize(input_tensor, z_percentile=0.75):
-    """
-    Normalise image to be between 0 and 1. The lowest 1%
-    However, only the middle chunk along the Z dimension of 3D microscopy images will be used for calculating the mean and
-    standard deviation of image intensity.
-
-    Args:
-        input_tensor (torch.Tensor): Input tensor with a shape of (D, H, W)
-        z_percentile (float): The central percentile of the image which will be used for calculating the mean and standard deviation of image intensity.
-
-    Return:
-        output_tensor (torch.Tensor)
-    """
-    z, x, y = input_tensor.shape
-    low_z, high_z = int((0.5-(z_percentile/2))*z), max(int((0.5+(z_percentile/2))*z), 1)
-    #middle_chunk = input_tensor[low_z:high_z, :, :]
-    low, high = np.percentile(input_tensor[low_z:high_z, :, :], 1), np.percentile(input_tensor[low_z:high_z, :, :], 99)
-    #print(low, high)
-    input_tensor = (input_tensor - low) / (high - low)
-    input_tensor = torch.clamp(input_tensor, 0, 1)
-    return input_tensor
-
-
 def gaussian_noise(input_tensor, strength=0.05, octaves=3):
     """
     Add gaussian noise of different resolutions to the tensor.
@@ -617,7 +534,7 @@ def gaussian_noise(input_tensor, strength=0.05, octaves=3):
     origin_shape = input_tensor.shape
     noises = torch.zeros_like(input_tensor, dtype=torch.float32)
     for octave in range(0, octaves):
-        # Since we are only dealing with images of single channel, don't worry the channel dim got downscaled as well.
+        # Since we only deal with images of single channel, no need to worry the channel dim got downscaled as well.
         shape = [max(int(shape / 2**octave), 1) for shape in origin_shape]
         noise = (torch.randn(shape, dtype=torch.float32) * random.uniform(0.5, 1.5) * (0.5**octave) * strength).unsqueeze(0)
         noises += F.interpolate(noise, origin_shape[1:], mode='trilinear', align_corners=False).squeeze(0)
@@ -668,6 +585,9 @@ def apply_aug(img_tensor, lab_tensor, contour_tensor, augmentation_params,
         d_size (int): The depth of each generated patch.
         foreground_threshold (float): Proportion of desired minimal foreground pixels in the produced label tensor.
         background_threshold (float): Proportion of desired minimal background pixels in the produced label tensor.
+        zarr (bool): To indicate if the input tensor is not a numpy array but a zarr array. (default: False)
+        img_mean (float): Used if zarr is True, for normalisation of the input volume. (default: 0)
+        img_std (float): Used if zarr is True, for normalisation of the input volume. (default: 1)
 
     Returns:
         Transformed Image and Label Tensor.
@@ -797,6 +717,9 @@ def apply_aug_unsupervised(img_tensor, augmentation_params, hw_size, d_size, zar
             augmentation_params (DataFrame): The DataFrame which the augmentation parameters will be used from.
             hw_size (int): The height and width of each generated patch.
             d_size (int): The depth of each generated patch.
+            zarr (bool): To indicate if the input tensor is not a numpy array but a zarr array. (default: False)
+            img_mean (float): Used if zarr is True, for normalisation of the input volume. (default: 0)
+            img_std (float): Used if zarr is True, for normalisation of the input volume. (default: 1)
 
         Returns:
             Transformed Image Tensor.

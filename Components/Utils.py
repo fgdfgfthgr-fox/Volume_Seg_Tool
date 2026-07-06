@@ -39,7 +39,7 @@ def multiple_loader(path, key):
 
     return img
 
-def path_to_array(path, label=False, key='default', norm_strategy='std'):
+def path_to_array(path, label=False, key='default'):
     """
     Transform a path to an image file into a Pytorch tensor. Can support other image format but usually tif is the only one that can store 3d information.
 
@@ -47,8 +47,6 @@ def path_to_array(path, label=False, key='default', norm_strategy='std'):
         path (str): Path to the image file.
         label (bool): If false, the output will be normalized. Default: False.
         key (str): If trying to load from a hdf5 file, will load the File object with this name.
-        norm_strategy (str): The strategy used to normalize the image (when isn't a label).
-        Can be 'std' to minus by mean then divide by std. Or 'n1tp1' to put it between negative and positive one. Default: 'std'.
 
     Returns:
         torch.Tensor: transformed Tensor.
@@ -68,27 +66,16 @@ def path_to_array(path, label=False, key='default', norm_strategy='std'):
         img = img.astype(new_dtype, copy=False)
         return img
     else:
-        if norm_strategy == 'std':
-            # Take less memory than Numpy's Existing method.
-            mean, std = welford_mean_std(img)
-            mean, std = np.array(mean).astype(np.float32), np.array(std).astype(np.float32)
-            # Take less memory than img = (img - mean) / std
-            out_img = np.empty_like(img, dtype=np.float16)
-            for i in range(0, img.shape[0]):
-                slice_img = img[i].astype(np.float32)
-                slice_img -= mean
-                np.divide(slice_img, std, slice_img)
-                out_img[i] = slice_img
-        '''elif norm_strategy == 'n1tp1':
-            img = img.astype(np.float32, copy=False)
-            q1, q99 = np.percentile(img[non_zero], [1, 99])
-            # To 0 and 1
-            img -= q1
-            img /= (q99-q1)
-            np.clip(img, 0, 1, img)
-            # To -1 and 1
-            img -= 0.5
-            img *= 2'''
+        # Take less memory than Numpy's Existing method.
+        mean, std = welford_mean_std(img)
+        mean, std = np.array(mean).astype(np.float32), np.array(std).astype(np.float32)
+        # Take less memory than img = (img - mean) / std
+        out_img = np.empty_like(img, dtype=np.float16)
+        for i in range(0, img.shape[0]):
+            slice_img = img[i].astype(np.float32)
+            slice_img -= mean
+            np.divide(slice_img, std, slice_img)
+            out_img[i] = slice_img
         return out_img
 
 def path_to_array_nonorm(path, key='default'):
@@ -318,6 +305,7 @@ def load_indexed_files_for_stitching(prefix):
     indexed_files.sort(key=lambda x: x[0])
     return indexed_files
 
+
 def stitch_output_volumes(prefix, meta_list, hw_size=128, depth_size=128):
     """
     Stitch the patches of output volumes and reconstruct the original image tensor(s).
@@ -404,6 +392,7 @@ def predictions_to_final_img_instance(stitched_volume_p, stitched_volume_c, dire
     This one is for instance segmentation.
 
     Args:
+        stitched_volume_p, stitched_volume_c (torch.Tensor): Volumes to save.
         direc (str): Directory where the final images will be saved to.
         segmentation_mode (str): If 'simple', will identify objects via simple connected component labelling. If 'watershed', will use a distance transform watershed instead, which is slower but yield much less under-segment.
         dynamic (int): Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges. Default: 10.

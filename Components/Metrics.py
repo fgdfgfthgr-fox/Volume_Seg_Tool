@@ -7,67 +7,11 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 
-class DiceLoss(nn.Module):
-    def __init__(self, average='micro'):
-        """
-        Initializes the DiceLoss module.
-
-        Args:
-            average (str): Averaging method for computing the Dice loss.
-                - 'micro': Calculate the metric globally across all samples and classes.
-                - 'macro': Calculate the metric for each class separately and average the metrics across classes
-                           with equal weights for each class.
-        """
-        super(DiceLoss, self).__init__()
-        self.average = average
-
-    def forward(self, inputs, targets, smooth=1):
-        """
-        Compute the Dice loss between the input predictions and target labels.
-
-        Args:
-            inputs (torch.Tensor): Predictions tensor, typically with values between 0 and 1.
-                                   Shape: (batch_size, num_classes, ...)
-            targets (torch.Tensor): Target labels tensor with binary values (0 or 1).
-                                    Shape: (batch_size, num_classes, ...)
-            smooth (float): Smoothing factor to prevent division by zero in the Dice coefficient.
-
-        Returns:
-            torch.Tensor: Dice loss value.
-        """
-        # Flatten label and prediction tensors
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-
-        intersection = (inputs * targets)
-        intersection = intersection.sum()
-        union = inputs.sum() + targets.sum()
-
-        if self.average == 'micro':
-            dice_coefficient = (2.0 * intersection + smooth) / (union + smooth)
-        elif self.average == 'macro':
-            class_dice_coefficients = []
-            unique_classes = torch.unique(targets)
-
-            for class_label in unique_classes:
-                class_inputs = (inputs * (targets == class_label).float()).sum()
-                class_targets = (targets == class_label).sum()
-                class_dice_coefficient = (2.0 * class_inputs + smooth) / (class_inputs + class_targets + smooth)
-                class_dice_coefficients.append(class_dice_coefficient)
-
-            dice_coefficient = torch.mean(torch.stack(class_dice_coefficients))
-        else:
-            raise ValueError("Invalid average method. Use 'micro' or 'macro'.")
-
-        dice_loss = 1 - dice_coefficient
-        return dice_loss
-
-
 class BinaryMetrics(nn.Module):
     def __init__(self, loss_mode: str, smooth=1024):
         """
-        Initializes the BinaryMetrics module. Which can be set for using Boundary loss (for semantic map)
-        or Focal Loss (for contour map).
+        Initializes the BinaryMetrics module. Which can be set for using dice loss (for semantic map)
+        or focal loss (for contour map).
 
         Args:
             loss_mode (str): A string indicating whether to use focal loss ("focal")

@@ -6,8 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from Components import Augmentations as Aug
-from Components.Augmentations import apply_aug, apply_aug_unsupervised
+from Components.Augmentations import apply_aug, apply_aug_unsupervised, binarisation
 from Components.Utils import make_label_pair_tv, path_to_array, make_path_list_predict, calculate_val_start_end, \
     calculate_predict_start_end, get_contour_maps
 
@@ -36,7 +35,7 @@ class TrainDataset(torch.utils.data.Dataset):
         self.instance_mode = instance_mode
         if instance_mode:
             self.contour_tensors = [torch.from_numpy(get_contour_maps(item[1], 'generated_contour_maps', contour_map_width)) for item in self.file_list]
-        self.lab_tensors = [torch.from_numpy(Aug.binarisation(path_to_array(item[1], key=hdf5_key, label=True))) for item in self.file_list]
+        self.lab_tensors = [torch.from_numpy(binarisation(path_to_array(item[1], key=hdf5_key, label=True))) for item in self.file_list]
         self.img_tensors = [torch.from_numpy(path_to_array(item[0], key=hdf5_key, label=False)) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
         self.train_multiplier = train_multiplier
@@ -145,11 +144,11 @@ class ValDataset(torch.utils.data.Dataset):
         self.instance_mode = instance_mode
         if instance_mode:
             tensor_pairs = [((path_to_array(str(item[0]), key=hdf5_key, label=False)),
-                             Aug.binarisation(path_to_array(str(item[1]), label=True)),
+                             binarisation(path_to_array(str(item[1]), label=True)),
                              get_contour_maps(item[1], 'generated_contour_maps', contour_map_width)) for item in file_list]
         else:
             tensor_pairs = [(path_to_array(str(item[0]), key=hdf5_key, label=False),
-                            Aug.binarisation(path_to_array(str(item[1]), label=True))) for item in file_list]
+                            binarisation(path_to_array(str(item[1]), label=True))) for item in file_list]
         self.chopped_array_pairs = []
         self.total_patches = 0
         # Crop the tensors, so they are the standard shape specified in the augmentation csv.
@@ -293,5 +292,4 @@ class PredictDataset(torch.utils.data.Dataset):
     def __getmetainfo__(self):
         """Return metadata (file name, original shape) for each original image."""
         return self.meta_list
-
 

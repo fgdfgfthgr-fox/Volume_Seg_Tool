@@ -12,9 +12,7 @@ import torch
 
 import zarr
 
-from Components import Augmentations as Aug
-from Components.Augmentations import apply_aug, apply_aug_unsupervised
-
+from Components.Augmentations import apply_aug, apply_aug_unsupervised, binarisation
 from Components.Utils import path_to_array, path_to_array_nonorm, make_label_pair_tv, make_path_list_predict, \
     calculate_val_start_end, calculate_predict_start_end, get_contour_maps
 
@@ -117,7 +115,7 @@ class TrainDatasetChunked(torch.utils.data.Dataset):
         zarr_paths = []
         for img_path, lab_path in self.file_list:
             img_zarr = process_file(self.preprocessed_dir, self.source_metadata, self.hdf5_key, self.chunk_size, img_path, False)
-            lab_zarr = process_file(self.preprocessed_dir, self.source_metadata, self.hdf5_key, self.chunk_size, lab_path, True, Aug.binarisation)
+            lab_zarr = process_file(self.preprocessed_dir, self.source_metadata, self.hdf5_key, self.chunk_size, lab_path, True, binarisation)
 
             if self.instance_mode:
                 contour_zarr = self.preprocessed_dir.joinpath(f"Contour_{Path(img_zarr).stem}.zarr")
@@ -285,7 +283,7 @@ class ValDatasetChunked(torch.utils.data.Dataset):
 
             # Load original arrays
             img_array = path_to_array(str(img_path), key=self.hdf5_key, label=False)
-            lab_array = Aug.binarisation(path_to_array(str(lab_path), label=True))
+            lab_array = binarisation(path_to_array(str(lab_path), label=True))
 
             # Get contour maps if needed
             contour_array = None
