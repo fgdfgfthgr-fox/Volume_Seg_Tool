@@ -470,20 +470,11 @@ def instance_contour_transform(input_array, contour_outward=1):
         # Calculate boundary
         boundary = dilated & ~expanded_mask
 
-        # Return the slice and boundary for the main thread to write
-        return (expanded_sl, boundary)
+        transformed_tensor[expanded_sl] |= boundary
 
     # Use joblib to parallelize the loop
     n_jobs = min(max((os.cpu_count() // 2) - 1, 1), 32)
-    results = Parallel(backend='threading', n_jobs=n_jobs)(
-        delayed(process_object)(label, sl) for label, sl in tasks
-    )
-
-    # Single-threaded write-back to avoid race conditions
-    for result in results:
-        if result is not None:
-            expanded_sl, boundary = result
-            transformed_tensor[expanded_sl] |= boundary
+    Parallel(backend='threading', n_jobs=n_jobs)(delayed(process_object)(label, sl) for label, sl in tasks)
 
     return transformed_tensor
 
