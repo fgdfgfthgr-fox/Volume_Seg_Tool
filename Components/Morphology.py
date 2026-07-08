@@ -407,6 +407,12 @@ def inverter(img):
     return img
 
 
+def remove_small_labels(img, min_size):
+    bins = np.bincount(img.ravel())
+    for label in bins[bins < min_size]:
+        img[img == label] = 0
+    return img
+
 
 @njit(parallel=True)
 def pixel_reclaim(touching_map, segmentation, distance_threshold, z_to_xy_ratio=1.01):

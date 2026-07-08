@@ -501,7 +501,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
     elif mode == 'watershed':
         segmentation = perform_watershed(segmentation, dynamic)
 
-    morph.remove_small_objects(segmentation, min_size=size_threshold, connectivity=structure, out=segmentation)
+    Morph.remove_small_labels(segmentation, min_size=size_threshold)
     del structure
 
     if pixel_reclaim:
