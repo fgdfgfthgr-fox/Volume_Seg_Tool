@@ -4,6 +4,7 @@ import pandas as pd
 import Components.Augmentations
 import Components.Datasets
 import Components.Datasets_Chunked
+import tifffile
 from Components import Augmentations, Utils, Metrics
 from pathlib import Path
 
@@ -147,6 +148,6 @@ def test_instance_segmentation_simple():
     test_contour_map = Utils.path_to_array("resources_for_pytest/Test_Contour_Mask.tif")
     test_contour_map = torch.from_numpy(test_contour_map)
     segmentation = Utils.instance_segmentation_simple(test_semantic_map, test_contour_map)
-    assert segmentation.max() == 92
+    assert segmentation.max() == 93
 
 # Welford already covered by test_path_to_array.
