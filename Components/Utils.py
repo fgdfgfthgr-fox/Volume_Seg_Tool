@@ -9,9 +9,10 @@ import tifffile
 import time
 import h5py
 import mrcfile
+import numba_morph
 
 import numpy as np
-import skimage.morphology as morph
+import scipy.ndimage as ndimage
 
 from multiprocessing import shared_memory
 from pathlib import Path
@@ -446,14 +447,13 @@ def perform_watershed(segmentation, dynamic):
     """
     Perform watershed segmentation on the pre‑segmented mask.
     """
-    distance_map = Morph.chamfer_distance_transform_parallel(segmentation, dtype=np.uint16, num_core=min(max((os.cpu_count()//2)-1, 1), 32))
+    distance_map = numba_morph.distance_transform_cdt(segmentation, dtype=np.uint16, weights=(3,4,5))
     distance_map = Morph.inverter(distance_map)
 
-    hmin = Morph.geodesic_reconstruction_by_erosion(distance_map, dynamic)
-    #hmin = morph.local_minima(hmin).astype(np.uint16)
-    #label(hmin, output=hmin)
+    footprint = ndimage.generate_binary_structure(3,3)
+    hmin = numba_morph.reconstruction(distance_map, dynamic=dynamic, method='erosion', footprint=footprint)
     hmin = Morph.label_h_minima(hmin, distance_map, dynamic)
-    segmentation = Morph.marker_controlled_watershed(distance_map, markers=hmin, mask=segmentation)
+    segmentation = numba_morph.watershed(distance_map, markers=hmin, mask=segmentation)
     return segmentation
 
 def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, mode='simple', dynamic=10, pixel_reclaim=True, distance_threshold=2):
