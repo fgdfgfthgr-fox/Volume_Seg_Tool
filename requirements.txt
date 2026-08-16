@@ -20,4 +20,4 @@ pytorch-optimizer>=3.10.0
 timm>=1.0.24
 pytest>=9.0.2
 aule-attention>=0.5.0
-numba-morph==0.1.0
+numba-morph==0.2.1

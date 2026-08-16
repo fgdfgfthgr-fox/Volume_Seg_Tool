@@ -447,11 +447,12 @@ def perform_watershed(segmentation, dynamic):
     """
     Perform watershed segmentation on the pre‑segmented mask.
     """
-    distance_map = numba_morph.distance_transform_cdt(segmentation, dtype=np.uint16, weights=(3,4,5), speed=False)
+    distance_map = numba_morph.distance_transform_cdt(segmentation, dtype=np.uint16, weights=(3,4,5))
     distance_map = Morph.inverter(distance_map)
 
     footprint = ndimage.generate_binary_structure(3,3)
-    hmin = numba_morph.reconstruction(distance_map, dynamic=dynamic, method='erosion', footprint=footprint)
+    hmin = distance_map + dynamic
+    numba_morph.reconstruction(distance_map, hmin, inplace=True, method='erosion', footprint=footprint)
     hmin = Morph.label_h_minima(hmin, distance_map, dynamic)
     segmentation = numba_morph.watershed(distance_map, markers=hmin, mask=segmentation, footprint=footprint)
     return segmentation
