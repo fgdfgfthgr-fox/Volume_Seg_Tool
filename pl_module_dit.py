@@ -7,7 +7,7 @@ import torch.utils.data
 import torch.utils.tensorboard
 
 import Components.Datasets
-from Components import Metrics
+from Components import Metrics, Utils
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
 from lightning.pytorch.callbacks import LearningRateMonitor
@@ -136,7 +136,7 @@ class PLModule(pl.LightningModule):
         if self.training and ((self.global_step % 128 == 0 and self.enable_mid_visual) or self.require_next_mid_visual):
             mid_img = self.to_visualisation_img(img, 'Norm')
             mid_lab = self.to_visualisation_img(lab, 'None')
-            mid_contour = self.to_visualisation_img(contour, 'None')
+            mid_contour = self.to_visualisation_img(contour, 'Minmax')
             mid_p_output = self.to_visualisation_img(p_out, 'Sigmoid')
             mid_c_output = self.to_visualisation_img(c_out, 'Sigmoid')
             self.logger.experiment.add_image(f'Visualization/Input', mid_img, self.global_step)
@@ -179,21 +179,21 @@ class PLModule(pl.LightningModule):
         if self.instance_mode:
             img, lab, contour = batch
             p_output, c_output = self.forward(img)
-            p_loss, p_i, p_u, p_tp, p_fn, p_tn, p_fp = self.p_loss_fn(p_output, lab, False)
-            c_loss, c_i, c_u, c_tp, c_fn, c_tn, c_fp = self.c_loss_fn(c_output, contour, False)
+            p_loss, p_i, p_u, p_tp, p_fn, p_tn, p_fp, p_ecs = self.p_loss_fn(p_output, lab, False)
+            c_loss, c_i, c_u, c_tp, c_fn, c_tn, c_fp, c_ecs = self.c_loss_fn(c_output, contour, False)
             loss = p_loss + c_loss
             self.visualise_instance(img, lab, contour, p_output, c_output)
-            return loss, p_i, c_i, p_u, c_u, p_tp, c_tp, p_fn, c_fn, p_tn, c_tn, p_fp, c_fp, torch.nan
+            return loss, p_i, c_i, p_u, c_u, p_tp, c_tp, p_fn, c_fn, p_tn, c_tn, p_fp, c_fp, p_ecs, c_ecs, torch.nan
         else:
             img, lab = batch
             output = self.forward(img)
-            loss, i, u, tp, fn, tn, fp = self.p_loss_fn(output, lab, sparse)
+            loss, i, u, tp, fn, tn, fp, ecs = self.p_loss_fn(output, lab, sparse)
             self.visualise_semantic(img, lab, output)
-            return loss, i, u, tp, fn, tn, fp, torch.nan
+            return loss, i, u, tp, fn, tn, fp, ecs, torch.nan
 
     def training_step(self, batch, batch_idx):
         if self.instance_mode:
-            if len(batch) == 3:
+            if len(batch) >= 3:
                 result_tuple = self._step(batch, False)
             elif self.dice_threshold_reached:
                 result_tuple = self.unsupervised_step(batch)
@@ -313,12 +313,13 @@ class PLModule(pl.LightningModule):
                                                   self.current_epoch)
                 self.logger.experiment.add_scalar(f"{prefix}/Pixel Sensitivity", p_sensitivity, self.current_epoch)
                 self.logger.experiment.add_scalar(f"{prefix}/Pixel Specificity", p_specificity, self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Contour Sensitivity", c_sensitivity,
-                                                  self.current_epoch)
-                self.logger.experiment.add_scalar(f"{prefix}/Contour Specificity", c_specificity,
-                                                  self.current_epoch)
-                if epoch_averages[13] != 0 and not torch.any(torch.isnan(epoch_averages[13])):
-                    self.logger.experiment.add_scalar(f"{prefix}/Entropy", epoch_averages[13], self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Contour Sensitivity", c_sensitivity, self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Contour Specificity", c_specificity, self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Pixel Calibration Error", epoch_averages[13], self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Contour Calibration Error", epoch_averages[14], self.current_epoch)
+
+                if epoch_averages[15] != 0 and not torch.any(torch.isnan(epoch_averages[15])):
+                    self.logger.experiment.add_scalar(f"{prefix}/Entropy", epoch_averages[15], self.current_epoch)
                 self.log(f"{prefix}_epoch_dice", p_dice+c_dice, logger=False)
             else:
                 dice = epoch_averages[1]/epoch_averages[2]
@@ -333,8 +334,9 @@ class PLModule(pl.LightningModule):
                 self.logger.experiment.add_scalar(f"{prefix}/Dice", dice, self.current_epoch)
                 self.logger.experiment.add_scalar(f"{prefix}/Sensitivity", sensitivity, self.current_epoch)
                 self.logger.experiment.add_scalar(f"{prefix}/Specificity", specificity, self.current_epoch)
-                if epoch_averages[7] != 0 and not torch.any(torch.isnan(epoch_averages[7])):
-                    self.logger.experiment.add_scalar(f"{prefix}/Entropy", epoch_averages[7], self.current_epoch)
+                self.logger.experiment.add_scalar(f"{prefix}/Calibration Error", epoch_averages[7], self.current_epoch)
+                if epoch_averages[8] != 0 and not torch.any(torch.isnan(epoch_averages[8])):
+                    self.logger.experiment.add_scalar(f"{prefix}/Entropy", epoch_averages[8], self.current_epoch)
                 self.log(f"{prefix}_epoch_dice", dice, logger=False)
 
     def on_validation_epoch_end(self):
@@ -370,33 +372,32 @@ class PLModule(pl.LightningModule):
 if __name__ == "__main__":
     #tracemalloc.start()
     #snap1 = tracemalloc.take_snapshot()
-    torch.backends.cudnn.enabled = False
-    sizes = [(144, 144)]
-    precisions = ['bf16-mixed']
+    #torch.backends.cudnn.enabled = False
+    sizes = [(144, 40)]
+    precisions = ['32']
     batch_sizes = [2]
     for size in sizes:
         for precision in precisions:
             for batch_size in batch_sizes:
-                #predict_dataset = DataComponents.Predict_Dataset("Datasets/predict", 112, 24, 8, 1)
-                '''train_dataset = Components.Datasets.TrainDataset("Datasets/train",
+                predict_dataset = Components.Datasets.PredictDataset("Datasets/predict", 96, 32, 24, 4)
+                train_dataset = Components.Datasets.TrainDataset("Datasets/train",
                                                             "Augmentation Parameters Anisotropic.csv",
-                                                                 32,
-                                                                 size[0], size[1], False, False, 'default')
-                unsupervised_train_dataset = Components.Datasets.UnsupervisedDataset("Datasets/unsupervised_train",
-                                                                                "Augmentation Parameters Anisotropic.csv",
-                                                                                     64,
-                                                                                     size[0], size[1])
-                train_dataset = DataComponents.CollectedDataset(train_dataset, None)
-                sampler = DataComponents.CollectedSampler(train_dataset, batch_size, None)
-                collate_fn = DataComponents.custom_collate
+                                                                 128,
+                                                                 size[0], size[1], True, 1, 'default')
+                #unsupervised_train_dataset = Components.Datasets.UnsupervisedDataset("Datasets/unsupervised_train",
+                #                                                                "Augmentation Parameters Anisotropic.csv",
+                #                                                                     64,
+                #                                                                     size[0], size[1])
+                train_dataset = Utils.CollectedDataset(train_dataset, None)
+                sampler = Utils.CollectedSampler(train_dataset, batch_size, None)
+                collate_fn = Utils.custom_collate
                 train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,
                                                            collate_fn=collate_fn, sampler=sampler,
-                                                           num_workers=8, pin_memory=True, persistent_workers=True)
+                                                           num_workers=6, pin_memory=True, persistent_workers=True)
                 # meta_info = predict_dataset.__getmetainfo__()
-                # predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                #val_dataset = DataComponents.ValDataset("Datasets/val", size[0], size[1], True,
-                #                                        "Augmentation Parameters Anisotropic.csv")
-                #val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
+                predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+                val_dataset = Components.Datasets.ValDataset("Datasets/val", size[0], size[1], True, 1)
+                val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
 
                 callbacks = []
                 model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="trained_model",
@@ -406,11 +407,11 @@ if __name__ == "__main__":
                 callbacks.append(LearningRateMonitor(logging_interval='epoch'))
                 callbacks.append(model_checkpoint_last)
                 #callbacks.append(swa_callback)
-                arch_args = ((4,4,4), 4, 10, False)
+                arch_args = ((2,6,6), 4, 7, True)
                 model = PLModule(arch_args,
-                                False, True, False,
+                                True, True, True,
                                 False, False, False, True)
-                trainer = pl.Trainer(max_epochs=2, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'dit-4,8ps-384d-4layers-2heads-pcseperate-swin-64-window4'),
+                trainer = pl.Trainer(max_epochs=2, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'run_reference_cleanloss'),
                                      accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
                                      precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
                                                                                                                   #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
@@ -421,6 +422,7 @@ if __name__ == "__main__":
                 #    print(stat)
                 #start_time = time.time()
                 trainer.fit(model,
-                            #val_dataloaders=val_loader,
+                            val_dataloaders=val_loader,
                             train_dataloaders=train_loader)
-                torch.cuda.empty_cache()'''
+                torch.cuda.empty_cache()
+                #trainer.predict(model, predict_loader)

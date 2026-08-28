@@ -1,5 +1,6 @@
 import torch
 import pandas as pd
+import numpy as np
 
 import Components.Augmentations
 import Components.Datasets
@@ -134,8 +135,8 @@ def test_BinaryMetrics():
     assert len(out) == 7
 
 def test_instance_segmentation_metrics():
-    test_predicted = torch.randint(0, 5, (1, 1, 16, 64, 64))
-    test_gt = torch.randint(0, 5, (1, 1, 16, 64, 64))
+    test_predicted = np.random.randint(0, 5, (16, 64, 64))
+    test_gt = np.random.randint(0, 5, (16, 64, 64))
     out = Metrics.instance_segmentation_metrics(test_predicted, test_gt, 0.5)
     assert len(out) == 5
 

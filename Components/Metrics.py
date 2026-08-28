@@ -3,12 +3,15 @@ import torch
 
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
+from scipy.ndimage import find_objects
+from numba import njit, prange
 
-from tqdm import tqdm
+
 
 
 class BinaryMetrics(nn.Module):
-    def __init__(self, loss_mode: str, smooth=1024):
+    def __init__(self, loss_mode: str, smooth=1024.0):
         """
         Initializes the BinaryMetrics module. Which can be set for using dice loss (for semantic map)
         or focal loss (for contour map).
@@ -27,33 +30,72 @@ class BinaryMetrics(nn.Module):
         # In sparse label cases:
         # Input: 1 = Foreground, 0 = Background. Can be any number in between.
         # Target: 0 = Unlabelled, 1 = Foreground, 2 = Background
-        targets = targets.flatten()
-        inputs = inputs.flatten()
-        targets = torch.where(targets == 0, math.nan, targets)
-        targets = 1 - (targets - 1)
-        known_label = ~torch.isnan(targets)
-        inputs = inputs[known_label]
-        targets = targets[known_label]
+        inputs = inputs.reshape(-1)
+        targets = targets.reshape(-1)
+
+        valid = targets != 0
+        inputs = inputs[valid]
+        targets = targets[valid]  # now only 1 or 2
+
+        # In-place remap: 1 -> 1, 2 -> 0
+        targets.sub_(1)  # fg 0, bg 1
+        targets.mul_(-1).add_(1)  # fg 1, bg 0
+
         return inputs, targets
 
-    def calculate_iou_loss(self, inputs: torch.Tensor, targets: torch.Tensor):
-        intersection_s = 2 * torch.sum(targets * inputs) + self.smooth
-        # Huge smooth to prevent loss jump when the ground truth foreground is very low or 0
-        union_s = torch.sum(inputs) + torch.sum(targets) + self.smooth
+    def calculate_iou_loss(self, probs, targets, hard_pred):
+        # All inputs are flat 1-D tensors
+        # Soft intersection/union for differentiable Dice loss
+        intersection_s = 2 * torch.dot(targets, probs) + self.smooth
+        union_s = targets.sum() + probs.sum() + self.smooth
         loss = 1 - (intersection_s / union_s)
-        inputs = torch.where(inputs >= 0.5, True, False)
-        intersection = 2 * torch.sum(targets * inputs)
-        union = torch.sum(inputs) + torch.sum(targets)
+
+        # Hard intersection/union for logging
+        intersection = 2 * targets[hard_pred].sum()
+        union = hard_pred.sum() + targets.sum()
+
         return intersection, union, loss
 
+
+    def calculate_other_metrices(self, probs, targets, hard_pred):
+        ecs = self.expected_calibration_error(probs, targets)
+
+        # Compute TP/FN/FP/TN from aggregate sums to avoid
+        # multiple full-size product tensors.
+        tp = targets[hard_pred].sum()
+        fn = targets.sum() - tp
+        fp = hard_pred.sum() - tp
+        tn = targets.numel() - targets.sum() - hard_pred.sum() + tp
+
+        return tp.detach(), fn.detach(), tn.detach(), fp.detach(), ecs
+
     @staticmethod
-    def calculate_other_metrices(inputs: torch.Tensor, targets: torch.Tensor):
-        inputs = torch.where(inputs >= 0.5, 1, 0).to(torch.int8)
-        true_positives = (inputs*targets).sum().detach()
-        false_negatives = ((1-inputs)*targets).sum().detach()
-        true_negatives = ((1-inputs)*(1-targets)).sum().detach()
-        false_positives = (inputs*(1-targets)).sum().detach()
-        return true_positives, false_negatives, true_negatives, false_positives
+    def expected_calibration_error(pred, target, n_bins=10):
+        pred = pred.reshape(-1)
+        target = target.reshape(-1)
+        total = pred.numel()
+        ece = 0.0
+
+        for i in range(n_bins):
+            lower = i / n_bins
+            upper = (i + 1) / n_bins
+
+            if i == n_bins - 1:
+                mask = (pred >= lower) & (pred <= upper)
+            else:
+                mask = (pred >= lower) & (pred < upper)
+
+            n_bin = mask.sum().item()
+            if n_bin == 0:
+                continue
+
+            avg_confidence = pred[mask].mean().item()
+            avg_accuracy = target[mask].mean().item()
+
+            ece += (n_bin / total) * abs(avg_confidence - avg_accuracy)
+
+        return ece
+
 
     def forward(self, predict: torch.Tensor, target: torch.Tensor, sparse_label=False):
         """
@@ -81,52 +123,81 @@ class BinaryMetrics(nn.Module):
         # Target: 1 = Foreground, 0 = Background. Can be any number in between.
         if sparse_label:
             predict, target = self.sparse_preprocessing(predict, target)
-            #return self.dice_loss(inputs, targets)
+        else:
+            predict = predict.reshape(-1)
+            target = target.reshape(-1)
+        # Placeholder for modes where metrics are not computed
+        nan = torch.tensor(float("nan"), device=predict.device, dtype=predict.dtype)
+        if self.loss_mode == "bce_no_dice":
+            # Scale down to 20% since it's used for unsupervised learning and is often much higher than supervised
+            bce_loss = F.binary_cross_entropy_with_logits(predict, target, reduction='mean') * 0.2
+            return bce_loss, nan, nan, nan, nan, nan, nan, nan
 
         if self.loss_mode == "focal":
-            BCE_loss = F.binary_cross_entropy_with_logits(predict, target, reduction='none')
-            predict = torch.sigmoid(predict)
-            pt = torch.exp(-BCE_loss)
-            F_loss = (1-pt) ** 1.333 * BCE_loss
+            bce = F.binary_cross_entropy_with_logits(predict, target, reduction="none")
+            focal_weight = (1 - torch.exp(-bce)) ** 1.333
+            loss = (focal_weight * bce).mean()
+            probs = torch.sigmoid(predict)
+            hard_pred = probs >= 0.5
             with torch.no_grad():
-                intersection, union, _ = self.calculate_iou_loss(predict, target)
-                tp, fn, tn, fp = self.calculate_other_metrices(predict, target)
-            return F_loss.mean(), intersection, union, tp, fn, tn, fp
-        elif self.loss_mode == "bce_no_dice":
-            # Scale down to 20% since it's used for unsupervised learning and is often much higher than supervised
-            BCE_loss = F.binary_cross_entropy_with_logits(predict, target, reduction='none') * 0.2
-            return BCE_loss.mean(), torch.nan, torch.nan, torch.nan, torch.nan, torch.nan, torch.nan
+                intersection, union, _ = self.calculate_iou_loss(probs, target, hard_pred)
+                tp, fn, tn, fp, ecs = self.calculate_other_metrices(probs, target, hard_pred)
         elif self.loss_mode == "dice":
-            predict = torch.sigmoid(predict)
-            intersection, union, loss = self.calculate_iou_loss(predict, target)
+            probs = torch.sigmoid(predict)
+            hard_pred = probs >= 0.5
+            intersection, union, loss = self.calculate_iou_loss(predict, target, hard_pred)
             with torch.no_grad():
-                tp, fn, tn, fp = self.calculate_other_metrices(predict, target)
-            return loss, intersection, union, tp, fn, tn, fp
+                tp, fn, tn, fp, ecs = self.calculate_other_metrices(predict, target, hard_pred)
         elif self.loss_mode == "dice+bce":
-            bce_loss = F.binary_cross_entropy_with_logits(predict, target, reduction='none').mean()
-            predict = torch.sigmoid(predict)
-            intersection, union, dice_loss = self.calculate_iou_loss(predict, target)
+            bce_loss = F.binary_cross_entropy_with_logits(predict, target, reduction="mean")
+            probs = torch.sigmoid(predict)
+            hard_pred = probs >= 0.5
+            intersection, union, dice_loss = self.calculate_iou_loss(probs, target, hard_pred)
+            loss = 0.1 * dice_loss + 1.9 * bce_loss
             with torch.no_grad():
-                tp, fn, tn, fp = self.calculate_other_metrices(predict, target)
-            total_loss = 0.1*dice_loss+1.9*bce_loss
-            return total_loss, intersection, union, tp, fn, tn, fp
+                tp, fn, tn, fp, ecs = self.calculate_other_metrices(predict, target, hard_pred)
         else:
-            raise ValueError("Invalid loss. Use 'boundary' or 'focal' or 'dice' or 'dice+bce'.")
+            raise ValueError("Invalid loss. Use 'focal' or 'dice' or 'dice+bce' or 'bce_no_dice'.")
+        return loss, intersection, union, tp, fn, tn, fp, ecs
 
 
-def get_bounding_boxes(tensor):
+
+@njit(parallel=True, fastmath=True)
+def compute_iou_matrix(gt_bboxes, pred_bboxes, gt_volumes, pred_volumes,
+                       gt_labels, pred_labels, gt_map, pred_map, iou_matrix):
     """
-    Returns a dictionary of bounding boxes for each object in the tensor.
-    Each box is represented as [min_depth, min_height, min_width, max_depth, max_height, max_width].
+    Fill iou_matrix with IoU values for all GT-pred pairs whose bounding boxes overlap.
+    Non-overlapping pairs get IoU = 0.
     """
-    objects = tensor.unique()[1:]  # Exclude background
-    boxes = {}
-    for obj in objects:
-        positions = (tensor == obj).nonzero(as_tuple=False)
-        mins = torch.min(positions, dim=0).values
-        maxs = torch.max(positions, dim=0).values
-        boxes[obj] = torch.cat((mins, maxs), dim=0)
-    return boxes
+    n_gt = gt_bboxes.shape[0]
+    n_pred = pred_bboxes.shape[0]
+
+    for i in prange(n_gt):
+        for j in range(n_pred):
+            # Quick bounding box overlap check
+            if (pred_bboxes[j, 3] < gt_bboxes[i, 0] or pred_bboxes[j, 0] > gt_bboxes[i, 3] or
+                pred_bboxes[j, 4] < gt_bboxes[i, 1] or pred_bboxes[j, 1] > gt_bboxes[i, 4] or
+                pred_bboxes[j, 5] < gt_bboxes[i, 2] or pred_bboxes[j, 2] > gt_bboxes[i, 5]):
+                iou_matrix[i, j] = 0.0
+                continue
+
+            # Compute intersection over the overlapping region
+            z_min = max(gt_bboxes[i, 0], pred_bboxes[j, 0])
+            z_max = min(gt_bboxes[i, 3], pred_bboxes[j, 3])
+            y_min = max(gt_bboxes[i, 1], pred_bboxes[j, 1])
+            y_max = min(gt_bboxes[i, 4], pred_bboxes[j, 4])
+            x_min = max(gt_bboxes[i, 2], pred_bboxes[j, 2])
+            x_max = min(gt_bboxes[i, 5], pred_bboxes[j, 5])
+
+            intersection = 0
+            for z in range(z_min, z_max + 1):
+                for y in range(y_min, y_max + 1):
+                    for x in range(x_min, x_max + 1):
+                        if gt_map[z, y, x] == gt_labels[i] and pred_map[z, y, x] == pred_labels[j]:
+                            intersection += 1
+
+            union = gt_volumes[i] + pred_volumes[j] - intersection
+            iou_matrix[i, j] = intersection / union if union > 0 else 0.0
 
 
 def instance_segmentation_metrics(pred_map, gt_map, iou_threshold):
@@ -138,72 +209,102 @@ def instance_segmentation_metrics(pred_map, gt_map, iou_threshold):
     the one with the highest IOU is considered as the TP and all the others are counted as FP.
 
     Args:
-        pred_map (torch.Tensor): The segmentation map to be evaluated. Should have a shape of (Depth, Height, Width)
-        gt_map (torch.Tensor): Ground Truth Map. Should be the same shape as pred_map
-        iou_threshold (float): threshold for the IOU to be considered as TP
+        pred_map (np.ndarray): Predicted segmentation map, shape (D, H, W), integer labels.
+        gt_map (np.ndarray): Ground truth map, same shape, integer labels.
+        iou_threshold (float): IoU threshold for a prediction to be considered a true positive.
 
     Returns:
-        tpr, fpr, fnr, precision, recall (float): The calculated metrics.
+        tuple: (tpr, fpr, fnr, precision, recall) as Python floats.
     """
     assert pred_map.shape == gt_map.shape, "Prediction and ground truth maps size mismatch!"
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    pred_map = pred_map.to(device=device)
-    gt_map = gt_map.to(device=device)
 
-    def calculate_iou(pred, gt):
-        intersection = torch.logical_and(pred, gt).sum()
-        union = torch.logical_or(pred, gt).sum()
-        return intersection / union if union != 0 else 0.0
+    # Get unique object labels (0 is background)
+    gt_labels = np.unique(gt_map)
+    gt_labels = gt_labels[gt_labels != 0]
+    pred_labels = np.unique(pred_map)
+    pred_labels = pred_labels[pred_labels != 0]
 
-    pred_boxes = get_bounding_boxes(pred_map)
-    gt_boxes = get_bounding_boxes(gt_map)
+    n_gt = len(gt_labels)
+    n_pred = len(pred_labels)
 
-    tp = torch.tensor(0, dtype=torch.int32, device=device)
-    fp = torch.tensor(0, dtype=torch.int32, device=device)
-    fn = torch.tensor(len(gt_boxes), dtype=torch.int32, device=device)
+    # If no ground truth objects, all metrics are zero
+    if n_gt == 0:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
 
-    gt_to_pred_iou = {}
+    # If no predicted objects, every GT is a false negative
+    if n_pred == 0:
+        return 0.0, 0.0, 1.0, 0.0, 0.0
 
-    with tqdm(total=len(gt_boxes), desc="Processing", unit="objects") as pbar:
-        for gt_object, gt_box in gt_boxes.items():
-            gt_object_mask = (gt_map == gt_object)
-            best_iou = 0.0
-            best_pred_object = None
+    # Get bounding box slices for each object
+    gt_slices = find_objects(gt_map)
+    pred_slices = find_objects(pred_map)
 
-            for pred_object, pred_box in pred_boxes.items():
-                # Quick bounding box overlap check before expensive IOU calculation
-                if not (pred_box[3] < gt_box[0] or pred_box[0] > gt_box[3] or
-                        pred_box[4] < gt_box[1] or pred_box[1] > gt_box[4] or
-                        pred_box[5] < gt_box[2] or pred_box[2] > gt_box[5]):
-                    pred_object_mask = (pred_map == pred_object)
-                    iou = calculate_iou(pred_object_mask, gt_object_mask)
-                    if iou > best_iou:
-                        best_iou = iou
-                        best_pred_object = pred_object
+    # Build arrays: bounding boxes (min/max inclusive), volumes, labels
+    gt_bboxes = np.zeros((n_gt, 6), dtype=np.int64)
+    gt_volumes = np.zeros(n_gt, dtype=np.int64)
+    for idx, label in enumerate(gt_labels):
+        sl = gt_slices[label - 1]
+        # sl is a tuple of slices (z, y, x)
+        gt_bboxes[idx, 0] = sl[0].start  # min depth
+        gt_bboxes[idx, 1] = sl[1].start  # min height
+        gt_bboxes[idx, 2] = sl[2].start  # min width
+        gt_bboxes[idx, 3] = sl[0].stop - 1  # max depth (inclusive)
+        gt_bboxes[idx, 4] = sl[1].stop - 1  # max height
+        gt_bboxes[idx, 5] = sl[2].stop - 1  # max width
+        gt_volumes[idx] = np.sum(gt_map[sl] == label)
 
-            if best_iou > iou_threshold:
-                if best_pred_object not in gt_to_pred_iou:
-                    tp += 1
-                    gt_to_pred_iou[best_pred_object] = (best_iou, gt_object)
-                else:
-                    fp += 1  # Either the previous best is now considered FP, or the current one is an FP.
-                    if gt_to_pred_iou[best_pred_object][0] < best_iou:
-                        gt_to_pred_iou[best_pred_object] = (best_iou, gt_object)
+    pred_bboxes = np.zeros((n_pred, 6), dtype=np.int64)
+    pred_volumes = np.zeros(n_pred, dtype=np.int64)
+    for idx, label in enumerate(pred_labels):
+        sl = pred_slices[label - 1]
+        pred_bboxes[idx, 0] = sl[0].start
+        pred_bboxes[idx, 1] = sl[1].start
+        pred_bboxes[idx, 2] = sl[2].start
+        pred_bboxes[idx, 3] = sl[0].stop - 1
+        pred_bboxes[idx, 4] = sl[1].stop - 1
+        pred_bboxes[idx, 5] = sl[2].stop - 1
+        pred_volumes[idx] = np.sum(pred_map[sl] == label)
+
+    # Compute pairwise IoU matrix (parallelized with Numba)
+    iou_matrix = np.zeros((n_gt, n_pred), dtype=np.float64)
+    compute_iou_matrix(gt_bboxes, pred_bboxes, gt_volumes, pred_volumes,
+                       gt_labels, pred_labels, gt_map, pred_map, iou_matrix)
+
+    # Sequential greedy matching (same logic as original PyTorch version)
+    tp = 0
+    fp = 0
+    matched_pred_to_gt = {}  # pred_idx -> (iou, gt_idx)
+
+    for i in range(n_gt):
+        best_iou = 0.0
+        best_pred_idx = -1
+
+        for j in range(n_pred):
+            iou = iou_matrix[i, j]
+            if iou > best_iou:
+                best_iou = iou
+                best_pred_idx = j
+
+        if best_iou > iou_threshold:
+            if best_pred_idx not in matched_pred_to_gt:
+                tp += 1
+                matched_pred_to_gt[best_pred_idx] = (best_iou, i)
             else:
-                if best_pred_object is not None:
-                    fp += 1
+                fp += 1
+                stored_iou, _ = matched_pred_to_gt[best_pred_idx]
+                if best_iou > stored_iou:
+                    matched_pred_to_gt[best_pred_idx] = (best_iou, i)
+        else:
+            if best_pred_idx != -1:  # there was at least some positive overlap
+                fp += 1
 
-            pbar.update(1)
+    fn = n_gt - tp
 
-    fn -= tp  # Adjust FN
+    # Compute final metrics
+    tpr = tp / n_gt if n_gt > 0 else 0.0
+    fpr = fp / (fp + tp) if (fp + tp) > 0 else 0.0
+    fnr = fn / n_gt if n_gt > 0 else 0.0
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
 
-    tpr = tp / len(gt_boxes) if gt_boxes else 0
-    fpr = fp / (fp + tp) if (fp + tp) > 0 else 0
-    fnr = fn / len(gt_boxes) if gt_boxes else 0
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-
-    del pred_map, gt_map
-
-    return tpr.cpu(), fpr.cpu(), fnr.cpu(), precision.cpu(), recall.cpu()
-
+    return tpr, fpr, fnr, precision, recall
