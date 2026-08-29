@@ -8,10 +8,8 @@ from scipy.ndimage import find_objects
 from numba import njit, prange
 
 
-
-
 class BinaryMetrics(nn.Module):
-    def __init__(self, loss_mode: str, smooth=1024.0):
+    def __init__(self, loss_mode: str, smooth=1024.0, gamma=2.0):
         """
         Initializes the BinaryMetrics module. Which can be set for using dice loss (for semantic map)
         or focal loss (for contour map).
@@ -20,10 +18,13 @@ class BinaryMetrics(nn.Module):
             loss_mode (str): A string indicating whether to use focal loss ("focal")
                              or dice loss ("dice") or dice+bce ("dice+bce") or bce loss without dice calculation ("bce_no_dice")
             smooth (float): A smoothing factor for numerical stability (default is 1024, very large, explained in the code)
+            gamma (float): Controls the degree of penalisation for FN/FP in DicePlusPlus.
+                           Higher values favour low confidence predictions (default 2.0).
         """
         super(BinaryMetrics, self).__init__()
         self.loss_mode = loss_mode
         self.smooth = smooth
+        self.gamma = gamma
 
     @staticmethod
     def sparse_preprocessing(inputs: torch.Tensor, targets: torch.Tensor):
@@ -56,6 +57,22 @@ class BinaryMetrics(nn.Module):
 
         return intersection, union, loss
 
+    def calculate_diceplusplus_loss(self, probs, targets, hard_pred):
+        # Soft TP, FN, FP (DicePlusPlus formulation)
+        tp = torch.dot(targets, probs)  # equivalent to sum(targets * probs)
+        fn = ((targets * (1 - probs)) ** self.gamma).sum()
+        fp = (((1 - targets) * probs) ** self.gamma).sum()
+
+        dice = (2 * tp + self.smooth) / (2 * tp + fn + fp + self.smooth)
+        loss = 1 - dice
+
+        # # Hard intersection/union for logging
+        tp_hard = targets[hard_pred].sum()
+        intersection = 2 * tp_hard
+        union = hard_pred.sum() + targets.sum()
+
+        return intersection, union, loss
+
 
     def calculate_other_metrices(self, probs, targets, hard_pred):
         ecs = self.expected_calibration_error(probs, targets)
@@ -71,30 +88,50 @@ class BinaryMetrics(nn.Module):
 
     @staticmethod
     def expected_calibration_error(pred, target, n_bins=10):
-        pred = pred.reshape(-1)
-        target = target.reshape(-1)
+        if pred.max() > 1.0 or pred.min() < 0.0 or target.max() > 1.0 or target.min() < 0.0:
+            print(pred.max(), pred.min(), target.max(), target.min())
+        boundaries = torch.linspace(0, 1, n_bins + 1, device=pred.device, dtype=pred.dtype)
+        bin_idx = torch.bucketize(pred, boundaries, right=False) - 1
+        bin_idx = torch.clamp(bin_idx, 0, n_bins - 1)
+
         total = pred.numel()
-        ece = 0.0
 
-        for i in range(n_bins):
-            lower = i / n_bins
-            upper = (i + 1) / n_bins
+        sorted_indices = torch.argsort(bin_idx)
+        sorted_bins = bin_idx[sorted_indices]
+        sorted_pred = pred[sorted_indices]
+        sorted_target = target[sorted_indices]
 
-            if i == n_bins - 1:
-                mask = (pred >= lower) & (pred <= upper)
+        unique_bins, counts = torch.unique_consecutive(sorted_bins, return_counts=True)
+
+        cumsum_pred = torch.cumsum(sorted_pred, dim=0)
+        cumsum_target = torch.cumsum(sorted_target, dim=0)
+
+        conf_sum = torch.zeros(n_bins, device=pred.device, dtype=pred.dtype)
+        acc_sum = torch.zeros(n_bins, device=pred.device, dtype=pred.dtype)
+        counts_full = torch.zeros(n_bins, device=pred.device, dtype=torch.long)
+
+        start = 0
+        for idx, bin_id in enumerate(unique_bins):
+            end = start + counts[idx]
+            if start == 0:
+                conf_sum[bin_id] = cumsum_pred[end - 1]
+                acc_sum[bin_id] = cumsum_target[end - 1]
             else:
-                mask = (pred >= lower) & (pred < upper)
+                conf_sum[bin_id] = cumsum_pred[end - 1] - cumsum_pred[start - 1]
+                acc_sum[bin_id] = cumsum_target[end - 1] - cumsum_target[start - 1]
+            counts_full[bin_id] = counts[idx]
+            start = end
 
-            n_bin = mask.sum().item()
-            if n_bin == 0:
-                continue
+        mask = counts_full > 0
+        conf_mean = torch.zeros_like(conf_sum)
+        acc_mean = torch.zeros_like(acc_sum)
+        conf_mean[mask] = conf_sum[mask] / counts_full[mask].float()
+        acc_mean[mask] = acc_sum[mask] / counts_full[mask].float()
 
-            avg_confidence = pred[mask].mean().item()
-            avg_accuracy = target[mask].mean().item()
+        weights = counts_full.float() / total
+        ece = torch.sum(torch.abs(acc_mean - conf_mean) * weights)
 
-            ece += (n_bin / total) * abs(avg_confidence - avg_accuracy)
-
-        return ece
+        return ece.item()
 
 
     def forward(self, predict: torch.Tensor, target: torch.Tensor, sparse_label=False):
@@ -140,22 +177,22 @@ class BinaryMetrics(nn.Module):
             probs = torch.sigmoid(predict)
             hard_pred = probs >= 0.5
             with torch.no_grad():
-                intersection, union, _ = self.calculate_iou_loss(probs, target, hard_pred)
+                intersection, union, _ = self.calculate_diceplusplus_loss(probs, target, hard_pred)
                 tp, fn, tn, fp, ecs = self.calculate_other_metrices(probs, target, hard_pred)
         elif self.loss_mode == "dice":
             probs = torch.sigmoid(predict)
             hard_pred = probs >= 0.5
-            intersection, union, loss = self.calculate_iou_loss(predict, target, hard_pred)
+            intersection, union, loss = self.calculate_diceplusplus_loss(probs, target, hard_pred)
             with torch.no_grad():
-                tp, fn, tn, fp, ecs = self.calculate_other_metrices(predict, target, hard_pred)
+                tp, fn, tn, fp, ecs = self.calculate_other_metrices(probs, target, hard_pred)
         elif self.loss_mode == "dice+bce":
             bce_loss = F.binary_cross_entropy_with_logits(predict, target, reduction="mean")
             probs = torch.sigmoid(predict)
             hard_pred = probs >= 0.5
-            intersection, union, dice_loss = self.calculate_iou_loss(probs, target, hard_pred)
-            loss = 0.1 * dice_loss + 1.9 * bce_loss
+            intersection, union, dice_loss = self.calculate_diceplusplus_loss(probs, target, hard_pred)
+            loss = 1.0 * dice_loss + 1.0 * bce_loss
             with torch.no_grad():
-                tp, fn, tn, fp, ecs = self.calculate_other_metrices(predict, target, hard_pred)
+                tp, fn, tn, fp, ecs = self.calculate_other_metrices(probs, target, hard_pred)
         else:
             raise ValueError("Invalid loss. Use 'focal' or 'dice' or 'dice+bce' or 'bce_no_dice'.")
         return loss, intersection, union, tp, fn, tn, fp, ecs
