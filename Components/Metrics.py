@@ -88,8 +88,6 @@ class BinaryMetrics(nn.Module):
 
     @staticmethod
     def expected_calibration_error(pred, target, n_bins=10):
-        if pred.max() > 1.0 or pred.min() < 0.0 or target.max() > 1.0 or target.min() < 0.0:
-            print(pred.max(), pred.min(), target.max(), target.min())
         boundaries = torch.linspace(0, 1, n_bins + 1, device=pred.device, dtype=pred.dtype)
         bin_idx = torch.bucketize(pred, boundaries, right=False) - 1
         bin_idx = torch.clamp(bin_idx, 0, n_bins - 1)
@@ -125,10 +123,10 @@ class BinaryMetrics(nn.Module):
         mask = counts_full > 0
         conf_mean = torch.zeros_like(conf_sum)
         acc_mean = torch.zeros_like(acc_sum)
-        conf_mean[mask] = conf_sum[mask] / counts_full[mask].float()
-        acc_mean[mask] = acc_sum[mask] / counts_full[mask].float()
+        conf_mean[mask] = conf_sum[mask] / counts_full[mask]
+        acc_mean[mask] = acc_sum[mask] / counts_full[mask]
 
-        weights = counts_full.float() / total
+        weights = counts_full / total
         ece = torch.sum(torch.abs(acc_mean - conf_mean) * weights)
 
         return ece.item()
