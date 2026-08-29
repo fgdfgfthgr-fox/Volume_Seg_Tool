@@ -78,7 +78,7 @@ class PLModule(pl.LightningModule):
         self.lr = 1e-2
         self.pixel_ramp_steps = 2048
         self.unsupervised_weight = 0.1
-        self.p_loss_fn = Metrics.BinaryMetrics("focal")
+        self.p_loss_fn = Metrics.BinaryMetrics("dice+bce")
         self.c_loss_fn = Metrics.BinaryMetrics("dice+bce")
 
         self.dice_threshold_reached = False
@@ -411,7 +411,7 @@ if __name__ == "__main__":
                 model = PLModule(arch_args,
                                 True, True, True,
                                 False, False, False, True)
-                trainer = pl.Trainer(max_epochs=2, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'run_reference_cleanloss'),
+                trainer = pl.Trainer(max_epochs=30, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'run_reference_dicepp2_duel'),
                                      accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
                                      precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
                                                                                                                   #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
