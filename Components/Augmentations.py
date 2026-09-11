@@ -190,8 +190,8 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
     """
     Randomly crop then rotate a list of 3D PyTorch tensors given the desired depth, height, and width,
     preferably within the required foreground or background proportion.\n
-    The foreground object is determined by the second tensor in the list,
-    pixels with values larger or equal to 1 are considered foreground.\n
+    The foreground object is determined by the last tensor in the list,
+    pixels with values greater or equal to 1 are considered foreground.\n
     If no foreground object is found after max_attempts attempts, it will output a warning message and crop a random volume.
 
     Args:
@@ -278,8 +278,8 @@ def custom_rand_crop_rotate(tensors, depth, height, width,
             else:
                 rotated_tensors = cropped_tensors
 
-            # Check if the label tensor (2nd tensor) contains a foreground object
-            if contains_bothground(rotated_tensors[1]):
+            # Check if the label tensor (last tensor) contains a foreground object
+            if contains_bothground(rotated_tensors[-1]):
                 return rotated_tensors
         # If no suitable crop is found after max_attempts, raise a warning
         print(f"Random clop failed: No suitable crop with desired threshold found after {max_attempts} attempts. Will "
