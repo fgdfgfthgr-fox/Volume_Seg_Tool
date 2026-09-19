@@ -88,48 +88,29 @@ class BinaryMetrics(nn.Module):
 
     @staticmethod
     def expected_calibration_error(pred, target, n_bins=10):
-        boundaries = torch.linspace(0, 1, n_bins + 1, device=pred.device, dtype=pred.dtype)
-        bin_idx = torch.bucketize(pred, boundaries, right=False) - 1
-        bin_idx = torch.clamp(bin_idx, 0, n_bins - 1)
-
         total = pred.numel()
+        ece = 0.0
 
-        sorted_indices = torch.argsort(bin_idx)
-        sorted_bins = bin_idx[sorted_indices]
-        sorted_pred = pred[sorted_indices]
-        sorted_target = target[sorted_indices]
+        for i in range(n_bins):
+            lower = i / n_bins
+            upper = (i + 1) / n_bins
 
-        unique_bins, counts = torch.unique_consecutive(sorted_bins, return_counts=True)
-
-        cumsum_pred = torch.cumsum(sorted_pred, dim=0)
-        cumsum_target = torch.cumsum(sorted_target, dim=0)
-
-        conf_sum = torch.zeros(n_bins, device=pred.device, dtype=pred.dtype)
-        acc_sum = torch.zeros(n_bins, device=pred.device, dtype=pred.dtype)
-        counts_full = torch.zeros(n_bins, device=pred.device, dtype=torch.long)
-
-        start = 0
-        for idx, bin_id in enumerate(unique_bins):
-            end = start + counts[idx]
-            if start == 0:
-                conf_sum[bin_id] = cumsum_pred[end - 1]
-                acc_sum[bin_id] = cumsum_target[end - 1]
+            # Last bin includes 1.0
+            if i == n_bins - 1:
+                mask = (pred >= lower) & (pred <= upper)
             else:
-                conf_sum[bin_id] = cumsum_pred[end - 1] - cumsum_pred[start - 1]
-                acc_sum[bin_id] = cumsum_target[end - 1] - cumsum_target[start - 1]
-            counts_full[bin_id] = counts[idx]
-            start = end
+                mask = (pred >= lower) & (pred < upper)
 
-        mask = counts_full > 0
-        conf_mean = torch.zeros_like(conf_sum)
-        acc_mean = torch.zeros_like(acc_sum)
-        conf_mean[mask] = conf_sum[mask] / counts_full[mask]
-        acc_mean[mask] = acc_sum[mask] / counts_full[mask]
+            n_bin = mask.sum().item()
+            if n_bin == 0:
+                continue
 
-        weights = counts_full / total
-        ece = torch.sum(torch.abs(acc_mean - conf_mean) * weights)
+            avg_confidence = pred[mask].mean().item()
+            avg_accuracy = target[mask].mean().item()
 
-        return ece.item()
+            ece += (n_bin / total) * abs(avg_confidence - avg_accuracy)
+
+        return ece
 
 
     def forward(self, predict: torch.Tensor, target: torch.Tensor, sparse_label=False):
