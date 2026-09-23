@@ -373,13 +373,13 @@ if __name__ == "__main__":
     #tracemalloc.start()
     #snap1 = tracemalloc.take_snapshot()
     #torch.backends.cudnn.enabled = False
-    sizes = [(144, 40)]
-    precisions = ['32']
+    sizes = [(128, 128)]
+    precisions = ['bf16-mixed']
     batch_sizes = [2]
     for size in sizes:
         for precision in precisions:
             for batch_size in batch_sizes:
-                predict_dataset = Components.Datasets.PredictDataset("Datasets/predict", 96, 32, 24, 4)
+                #predict_dataset = Components.Datasets.PredictDataset("Datasets/predict", 96, 32, 24, 4)
                 train_dataset = Components.Datasets.TrainDataset("Datasets/train",
                                                             "Augmentation Parameters Anisotropic.csv",
                                                                  128,
@@ -395,9 +395,9 @@ if __name__ == "__main__":
                                                            collate_fn=collate_fn, sampler=sampler,
                                                            num_workers=6, pin_memory=True, persistent_workers=True)
                 # meta_info = predict_dataset.__getmetainfo__()
-                predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                val_dataset = Components.Datasets.ValDataset("Datasets/val", size[0], size[1], True, 1)
-                val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
+                #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
+                #val_dataset = Components.Datasets.ValDataset("Datasets/val", size[0], size[1], True, 1)
+                #val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
 
                 callbacks = []
                 model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="trained_model",
@@ -407,11 +407,11 @@ if __name__ == "__main__":
                 callbacks.append(LearningRateMonitor(logging_interval='epoch'))
                 callbacks.append(model_checkpoint_last)
                 #callbacks.append(swa_callback)
-                arch_args = ((2,6,6), 4, 7, True)
+                arch_args = ((4,4,4), 4, 6, True)
                 model = PLModule(arch_args,
                                 True, True, True,
                                 False, False, False, True)
-                trainer = pl.Trainer(max_epochs=30, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'run_reference_dicepp2_duel'),
+                trainer = pl.Trainer(max_epochs=100, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'run_reference'),
                                      accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
                                      precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
                                                                                                                   #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
@@ -422,7 +422,7 @@ if __name__ == "__main__":
                 #    print(stat)
                 #start_time = time.time()
                 trainer.fit(model,
-                            val_dataloaders=val_loader,
+                            #val_dataloaders=val_loader,
                             train_dataloaders=train_loader)
                 torch.cuda.empty_cache()
                 #trainer.predict(model, predict_loader)

@@ -31,7 +31,7 @@ def window_partition(x, window_size):
         window_size (tuple[int]): window depth, height, width
 
     Returns:
-        windows: (num_windows*B, wd, wh, ww, C)
+        windows: (B*num_windows, wd, wh, ww, C)
     """
     B, D, H, W, C = x.shape
     wd, wh, ww = window_size
@@ -50,14 +50,14 @@ def window_partition(x, window_size):
         1, 3, 5,  # D_windows, H_windows, W_windows
         2, 4, 6,  # wd, wh, ww (window interior)
         7  # C
-    ).reshape(-1, wd, wh, ww, C)
+    ).reshape(B, -1, wd, wh, ww, C)
     return windows
 
 
 def window_reverse(windows, window_size, D, H, W):
     """
     Args:
-        windows: (num_windows*B, wd, wh, ww, C)
+        windows: (B, num_windows, wd, wh, ww, C)
         window_size (tuple[int]): window depth, height, width
         D, H, W: original depth, height, width
 
@@ -67,8 +67,7 @@ def window_reverse(windows, window_size, D, H, W):
     wd, wh, ww = window_size
     # Calculate batch size
     windows_per_dim = (D // wd, H // wh, W // ww)
-    num_windows_per_image = windows_per_dim[0] * windows_per_dim[1] * windows_per_dim[2]
-    B = windows.shape[0] // num_windows_per_image
+    B = windows.shape[0]
 
     # Reshape windows back to grid
     x = windows.view(
@@ -140,54 +139,42 @@ class WindowAttention(nn.Module):
         self.k_norm = DyT(self.head_dim_qk)
         self.proj = nn.Linear(dim, dim)
 
-        trunc_normal_(self.relative_position_bias_table, std=.02)
-        self.softmax = nn.Softmax(dim=-1)
+        nn.init.trunc_normal_(self.relative_position_bias_table, std=.02)
 
     def forward(self, x, mask=None):
-        B_, N, C = x.shape
+        B, Np, N, C = x.shape # [B, num_windows, wd*wh*ww, C]
 
         # Compute Q, K, V
         qkv = self.qkv(x)
-        q, k, v = torch.split(qkv, [self.qk_dim, self.qk_dim, self.dim], dim=-1)  # each: (B_, num_heads, N, head_dim)
-        q = q.reshape(B_, N, self.num_heads, self.head_dim_qk).permute(0, 2, 1, 3)
-        k = k.reshape(B_, N, self.num_heads, self.head_dim_qk).permute(0, 2, 1, 3)
-        v = v.reshape(B_, N, self.num_heads, self.dim//self.num_heads).permute(0, 2, 1, 3)
+        q, k, v = torch.split(qkv, [self.qk_dim, self.qk_dim, self.dim], dim=-1)
+        q = q.reshape(B, Np, N, self.num_heads, self.head_dim_qk).permute(0, 1, 3, 2, 4)
+        k = k.reshape(B, Np, N, self.num_heads, self.head_dim_qk).permute(0, 1, 3, 2, 4)
+        v = v.reshape(B, Np, N, self.num_heads, self.dim//self.num_heads).permute(0, 1, 3, 2, 4)
+        # each: (B, num_windows, num_heads, N, head_dim)
 
-        q = self.q_norm(q)
-        k = self.k_norm(k)
+        q = self.q_norm(q).to(x.dtype)
+        k = self.k_norm(k).to(x.dtype)
 
         # Relative position bias: (num_heads, N, N)
         rel_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)]
-        rel_bias = rel_bias.view(N, N, -1).permute(2, 0, 1).contiguous()  # (num_heads, N, N)
+        rel_bias = rel_bias.view(N, N, self.num_heads).permute(2, 0, 1).unsqueeze(0).to(x.dtype)  # (num_heads, N, N)
 
-        # Combine with optional shift mask (if given) to form the full attention mask
-        # mask from compute_attn_mask has shape (num_windows, N, N) with 0 or -inf
-        # expand to (B_, num_heads, N, N)
-        if mask is not None:
-            # mask: (num_windows, N, N)  →  (B_, 1, N, N)  (broadcast over heads)
-            attn_mask = mask.unsqueeze(1)  # (num_windows, 1, N, N)
-            # Add relative bias (broadcasted to heads dimension)
-            attn_mask = attn_mask + rel_bias.unsqueeze(0)  # (num_windows, num_heads, N, N)
+        if mask is None:
+            out = scaled_dot_product_attention(q, k, v, attn_mask=rel_bias)
         else:
-            attn_mask = rel_bias.unsqueeze(0)  # (1, num_heads, N, N)
+            # Combine window mask and relative position bias
+            # mask:      (nW, 1, N, N)
+            # rel_bias:  (1, num_heads, N, N)
+            # combined:  (B, nW, num_heads, N, N)
+            rel_bias = mask + rel_bias  # (nW, num_heads, N, N)
+            rel_bias = rel_bias.unsqueeze(0)  # (1, nW, num_heads, N, N)
 
-        # SDPA expects mask of shape (B_, num_heads, N, N) or broadcastable.
-        if mask is not None:
-            nW = mask.shape[0]                # windows per image
-            batch = B_ // nW
-            attn_mask = attn_mask.repeat(batch, 1, 1, 1)   # (B_, num_heads, N, N)
-
-        x = scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=attn_mask,
-            dropout_p=0.0,
-            is_causal=False
-        )
+            out = scaled_dot_product_attention(q, k, v, attn_mask=rel_bias)
 
         # Reshape and project (same as original)
-        x = x.transpose(1, 2).reshape(B_, N, C)
-        x = self.proj(x)
-        return x
+        out = out.transpose(2, 3).reshape(B, Np, N, C)
+        out = self.proj(out)
+        return out
 
 
 def compute_attn_mask(input_resolution, window_size, shift_size, device):
@@ -201,7 +188,7 @@ def compute_attn_mask(input_resolution, window_size, shift_size, device):
         device: The device the final mask is on.
 
     Returns:
-        attn_mask: mask with shape (num_windows, N, N) where N = wd*wh*ww,
+        attn_mask: mask with shape (num_windows, 1, N, N) where N = wd*wh*ww,
                    or None if no shift is applied.
     """
     D, H, W = input_resolution
@@ -214,9 +201,9 @@ def compute_attn_mask(input_resolution, window_size, shift_size, device):
         return None
 
     # Coordinate tensors
-    d_idx = torch.arange(D)
-    h_idx = torch.arange(H)
-    w_idx = torch.arange(W)
+    d_idx = torch.arange(D, device=device)
+    h_idx = torch.arange(H, device=device)
+    w_idx = torch.arange(W, device=device)
 
     # Segment labels: 0 (lower), 1 (middle), 2 (upper)
     d_label = (d_idx >= (D - wd)).int() + (d_idx >= (D - sd)).int()
@@ -232,7 +219,7 @@ def compute_attn_mask(input_resolution, window_size, shift_size, device):
     mask_windows = mask_windows.view(-1, wd * wh * ww)              # (num_windows, N)
     attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)  # (num_windows, N, N)
     attn_mask = torch.where(attn_mask != 0, -torch.inf, 0.0)
-    return attn_mask.to(device)
+    return attn_mask.unsqueeze(1)
 
 
 class SwinTransformerBlock(nn.Module):
@@ -281,51 +268,40 @@ class SwinTransformerBlock(nn.Module):
         )
             self.gamma_3 = nn.Parameter(1e-4 * torch.ones((dim)),requires_grad=True)
 
-    def full_attn(self, x, input_resolution, attn_mask):
-        D, H, W = input_resolution
-        B, L, C = x.shape
-
-        shortcut = x
-        x = x.view(B, D, H, W, C)
+    def full_attn(self, x, attn_mask):
+        B, D, H, W, C = x.shape #  [B, D/p, H/p, W/p, dim]
 
         # Cyclic shift
         if any(s > 0 for s in self.shift_size):
-            shifted_x = torch.roll(x, shifts=(-self.shift_size[0], -self.shift_size[1], -self.shift_size[2]),
-                                   dims=(1, 2, 3))
-        else:
-            shifted_x = x
+            x = torch.roll(x, shifts=(-self.shift_size[0], -self.shift_size[1], -self.shift_size[2]),
+                              dims=(1, 2, 3))
 
-        # Partition windows
-        x_windows = window_partition(shifted_x, self.window_size)  # nW*B, wd, wh, ww, C
-        x_windows = x_windows.view(-1, self.window_size[0] * self.window_size[1] * self.window_size[2], C)
+        x = window_partition(x, self.window_size)  # B, nW, wd, wh, ww, C
+        x = x.view(B, -1, self.window_size[0] * self.window_size[1] * self.window_size[2], C) # [B, num_windows, wd*wh*ww, C]
 
         # W-MSA / SW-MSA
-        attn_windows = self.attn(x_windows, mask=attn_mask)  # nW*B, window_size**3, C
+        x = self.attn(x, mask=attn_mask)
 
-        # Merge windows
-        attn_windows = attn_windows.view(-1, self.window_size[0], self.window_size[1], self.window_size[2], C)
-        shifted_x = window_reverse(attn_windows, self.window_size, D, H, W)  # B, D, H, W, C
+        x = x.view(B, -1, self.window_size[0], self.window_size[1], self.window_size[2], C)
+        x = window_reverse(x, self.window_size, D, H, W)  # B, D, H, W, C
 
         # Reverse cyclic shift
         if any(s > 0 for s in self.shift_size):
-            x = torch.roll(shifted_x, shifts=(self.shift_size[0], self.shift_size[1], self.shift_size[2]),
-                           dims=(1, 2, 3))
-        else:
-            x = shifted_x
+            x = torch.roll(x, shifts=(self.shift_size[0], self.shift_size[1], self.shift_size[2]),
+                              dims=(1, 2, 3))
 
-        x = x.view(B, D * H * W, C)
-        return shortcut + self.gamma_1 * x
+        return x
 
-    def forward(self, x, input_resolution, attn_mask=None):
+    def forward(self, x, attn_mask=None):
         """
         x: (B, L, C) where L = D*H*W
         """
-        x = self.full_attn(x, input_resolution, attn_mask)
+        x = x + self.gamma_1.to(x.dtype) * self.full_attn(x, attn_mask)
 
         # FFN
-        x = x + self.gamma_2 * self.mlp(x)
+        x = x + self.gamma_2.to(x.dtype) * self.mlp(x)
         if self.more_ffn:
-            x = x + self.gamma_3 * self.mlp2(x)
+            x = x + self.gamma_3.to(x.dtype) * self.mlp2(x)
         return x
 
 
@@ -344,8 +320,8 @@ class SwinBlock(nn.Module):
             for i in range(num_layers)
         ])
 
-    def forward(self, x, input_resolution, attn_mask):
+    def forward(self, x, attn_mask):
         for layer_n, layer_s in zip(self.layers_no_shift, self.layers_shift):
-            x = layer_n(x, input_resolution, None) if not self.training else checkpoint(layer_n, x, input_resolution, None, use_reentrant=False)
-            x = layer_s(x, input_resolution, attn_mask) if not self.training else checkpoint(layer_s, x, input_resolution, attn_mask, use_reentrant=False)
+            x = layer_n(x, None) if not self.training else checkpoint(layer_n, x, None, use_reentrant=False)
+            x = layer_s(x, attn_mask) if not self.training else checkpoint(layer_s, x, attn_mask, use_reentrant=False)
         return x

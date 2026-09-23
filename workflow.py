@@ -71,7 +71,7 @@ def generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, pers
         del test_dataset
     gc.collect()
     arch_args = ((args.model_patch_size_z, args.model_patch_size_xy, args.model_patch_size_xy), 4,
-                 args.model_depth * args.model_depth_multiplier, instance_mode)
+                 int(args.model_depth * args.model_depth_multiplier), instance_mode)
     if 'Sparsely Labelled' in args.train_dataset_mode:
         sparse_train = True
     else:
@@ -83,6 +83,7 @@ def generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, pers
                          'Validation' in args.workflow_box, args.mid_visualization, instance_mode,
                          sparse_train, 'Sparsely Labelled' in args.val_dataset_mode,
                          'Sparsely Labelled' in args.test_dataset_mode, args.enable_tensorboard)
+    # model = torch.compile(model)
     if 'Training' in args.workflow_box:
         logger = create_logger(args)
     else:
