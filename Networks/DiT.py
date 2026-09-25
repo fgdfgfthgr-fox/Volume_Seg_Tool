@@ -6,58 +6,50 @@ from timm.layers import trunc_normal_
 
 def unfold(x, kernel_size):
     """
-    Unfold a 3D tensor (B, C, D, H, W) using a non‑overlapping 3D sliding window.
+    x: (B, 1, D, H, W)
+
     Returns:
-        patches: Tensor of shape (B, num_patches, C * kd * kh * kw)
-                 where num_patches = (D//kd) * (H//kh) * (W//kw)
+        patches: (B, Db, Hb, Wb, kd * kh * kw)
+        where Db = D // kd, Hb = H // kh, Wb = W // kw
     """
     B, C, D, H, W = x.shape
+
     kd, kh, kw = kernel_size
+    Db, Hb, Wb = D // kd, H // kh, W // kw
 
-    x = x.reshape(B, C, D // kd, kd, H // kh, kh, W // kw, kw)
+    # (B, Db, kd, Hb, kh, Wb, kw)
+    x = x.reshape(B, Db, kd, Hb, kh, Wb, kw)
 
-    # Permute to bring block dimensions together: (B, C, Db, Hb, Wb, kd, kh, kw)
-    # where Db = D//kd, etc.
-    x = x.permute(0, 1, 2, 4, 6, 3, 5, 7)
+    # (B, Db, Hb, Wb, kd, kh, kw)
+    x = x.permute(0, 1, 3, 5, 2, 4, 6)
 
-    # Flatten kernel dimensions: (B, C, Db*Hb*Wb, kd*kh*kw)
-    num_patches = (D // kd) * (H // kh) * (W // kw)
-    x = x.reshape(B, C, num_patches, -1)
-
-    # Move the channel dimension to the end: (B, num_patches, C*kd*kh*kw)
-    x = x.permute(0, 2, 1, 3).reshape(B, num_patches, -1)
-
-    return x
+    # (B, Db, Hb, Wb, kd*kh*kw)
+    return x.reshape(B, Db, Hb, Wb, kd * kh * kw)
 
 def fold(patches, kernel_size, original_shape):
     """
-    Fold patches back into a 3D tensor (B, C, D, H, W).
-    Assumes non‑overlapping windows where kernel size equals stride.
-
-    Args:
-        patches: Tensor of shape (B, num_patches, C * kd * kh * kw)
-        kernel_size: tuple (kd, kh, kw)
-        original_shape: tuple (B, C, D, H, W) of the original tensor
+    patches: (B, Db, Hb, Wb, kd * kh * kw)
+    original_shape: (B, D, H, W) or (B, 1, D, H, W)
 
     Returns:
-        x: Tensor of shape (B, C, D, H, W)
+        x: (B, 1, D, H, W)
     """
     B, C, D, H, W = original_shape
+
     kd, kh, kw = kernel_size
+    Db, Hb, Wb = D // kd, H // kh, W // kw
 
-    Db, Hb, Wb = D // kd, H // kh, W // kw  # number of blocks per dimension
-    num_patches = Db * Hb * Wb
+    # (B, Db, Hb, Wb, kd, kh, kw)
+    x = patches.reshape(B, Db, Hb, Wb, kd, kh, kw)
 
-    # Reshape to separate channels from kernel product
-    patches = patches.reshape(B, num_patches, C, kd * kh * kw)
-    # Bring channels forward
-    patches = patches.permute(0, 2, 1, 3)               # (B, C, num_patches, kd*kh*kw)
-    # Split num_patches into block indices and kernel product into spatial dims
-    patches = patches.reshape(B, C, Db, Hb, Wb, kd, kh, kw)
-    # Interleave block and kernel dimensions (reverse of unfold's permutation)
-    patches = patches.permute(0, 1, 2, 5, 3, 6, 4, 7)   # (B, C, Db, kd, Hb, kh, Wb, kw)
-    # Merge to full spatial dimensions
-    return patches.reshape(B, C, D, H, W)
+    # (B, Db, kd, Hb, kh, Wb, kw)
+    x = x.permute(0, 1, 4, 2, 5, 3, 6)
+
+    # (B, D, H, W)
+    x = x.reshape(B, D, H, W)
+
+    x = x.unsqueeze(1)
+    return x
 
 
 class SwinTransformer(nn.Module):
@@ -70,29 +62,39 @@ class SwinTransformer(nn.Module):
         self.patch_dim = self.patch_size[0]*self.patch_size[1]*self.patch_size[2]
         self.model_dim = 16 * ((self.patch_dim * 3) // 16)
         self.up = nn.Linear(self.patch_dim, self.model_dim)
+        #self.patchify = nn.Conv3d(1, self.model_dim, self.patch_size, self.patch_size)
         self.dit = SwinBlock(self.model_dim, 2, depth, 2, self.window_size)
         self.down_p = nn.Linear(self.model_dim, self.patch_dim)
+        #self.down_p = nn.ConvTranspose3d(self.model_dim, 1, self.patch_size, self.patch_size)
         if instance:
             self.down_c = nn.Linear(self.model_dim, self.patch_dim)
+            #self.down_c = nn.ConvTranspose3d(self.model_dim, 1, self.patch_size, self.patch_size)
 
+    def reshape_back(self, x, B, d, h, w, D, H, W):
+        x = x.permute(0, 4, 1, 2, 3).reshape(B, 1, *self.patch_size, d, h, w)  # (B, 1, p, p, p, d, h, w)
+        x = x.permute(0, 1, 5, 2, 6, 3, 7, 4).reshape(B, 1, D, H, W)
+        return x
 
     def forward(self, x):
-
         B,C,D,H,W = x.shape
-        grid_size = (D // self.patch_size[0], H // self.patch_size[1], W // self.patch_size[2])
+        # grid_size = (D // self.patch_size[0], H // self.patch_size[1], W // self.patch_size[2])
 
-        x = unfold(x, self.patch_size)  # [B, num_patches, d]
+        x = unfold(x, self.patch_size)  # [B, D/p, H/p, W/p, dim]
+        #x = self.patchify(x) # (B, dim, D/p, H/p, W/p)
+        d, h, w = x.shape[1:4]
 
         x = self.up(x)
         #x = x + self.abs
-        attn_mask = compute_attn_mask(grid_size, self.window_size, self.window_size//2, x.device)
-        x = self.dit(x, grid_size, attn_mask)
+        attn_mask = compute_attn_mask((d, h, w), self.window_size, self.window_size//2, x.device).to(x.dtype) # (num_windows, 1, N, N)
+        x = self.dit(x, attn_mask)
 
         p = self.down_p(x)
+        #p = self.reshape_back(p, B, d, h, w, D, H, W)
         p = fold(p, self.patch_size, (B, C, D, H, W))
         if self.instance:
             c = self.down_c(x)
             c = fold(c, self.patch_size, (B, C, D, H, W))
+            #c = self.reshape_back(c, B, d, h, w, D, H, W)
             return p, c
         return p
 
