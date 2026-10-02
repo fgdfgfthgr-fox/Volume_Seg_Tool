@@ -1,7 +1,10 @@
+import numba_morph
 import numpy as np
 from numba import njit, prange, jit, types
-from numba.typed import List
+from numba.typed import List, Dict
 from heapq import heappush, heappop
+from scipy import ndimage
+from collections import defaultdict
 
 
 @njit
@@ -204,3 +207,221 @@ def pixel_reclaim(touching_map, segmentation, distance_threshold, z_to_xy_ratio=
             segmentation_new[z, y, x] = best_segment
 
     return segmentation_new
+
+
+@njit(cache=True)
+def _score_pairs_numba(seg, contour_dil):
+    """
+    Scan each positive voxel once. For every *distinct* neighbour label L2 != L,
+    bump the counter for the pair (min(L,L2), max(L,L2)).
+
+    The pair key is encoded as an int64:  key = (min << 32) | max.
+
+    Returns
+    -------
+    keys   : int64 array  (encoded pair keys)
+    n_tot  : int64 array  (total boundary voxels per pair)
+    n_con  : int64 array  (boundary voxels that fall inside the dilated contour)
+    """
+    nx, ny, nz = seg.shape
+
+    total = Dict.empty(types.int64, types.int64)
+    cont  = Dict.empty(types.int64, types.int64)
+
+    neigh = np.empty(26, dtype=np.int64)
+
+    for x in range(nx):
+        for y in range(ny):
+            for z in range(nz):
+                L = np.int64(seg[x, y, z])
+                if L <= 0:
+                    continue
+
+                # ---- collect unique neighbour labels (26-connectivity) ----
+                n = 0
+                for dx in range(-1, 2):
+                    xx = x + dx
+                    if xx < 0 or xx >= nx:
+                        continue
+                    for dy in range(-1, 2):
+                        yy = y + dy
+                        if yy < 0 or yy >= ny:
+                            continue
+                        for dz in range(-1, 2):
+                            if dx == 0 and dy == 0 and dz == 0:
+                                continue
+                            zz = z + dz
+                            if zz < 0 or zz >= nz:
+                                continue
+                            L2 = np.int64(seg[xx, yy, zz])
+                            if L2 <= 0 or L2 == L:
+                                continue
+                            found = False
+                            for k in range(n):
+                                if neigh[k] == L2:
+                                    found = True
+                                    break
+                            if not found:
+                                neigh[n] = L2
+                                n += 1
+
+                if n == 0:
+                    continue
+
+                is_c = contour_dil[x, y, z]
+
+                # ---- bump counts for each distinct neighbour label ----
+                for k in range(n):
+                    L2 = neigh[k]
+                    if L < L2:
+                        key = (L << 32) | L2
+                    else:
+                        key = (L2 << 32) | L
+
+                    total[key] = total.get(key, 0) + 1
+                    if is_c:
+                        cont[key] = cont.get(key, 0) + 1
+
+    m = len(total)
+    keys = np.empty(m, dtype=np.int64)
+    nt   = np.empty(m, dtype=np.int64)
+    nc   = np.empty(m, dtype=np.int64)
+    i = 0
+    for k in total.keys():
+        keys[i] = k
+        nt[i]   = total[k]
+        nc[i]   = cont.get(k, 0)
+        i += 1
+    return keys, nt, nc
+
+
+@njit(cache=True, parallel=True)
+def _apply_label_map_inplace(seg, label_map):
+    """Replace seg[x,y,z] -> label_map[seg[x,y,z]] in-place."""
+    nx, ny, nz = seg.shape
+    for x in prange(nx):
+        for y in range(ny):
+            for z in range(nz):
+                v = seg[x, y, z]
+                if v > 0:
+                    seg[x, y, z] = label_map[v]
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+def rag_merge_by_contour(segmentation,
+                         contour_map,
+                         merge_threshold=0.15,
+                         contour_dilation=1,
+                         max_iterations=20,
+                         verbose=True):
+    """
+    Iteratively merge labels whose shared boundary has low contour support.
+
+    Modifies `segmentation` in place
+
+    Parameters
+    ----------
+    segmentation : np.ndarray (integer)
+        Labeled volume. 0 = background. Modified **in place**.
+    contour_map : np.ndarray (bool or 0/1)
+        Binary map, True where a contour / boundary is expected.
+    merge_threshold : float
+        Merge a pair when (contour-supported boundary voxels / total boundary
+        voxels) is <= this value.
+    contour_dilation : int
+        Radius (26-connectivity) to dilate the contour map.
+    max_iterations : int
+        Safety cap on the merge loop.
+    verbose : bool
+    """
+    seg = segmentation          # in-place working buffer
+    dtype = seg.dtype
+
+    # -- one-time dilation of the contour map ------------------------------
+    contour = contour_map
+    if contour.dtype != np.bool_:
+        contour = contour.astype(bool)
+
+    if contour_dilation > 0:
+        struct = ndimage.generate_binary_structure(3, 3)
+        contour_dil = numba_morph.dilation(contour, footprint=struct, iterations=int(contour_dilation))
+    else:
+        contour_dil = contour
+
+    # -- iterate ----------------------------------------------------------
+    for it in range(max_iterations):
+        keys, n_total, n_contour = _score_pairs_numba(seg, contour_dil)
+        n_edges = keys.shape[0]
+
+        if n_edges == 0:
+            if verbose:
+                print(f"[rag] iter {it}: no adjacent labels, done.")
+            break
+
+        # n_total is always > 0 by construction
+        ratios = n_contour / n_total
+        candidate = ratios <= merge_threshold
+
+        if verbose:
+            print(f"[rag] iter {it}: {n_edges} edge(s), "
+                  f"{int(candidate.sum())} below threshold ({merge_threshold}).")
+
+        if not candidate.any():
+            break
+
+        # ---------- union-find over candidate merges ---------------------
+        parent = {}
+
+        def find(x):
+            r = x
+            while parent.get(r, r) != r:
+                r = parent[r]
+            # path compression
+            while parent.get(x, x) != x:
+                nxt = parent[x]
+                parent[x] = r
+                x = nxt
+            return r
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for i in range(n_edges):
+            if candidate[i]:
+                k = int(keys[i])
+                union(k >> 32, k & 0xFFFFFFFF)
+
+        # ---------- build old -> new label map ---------------------------
+        unique_labels = np.unique(seg)
+        unique_labels = unique_labels[unique_labels > 0]
+
+        old_to_new = {}
+        root_to_new = {}
+        next_new = 1
+        for lbl in unique_labels:
+            l = int(lbl)
+            r = find(l)
+            if r not in root_to_new:
+                root_to_new[r] = next_new
+                next_new += 1
+            old_to_new[l] = root_to_new[r]
+
+        if next_new == len(unique_labels) + 1 and \
+                all(l == old_to_new[l] for l in old_to_new):
+            # nothing was merged
+            if verbose:
+                print(f"[rag] iter {it}: no labels changed, stopping.")
+            break
+
+        # dense lookup table indexed by old label (labels are small ints)
+        max_lbl = int(unique_labels.max())
+        label_map = np.zeros(max_lbl + 1, dtype=dtype)
+        for old, new in old_to_new.items():
+            label_map[old] = new
+
+        # ---------- in-place relabel -------------------------------------
+        _apply_label_map_inplace(seg, label_map)

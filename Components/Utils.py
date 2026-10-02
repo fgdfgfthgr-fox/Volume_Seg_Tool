@@ -484,7 +484,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
     touching_map = torch.logical_and(contour_map, semantic_map)
     # Remove touching area between foreground objects
     segmentation = torch.logical_xor(semantic_map, touching_map)
-    del semantic_map, contour_map
+    del semantic_map
     segmentation = segmentation.numpy().astype(np.uint16)
     gc.collect()
 
@@ -506,6 +506,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
 
     Morph.remove_small_labels(segmentation, min_size=size_threshold)
     del structure
+    segmentation = Morph.rag_merge_by_contour(segmentation, contour_map.numpy())
 
     if pixel_reclaim:
         start_time = time.time()
