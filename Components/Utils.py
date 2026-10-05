@@ -1,5 +1,6 @@
 import gc
 import json
+import hashlib
 import re
 import math
 import os
@@ -621,8 +622,12 @@ def get_contour_maps(label_file_path, folder_path='generated_contour_maps', cont
     Try get the contour map for the label file. Will first try to load previously saved one from folder_path,
     if failed, will generate new one and save it to folder_path.
     """
+    label_file_path = Path(label_file_path).resolve()   # make sure it's absolute & canonical
     img_name = label_file_path.name
-    contour_img_name = "Contour_" + img_name
+    # Disambiguate files with the same basename coming from different directories.
+    # Use a hash of the full path (fast, stable, collision-resistant enough for filenames).
+    path_hash = hashlib.sha1(str(label_file_path).encode('utf-8')).hexdigest()[:12]
+    contour_img_name = f"Contour_{path_hash}_{img_name}"
     contour_img_path = os.path.join(folder_path, contour_img_name)
     metadata_path = os.path.join(folder_path, "contour_metadata.json")
 
@@ -636,22 +641,22 @@ def get_contour_maps(label_file_path, folder_path='generated_contour_maps', cont
         try:
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
-        except:
+        except Exception:
             metadata = {}
 
     # Check if regeneration is needed
     needs_regenerate = True
 
     if os.path.exists(contour_img_path):
-        # Check if we have metadata for this file
-        if str(label_file_path) in metadata:
-            # Compare current signature with stored signature
-            if metadata[str(label_file_path)] == current_sig:
-                needs_regenerate = False
+        if str(label_file_path) in metadata and metadata[str(label_file_path)] == current_sig:
+            needs_regenerate = False
 
     if needs_regenerate:
-        print(f'Generating contour map for {img_name}... Can take a while if there are lots of objects.')
-        contour_img = Aug.instance_contour_transform(path_to_array(str(label_file_path), label=True), contour_outward=contour_map_width)
+        print(f'Generating contour map for {label_file_path}... Can take a while if there are lots of objects.')
+        contour_img = Aug.instance_contour_transform(
+            path_to_array(str(label_file_path), label=True),
+            contour_outward=contour_map_width,
+        )
         imageio.v3.imwrite(uri=f'{contour_img_path}', image=contour_img)
         metadata[str(label_file_path)] = current_sig
         with open(metadata_path, 'w') as f:

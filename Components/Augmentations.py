@@ -427,6 +427,8 @@ def instance_contour_transform(input_array, contour_outward=1):
     Returns:
         np.ndarray: Contour map where 0 are background or inside of objects while 1 are the boundaries.
     """
+    if input_array.dtype == np.bool:
+        input_array = input_array.astype(np.uint8)
     # Get bounding box slices for all labels in a single pass
     # find_objects returns list of slices, index 0 corresponds to label 1
     object_slices = scipy.ndimage.find_objects(input_array)
