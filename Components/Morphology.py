@@ -312,7 +312,7 @@ def _apply_label_map_inplace(seg, label_map):
 # ---------------------------------------------------------------------------
 def rag_merge_by_contour(segmentation,
                          contour_map,
-                         merge_threshold=0.15,
+                         merge_threshold=0.10,
                          contour_dilation=1,
                          max_iterations=20,
                          verbose=True):

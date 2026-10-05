@@ -507,7 +507,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
 
     Morph.remove_small_labels(segmentation, min_size=size_threshold)
     del structure
-    segmentation = Morph.rag_merge_by_contour(segmentation, contour_map.numpy())
+    Morph.rag_merge_by_contour(segmentation, contour_map.numpy())
 
     if pixel_reclaim:
         start_time = time.time()
