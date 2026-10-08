@@ -328,6 +328,6 @@ class SwinBlock(nn.Module):
 
     def forward(self, x, attn_mask):
         for layer_n, layer_s in zip(self.layers_no_shift, self.layers_shift):
-            x = layer_n(x, None)# if not self.training else checkpoint(layer_n, x, None, use_reentrant=False)
-            x = layer_s(x, attn_mask)# if not self.training else checkpoint(layer_s, x, attn_mask, use_reentrant=False)
+            x = layer_n(x, None) if not self.training else checkpoint(layer_n, x, None, use_reentrant=False)
+            x = layer_s(x, attn_mask) if not self.training else checkpoint(layer_s, x, attn_mask, use_reentrant=False)
         return x
