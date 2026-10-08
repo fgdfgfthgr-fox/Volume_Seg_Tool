@@ -252,21 +252,24 @@ class SwinTransformerBlock(nn.Module):
             assert 0 <= self.shift_size[i] < self.window_size[i], "shift_size must be in 0-window_size"
 
         self.attn = WindowAttention(dim, window_size=self.window_size, num_heads=num_heads, qkv_bias=qkv_bias, qk_dim=qk_dim)
-        self.gamma_1 = nn.Parameter(1e-4 * torch.ones((dim)),requires_grad=True)
+        #self.gamma_1 = nn.Parameter(1e-4 * torch.ones((dim)), requires_grad=True)
+        self.norm1 = nn.RMSNorm(dim)
 
         self.mlp = nn.Sequential(
             nn.Linear(dim, int(mlp_ratio * dim)),
             nn.SiLU(inplace=True),
             nn.Linear(int(mlp_ratio * dim), dim),
         )
-        self.gamma_2 = nn.Parameter(1e-4 * torch.ones((dim)),requires_grad=True)
+        #self.gamma_2 = nn.Parameter(1e-4 * torch.ones((dim)), requires_grad=True)
+        self.norm2 = nn.RMSNorm(dim)
         if more_ffn:
             self.mlp2 = nn.Sequential(
             nn.Linear(dim, int(mlp_ratio * dim)),
             nn.SiLU(inplace=True),
             nn.Linear(int(mlp_ratio * dim), dim),
         )
-            self.gamma_3 = nn.Parameter(1e-4 * torch.ones((dim)),requires_grad=True)
+            #self.gamma_3 = nn.Parameter(1e-4 * torch.ones((dim)), requires_grad=True)
+            self.norm3 = nn.RMSNorm(dim)
 
     def full_attn(self, x, attn_mask):
         B, D, H, W, C = x.shape #  [B, D/p, H/p, W/p, dim]
@@ -296,12 +299,15 @@ class SwinTransformerBlock(nn.Module):
         """
         x: (B, L, C) where L = D*H*W
         """
-        x = x + self.gamma_1.to(x.dtype) * self.full_attn(x, attn_mask)
+        #x = x + self.gamma_1.to(x.dtype) * self.full_attn(x, attn_mask)
+        x = x + self.norm1(self.full_attn(x, attn_mask))
 
         # FFN
-        x = x + self.gamma_2.to(x.dtype) * self.mlp(x)
+        #x = x + self.gamma_2.to(x.dtype) * self.mlp(x)
+        x = x + self.norm2(self.mlp(x))
         if self.more_ffn:
-            x = x + self.gamma_3.to(x.dtype) * self.mlp2(x)
+            #x = x + self.gamma_3.to(x.dtype) * self.mlp2(x)
+            x = x + self.norm3(self.mlp2(x))
         return x
 
 
@@ -322,6 +328,6 @@ class SwinBlock(nn.Module):
 
     def forward(self, x, attn_mask):
         for layer_n, layer_s in zip(self.layers_no_shift, self.layers_shift):
-            x = layer_n(x, None) if not self.training else checkpoint(layer_n, x, None, use_reentrant=False)
-            x = layer_s(x, attn_mask) if not self.training else checkpoint(layer_s, x, attn_mask, use_reentrant=False)
+            x = layer_n(x, None)# if not self.training else checkpoint(layer_n, x, None, use_reentrant=False)
+            x = layer_s(x, attn_mask)# if not self.training else checkpoint(layer_s, x, attn_mask, use_reentrant=False)
         return x

@@ -20,6 +20,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def get_parameter_groups_with_muon(model, weight_decay=0.0001):
     no_decay_keywords = ["bias", "bn", "batch_norm", "layer_norm", "norm", "RMSNorm"]
+    no_muon_keywords = ["up", "registers", "out_conv"]
 
     # Create the 4 groups
     decay_muon_params = []  # decay + muon
@@ -34,8 +35,8 @@ def get_parameter_groups_with_muon(model, weight_decay=0.0001):
         # Determine decay status
         requires_decay = not any(no_decay_keyword in name for no_decay_keyword in no_decay_keywords)
 
-        # Determine muon status (hidden weights with ndim == 2)
-        is_muon = param.ndim == 2
+        # Determine muon status (hidden weights with ndim >= 2, excluding embedding and output)
+        is_muon = not any(no_muon_keyword in name for no_muon_keyword in no_muon_keywords) and param.ndim >= 2
 
         # Assign to appropriate group
         if requires_decay and is_muon:
@@ -66,7 +67,7 @@ class PLModule(pl.LightningModule):
                  use_sparse_label_train, use_sparse_label_val, use_sparse_label_test, logging):
         super().__init__()
         self.save_hyperparameters()
-        self.network = DiT.SwinTransformer(*arch_args)
+        self.network = DIP.Network(*arch_args)
         self.enable_val = enable_val
         self.enable_mid_visual = enable_mid_visual
         self.instance_mode = instance_mode
@@ -373,7 +374,7 @@ if __name__ == "__main__":
     #tracemalloc.start()
     #snap1 = tracemalloc.take_snapshot()
     #torch.backends.cudnn.enabled = False
-    sizes = [(128, 128)]
+    sizes = [(144, 40)]
     precisions = ['bf16-mixed']
     batch_sizes = [2]
     for size in sizes:
@@ -396,8 +397,8 @@ if __name__ == "__main__":
                                                            num_workers=6, pin_memory=True, persistent_workers=True)
                 # meta_info = predict_dataset.__getmetainfo__()
                 #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
-                #val_dataset = Components.Datasets.ValDataset("Datasets/val", size[0], size[1], True, 1)
-                #val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
+                val_dataset = Components.Datasets.ValDataset("Datasets/val", size[0], size[1], True, 1)
+                val_loader = torch.utils.data.DataLoader(dataset=val_dataset, batch_size=1)
 
                 callbacks = []
                 model_checkpoint_last = pl.callbacks.ModelCheckpoint(dirpath="trained_model",
@@ -407,11 +408,11 @@ if __name__ == "__main__":
                 callbacks.append(LearningRateMonitor(logging_interval='epoch'))
                 callbacks.append(model_checkpoint_last)
                 #callbacks.append(swa_callback)
-                arch_args = ((4,4,4), 4, 6, True)
+                arch_args = ((2,6,6), 4, 7, True)
                 model = PLModule(arch_args,
                                 True, True, True,
                                 False, False, False, True)
-                trainer = pl.Trainer(max_epochs=100, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'run_reference'),
+                trainer = pl.Trainer(max_epochs=200, log_every_n_steps=1, logger=TensorBoardLogger(f'lightning_logs', name=f'run_dip_swin_15'),
                                      accelerator="gpu", enable_checkpointing=True, gradient_clip_val=0.2,
                                      precision=precision, enable_progress_bar=True, num_sanity_val_steps=0, callbacks=callbacks)
                                                                                                                   #FineTuneLearningRateFinder(min_lr=0.00001, max_lr=0.1, attr_name='initial_lr')])
