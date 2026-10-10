@@ -307,6 +307,66 @@ def _apply_label_map_inplace(seg, label_map):
                     seg[x, y, z] = label_map[v]
 
 
+def _update_rag_incremental(edges, absorbed_to_survivor):
+    """
+    Update the RAG dictionary `edges` in place after merging labels.
+
+    Parameters
+    ----------
+    edges : dict { int_key : [n_total, n_contour] }
+        Key = (min_label << 32) | max_label.
+    absorbed_to_survivor : dict {absorbed_label: survivor_label}
+        Only labels that were *absorbed* (merged away) should be keys.
+        Survivor labels must not appear as keys.
+
+    Semantics
+    ---------
+    * Edge between an absorbed label and its survivor  -> dropped (now internal).
+    * Edge between two labels in the same merge group -> dropped (now internal).
+    * Edge between an absorbed label and an external label -> remapped to the
+      survivor and summed into any pre-existing edge with that survivor.
+    """
+    updates = {}
+    to_delete = []
+
+    for key, (nt, nc) in edges.items():
+        a = key >> 32
+        b = key & 0xFFFFFFFF
+        if a not in absorbed_to_survivor and b not in absorbed_to_survivor:
+            continue
+        to_delete.append(key)
+        na = absorbed_to_survivor.get(a, a)
+        nb = absorbed_to_survivor.get(b, b)
+        if na == nb:
+            continue                                  # internal now
+        nkey = (min(na, nb) << 32) | max(na, nb)
+        if nkey in updates:
+            updates[nkey][0] += nt
+            updates[nkey][1] += nc
+        else:
+            updates[nkey] = [nt, nc]
+
+    for k in to_delete:
+        del edges[k]
+    for k, v in updates.items():
+        if k in edges:
+            edges[k][0] += v[0]
+            edges[k][1] += v[1]
+        else:
+            edges[k] = v
+
+def _compact_labels(seg):
+    """Relabel seg to a compact label set 1..N (in place)."""
+    unique = np.unique(seg)
+    unique = unique[unique > 0]
+    if unique.size == 0:
+        return
+    max_lbl = int(unique.max())
+    label_map = np.zeros(max_lbl + 1, dtype=seg.dtype)
+    for i, lbl in enumerate(unique, start=1):
+        label_map[int(lbl)] = i
+    _apply_label_map_inplace(seg, label_map)
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -350,78 +410,69 @@ def rag_merge_by_contour(segmentation,
     else:
         contour_dil = contour
 
-    # -- iterate ----------------------------------------------------------
-    for it in range(max_iterations):
-        keys, n_total, n_contour = _score_pairs_numba(seg, contour_dil)
-        n_edges = keys.shape[0]
+    # --- initial RAG (only expensive scan) -------------------------------
+    keys, n_total, n_contour = _score_pairs_numba(seg, contour_dil)
+    edges = {}
+    for i in range(keys.shape[0]):
+        edges[int(keys[i])] = [int(n_total[i]), int(n_contour[i])]
 
-        if n_edges == 0:
+    if verbose:
+        print(f"[rag] initial RAG: {len(edges)} edge(s).")
+
+    # --- iterate ----------------------------------------------------------
+    for it in range(max_iterations):
+        # ---- collect candidates -----------------------------------------
+        candidates = []
+        for key, (nt, nc) in edges.items():
+            if nt > 0:
+                ratio = nc / nt
+                if ratio <= merge_threshold:
+                    candidates.append((ratio, key))
+
+        if not candidates:
             if verbose:
-                print(f"[rag] iter {it}: no adjacent labels, done.")
+                print(f"[rag] iter {it}: no candidates below "
+                      f"{merge_threshold}, done.")
             break
 
-        # n_total is always > 0 by construction
-        ratios = n_contour / n_total
-        candidate = ratios <= merge_threshold
+        # Merge the most confident pairs first.
+        candidates.sort(key=lambda x: x[0])
+
+        # ---- process one-by-one, enforcing disjoint merges ---------------
+        merged_labels = set()  # labels committed to a merge this iter
+        absorbed_to_survivor = {}
+
+        for ratio, key in candidates:
+            a = key >> 32
+            b = key & 0xFFFFFFFF
+            if a in merged_labels or b in merged_labels:
+                # Would create a chain inside this iteration -> defer.
+                continue
+            # Absorb the larger label into the smaller one for tidiness.
+            if b < a:
+                a, b = b, a
+            absorbed_to_survivor[b] = a
+            merged_labels.add(a)
+            merged_labels.add(b)
+
+        if not absorbed_to_survivor:
+            if verbose:
+                print(f"[rag] iter {it}: no disjoint merges possible, done.")
+            break
 
         if verbose:
-            print(f"[rag] iter {it}: {n_edges} edge(s), "
-                  f"{int(candidate.sum())} below threshold ({merge_threshold}).")
+            print(f"[rag] iter {it}: {len(candidates)} candidate(s), "
+                  f"{len(absorbed_to_survivor)} disjoint merge(s).")
 
-        if not candidate.any():
-            break
+        # ---- update RAG only for affected labels ------------------------
+        _update_rag_incremental(edges, absorbed_to_survivor)
 
-        # ---------- union-find over candidate merges ---------------------
-        parent = {}
-
-        def find(x):
-            r = x
-            while parent.get(r, r) != r:
-                r = parent[r]
-            # path compression
-            while parent.get(x, x) != x:
-                nxt = parent[x]
-                parent[x] = r
-                x = nxt
-            return r
-
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = ra
-
-        for i in range(n_edges):
-            if candidate[i]:
-                k = int(keys[i])
-                union(k >> 32, k & 0xFFFFFFFF)
-
-        # ---------- build old -> new label map ---------------------------
-        unique_labels = np.unique(seg)
-        unique_labels = unique_labels[unique_labels > 0]
-
-        old_to_new = {}
-        root_to_new = {}
-        next_new = 1
-        for lbl in unique_labels:
-            l = int(lbl)
-            r = find(l)
-            if r not in root_to_new:
-                root_to_new[r] = next_new
-                next_new += 1
-            old_to_new[l] = root_to_new[r]
-
-        if next_new == len(unique_labels) + 1 and \
-                all(l == old_to_new[l] for l in old_to_new):
-            # nothing was merged
-            if verbose:
-                print(f"[rag] iter {it}: no labels changed, stopping.")
-            break
-
-        # dense lookup table indexed by old label (labels are small ints)
-        max_lbl = int(unique_labels.max())
-        label_map = np.zeros(max_lbl + 1, dtype=dtype)
-        for old, new in old_to_new.items():
+        # ---- relabel seg -------------------------------------------------
+        max_lbl = int(seg.max())
+        label_map = np.arange(max_lbl + 1, dtype=dtype)
+        for old, new in absorbed_to_survivor.items():
             label_map[old] = new
-
-        # ---------- in-place relabel -------------------------------------
         _apply_label_map_inplace(seg, label_map)
+
+    # --- final compaction of labels --------------------------------------
+    _compact_labels(seg)
