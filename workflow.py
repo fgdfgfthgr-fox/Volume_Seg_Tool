@@ -245,8 +245,8 @@ def start_work_flow(args):
         generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, persistent_workers)
 
     if 'Predict' in args.workflow_box:
-        start_time = time.time()
         meta_info = load_data_and_predict(PD)
+        start_time = time.time()
         if instance_mode:
             indexed_files_p = Utils.load_indexed_files_for_stitching("Pixels_")
             indexed_files_c = Utils.load_indexed_files_for_stitching("Contour_")

@@ -373,7 +373,7 @@ def _compact_labels(seg):
 def rag_merge_by_contour(segmentation,
                          contour_map,
                          merge_threshold=0.10,
-                         contour_dilation=1,
+                         contour_dilation=2,
                          max_iterations=20,
                          verbose=True):
     """
