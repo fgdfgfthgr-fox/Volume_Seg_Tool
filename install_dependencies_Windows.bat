@@ -41,18 +41,34 @@ set gpu_failure_reason=
 
 :: Check for NVIDIA GPU via wmic
 set gpu_list=
-for /f "skip=1 tokens=*" %%i in ('"wmic path win32_videocontroller get caption"') do (
+for /f "skip=1 tokens=*" %%i in ('wmic path win32_videocontroller get caption 2^>nul') do (
     set "line=%%i"
     if not "!line!"=="" set gpu_list=!gpu_list! !line!
 )
 
-:: Check if any NVIDIA GPU is present
-echo !gpu_list! | findstr /i "NVIDIA" >nul
-if !errorlevel! equ 0 (
-    :: NVIDIA GPU detected – try to get CUDA version
-    where nvidia-smi >nul 2>nul
-    if !errorlevel! equ 0 (
-        for /f "tokens=*" %%i in ('nvidia-smi ^| findstr /c:"CUDA Version"') do (
+:: Fallback to PowerShell CIM if wmic is missing or returned nothing
+if not defined gpu_list (
+    for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name" 2^>nul`) do (
+        set "line=%%i"
+        if not "!line!"=="" set gpu_list=!gpu_list! !line!
+    )
+)
+
+:: Detect NVIDIA - either via GPU name or via presence of nvidia-smi
+set has_nvidia_smi=0
+where nvidia-smi >nul 2>nul
+if !errorlevel! equ 0 set has_nvidia_smi=1
+
+set has_nvidia=!has_nvidia_smi!
+if defined gpu_list (
+    echo !gpu_list! | findstr /i "NVIDIA" >nul
+    if !errorlevel! equ 0 set has_nvidia=1
+)
+
+if !has_nvidia! equ 1 (
+    :: NVIDIA GPU detected - try to get CUDA version
+    if !has_nvidia_smi! equ 1 (
+        for /f "tokens=*" %%i in ('nvidia-smi 2^>nul ^| findstr /c:"CUDA Version"') do (
             set "line=%%i"
             set "line=!line:*CUDA Version:=!"
             for /f "tokens=1" %%v in ("!line!") do set cuda_version=%%v
@@ -65,6 +81,7 @@ if !errorlevel! equ 0 (
             set cuda_major=%%a
             set cuda_minor=%%b
         )
+        if not defined cuda_minor set cuda_minor=0
 
         :: Check supported versions
         if !cuda_major! equ 13 (
@@ -89,10 +106,14 @@ if !errorlevel! equ 0 (
         set gpu_failure_reason=NVIDIA GPU detected but CUDA not found
     )
 ) else (
-    :: No NVIDIA – check for AMD
-    echo !gpu_list! | findstr /i "AMD" >nul
-    if !errorlevel! equ 0 (
-        set gpu_failure_reason=AMD GPU detected but Windows ROCm is not supported
+    :: No NVIDIA - check for AMD
+    if defined gpu_list (
+        echo !gpu_list! | findstr /i "AMD" >nul
+        if !errorlevel! equ 0 (
+            set gpu_failure_reason=AMD GPU detected but Windows ROCm is not supported
+        ) else (
+            set gpu_failure_reason=No compatible GPU detected (NVIDIA required)
+        )
     ) else (
         set gpu_failure_reason=No compatible GPU detected (NVIDIA required)
     )

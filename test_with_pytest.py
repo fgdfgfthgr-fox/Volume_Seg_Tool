@@ -132,7 +132,7 @@ def test_BinaryMetrics():
     test_predicted = torch.randn(1, 1, 16, 64, 64)
     test_gt = torch.randint(0, 2, (1, 1, 16, 64, 64), dtype=torch.float32)
     out = metric(test_predicted, test_gt)
-    assert len(out) == 7
+    assert len(out) == 8
 
 def test_instance_segmentation_metrics():
     test_predicted = np.random.randint(0, 5, (16, 64, 64))
