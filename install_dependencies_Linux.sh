@@ -7,6 +7,45 @@ pause() {
     read -n 1 -s
 }
 
+# Ensure the *base* python has tkinter, since the venv shares its stdlib.
+ensure_tkinter() {
+    if "${python_cmd}" -c "import tkinter" &>/dev/null; then
+        return 0
+    fi
+
+    printf "\e[1m\e[33mWARNING: tkinter is not available for %s.\e[0m\n" "$(command -v "${python_cmd}")"
+
+    local pm="" pkg=""
+    if   command -v apt-get &>/dev/null; then pm="apt-get"; pkg="python3-tk"
+    elif command -v dnf     &>/dev/null; then pm="dnf";     pkg="python3-tkinter"
+    elif command -v yum     &>/dev/null; then pm="yum";     pkg="python3-tkinter"
+    elif command -v zypper  &>/dev/null; then pm="zypper";  pkg="python3-tk"
+    elif command -v pacman  &>/dev/null; then pm="pacman";  pkg="tk"
+    fi
+
+    if [[ -n "$pm" ]] && command -v sudo -n &>/dev/null; then
+        printf "Attempting to install %s via %s...\n" "$pkg" "$pm"
+        case "$pm" in
+            apt-get) sudo -n apt-get update && sudo -n apt-get install -y "$pkg" ;;
+            dnf|yum) sudo -n "$pm" install -y "$pkg" ;;
+            zypper)  sudo -n zypper --non-interactive install "$pkg" ;;
+            pacman)  sudo -n pacman -S --noconfirm "$pkg" ;;
+        esac
+        if "${python_cmd}" -c "import tkinter" &>/dev/null; then
+            return 0
+        fi
+    fi
+
+    printf "\e[1m\e[31mERROR: tkinter is required but could not be installed automatically.\e[0m\n"
+    printf "Please install it manually, e.g.:\n"
+    printf "  Debian/Ubuntu : sudo apt-get install python3-tk\n"
+    printf "  Fedora/RHEL   : sudo dnf install python3-tkinter\n"
+    printf "  openSUSE      : sudo zypper install python3-tk\n"
+    printf "  Arch          : sudo pacman -S tk\n"
+    printf "If you use pyenv/conda, reinstall Python with tk support enabled.\n"
+    return 1
+}
+
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 if [[ -z "${install_dir}" ]]
@@ -119,19 +158,16 @@ if [[ -n "$gpu_info" && "$gpu_info" == *"NVIDIA"* ]] || [[ -n "$cuda_version" ]]
         cuda_major=${cuda_parts[0]}
         cuda_minor=${cuda_parts[1]}
 
-        if [ "$cuda_major" -eq 13 ] && [ "$cuda_minor" -ge 0 ]; then
-            export TORCH_COMMAND="pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu130"
+        if [ "$cuda_major" -ge 13 ] && [ "$cuda_minor" -ge 4 ]; then
+            export TORCH_COMMAND="pip install torch==2.15.0 torchvision --index-url https://download.pytorch.org/whl/cu134"
             torch_command_set=1
-        elif [ "$cuda_major" -eq 12 ] && [ "$cuda_minor" -ge 8 ]; then
-            export TORCH_COMMAND="pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128"
-            torch_command_set=1
-        elif [ "$cuda_major" -eq 12 ] && [ "$cuda_minor" -ge 6 ]; then
-            export TORCH_COMMAND="pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu126"
+        elif [ "$cuda_major" -eq 13 ] && [ "$cuda_minor" -ge 2 ]; then
+            export TORCH_COMMAND="pip install torch==2.15.0 torchvision --index-url https://download.pytorch.org/whl/cu132"
             torch_command_set=1
         fi
 
         if [ $torch_command_set -eq 0 ]; then
-            printf "\e[1m\e[33mWARNING: Detected CUDA version %s which is not supported by PyTorch 2.11.0\e[0m\n" "$cuda_version"
+            printf "\e[1m\e[33mWARNING: Detected CUDA version %s which is not supported by PyTorch 2.15.0\e[0m\n" "$cuda_version"
         fi
     else
         printf "\e[1m\e[33mWARNING: NVIDIA GPU detected but CUDA installation not found.
@@ -145,14 +181,13 @@ elif [[ -n "$gpu_info" && "$gpu_info" == *"AMD"* ]] || [[ -n "$rocm_version" ]];
         rocm_major=${rocm_parts[0]}
         rocm_minor=${rocm_parts[1]}
 
-        # For ROCm, any version >= 6.3 is fine
-        if [ "$rocm_major" -gt 6 ] || { [ "$rocm_major" -eq 6 ] && [ "$rocm_minor" -ge 3 ]; }; then
-            export TORCH_COMMAND="pip install torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/rocm6.3"
+        if [ "$rocm_major" -gt 10 ] || { [ "$rocm_major" -eq 10 ] && [ "$rocm_minor" -ge 0 ]; }; then
+            export TORCH_COMMAND="pip install torch==2.15.0 torchvision --index-url https://download.pytorch.org/whl/rocm10.0"
             torch_command_set=1
         fi
 
         if [ $torch_command_set -eq 0 ]; then
-            printf "\e[1m\e[33mWARNING: Detected ROCm version %s which is not supported by PyTorch 2.7.1\e[0m\n" "$rocm_version"
+            printf "\e[1m\e[33mWARNING: Detected ROCm version %s which is not supported by PyTorch 2.15.0\e[0m\n" "$rocm_version"
         fi
     else
         printf "\e[1m\e[33mWARNING: AMD GPU detected but ROCm installation not found.
@@ -174,6 +209,12 @@ then
     printf "\n%s\n" "${delimiter}"
     printf "\e[1m\e[31mERROR: python3-venv is not installed, aborting...\e[0m"
     printf "\n%s\n" "${delimiter}"
+    pause
+    exit 1
+fi
+
+# Check for tkinter (venv inherits stdlib, so this must pass here)
+if ! ensure_tkinter; then
     pause
     exit 1
 fi

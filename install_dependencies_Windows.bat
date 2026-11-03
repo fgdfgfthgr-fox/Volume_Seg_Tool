@@ -84,26 +84,26 @@ if !has_nvidia! equ 1 (
         if not defined cuda_minor set cuda_minor=0
 
         :: Check supported versions
-        if !cuda_major! equ 13 (
-            set TORCH_COMMAND=pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu130
+        if !cuda_major! geq 14 (
+            set TORCH_COMMAND=pip install torch==2.15.0 torchvision --index-url https://download.pytorch.org/whl/cu134
             set torch_command_set=1
         )
-        if !cuda_major! equ 12 (
-            if !cuda_minor! geq 8 (
-                set TORCH_COMMAND=pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+        if !cuda_major! equ 13 (
+            if !cuda_minor! geq 4 (
+                set TORCH_COMMAND=pip install torch==2.15.0 torchvision --index-url https://download.pytorch.org/whl/cu134
                 set torch_command_set=1
-            ) else if !cuda_minor! geq 6 (
-                set TORCH_COMMAND=pip install torch==2.11.0 torchvision --index-url https://download.pytorch.org/whl/cu126
+            ) else if !cuda_minor! geq 2 (
+                set TORCH_COMMAND=pip install torch==2.15.0 torchvision --index-url https://download.pytorch.org/whl/cu132
                 set torch_command_set=1
             )
         )
 
         if !torch_command_set! equ 0 (
-            set gpu_failure_reason=Unsupported CUDA version !cuda_version! (requires >=12.6)
+            set gpu_failure_reason=Unsupported CUDA version !cuda_version! (requires >=13.2)
         )
     ) else (
         :: NVIDIA GPU present but nvidia-smi failed or CUDA not found
-        set gpu_failure_reason=NVIDIA GPU detected but CUDA not found
+        set gpu_failure_reason=NVIDIA GPU detected but CUDA not found. Please install CUDA according to https://developer.nvidia.com/cuda/toolkit
     )
 ) else (
     :: No NVIDIA - check for AMD
@@ -128,11 +128,11 @@ if !torch_command_set! equ 0 (
     call :pause_and_exit 1
 )
 
-:: Python version check (must be >=3.9)
-%python_cmd% -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>&1
+:: Python version check (must be >=3.11)
+%python_cmd% -c "import sys; sys.exit(0 if sys.version_info >= (3,11) else 1)" >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo ERROR: Python 3.9 or higher is required.
+    echo ERROR: Python 3.11 or higher is required.
     call :pause_and_exit 1
 )
 
@@ -164,6 +164,18 @@ if not defined VIRTUAL_ENV (
     )
 ) else (
     echo Python venv already activated: !VIRTUAL_ENV!
+)
+
+:: Check for tkinter (the venv inherits it from the base interpreter)
+%python_cmd% -c "import tkinter" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ERROR: tkinter is not available in this Python installation.
+    echo Re-run the Python installer and make sure the "tcl/tk and IDLE"
+    echo optional feature is checked, or reinstall Python from
+    echo https://www.python.org/downloads/windows/ with the default options.
+    echo Installation aborted.
+    call :pause_and_exit 1
 )
 
 :: Run the environment script
