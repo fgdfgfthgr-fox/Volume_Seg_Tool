@@ -720,22 +720,44 @@ if __name__ == "__main__":
                             gr.Warning(f'Really old Nvidia GPU detected: {main_name}, defaulting to fp32.')
                             return '32'
                     elif 'amd' in main_name.lower() or 'radeon' in main_name.lower():
-                        if ('radeon rx 7' in main_name.lower() or
-                                'rdna 3' in main_name.lower() or
-                                'mi200' in main_name.lower() or
-                                'mi250' in main_name.lower() or
-                                'mi300' in main_name.lower()):
+                        name_lower = main_name.lower()
+
+                        # GPUs that support bf16 well (RDNA 3/4, CDNA 2+)
+                        newer_amd_keywords = [
+                            # Discrete Radeon — RX 7000 (RDNA 3) and RX 9000 (RDNA 4)
+                            'radeon rx 9',  # RX 9000 series (RDNA 4)
+                            'radeon rx 7',  # RX 7000 series (RDNA 3)
+                            'rdna 3', 'rdna 4',
+
+                            # Workstation
+                            'radeon pro w7',  # Radeon PRO W7000 (RDNA 3)
+                            'radeon pro w9',  # Radeon PRO W9000 (RDNA 4)
+                            'ai pro r9',  # Radeon AI PRO R9700 (RDNA 4)
+
+                            # Integrated (RDNA 3 / 3.5 APUs) — bare model numbers so
+                            # "Radeon(TM) 780M" style strings still match
+                            '780m', '760m', '740m',
+                            '890m', '880m',
+                            '8060s', '8050s',
+
+                            # Instinct (CDNA 2+)
+                            'mi200', 'mi210', 'mi250', 'mi300',
+                            'mi325', 'mi350', 'mi355', 'mi400',
+                        ]
+
+                        if any(kw in name_lower for kw in newer_amd_keywords):
                             gr.Info(f'Newer AMD GPU detected: {main_name}!')
                             return 'bf16-mixed'
-                        elif 'mi100' in main_name.lower():
+                        elif 'mi100' in name_lower:
                             gr.Info(f'MI100 GPU detected!')
                             return '16-mixed'
                         else:
-                            gr.Warning(f'Really old AMD GPU detected: {main_name}, defaulting to fp32. If you are using a newer GPU after 2025 and this show up, please tell me in the GitHub repository.')
+                            gr.Warning(
+                                f'Really old AMD GPU detected: {main_name}, defaulting to fp32. '
+                                f'If you are using a newer GPU (2026+) and this shows up, '
+                                f'please report it in the GitHub repository.'
+                            )
                             return '32'
-                    else:
-                        gr.Warning(f"Unsupported GPU brand: {main_name}, defaulting to fp32.")
-                        return '32'
                 auto_precision_button.click(auto_precision, outputs=precision)
             with gr.Row():
                 model_architecture = gr.Dropdown(available_architectures, label="Model Architecture")
