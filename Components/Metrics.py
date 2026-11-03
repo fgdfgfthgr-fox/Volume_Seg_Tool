@@ -88,27 +88,17 @@ class BinaryMetrics(nn.Module):
 
     @staticmethod
     def expected_calibration_error(pred, target, n_bins=10):
-        total = pred.numel()
-        ece = 0.0
 
-        for i in range(n_bins):
-            lower = i / n_bins
-            upper = (i + 1) / n_bins
+        bins = torch.clamp((pred * n_bins).long(), 0, n_bins - 1)
+        conf_w = pred
+        acc_w = (pred >= 0.5).float() == target  # or your hard-pred rule
 
-            # Last bin includes 1.0
-            if i == n_bins - 1:
-                mask = (pred >= lower) & (pred <= upper)
-            else:
-                mask = (pred >= lower) & (pred < upper)
+        count = torch.bincount(bins, minlength=n_bins).float()
+        conf_sum = torch.bincount(bins, weights=conf_w, minlength=n_bins)
+        acc_sum = torch.bincount(bins, weights=acc_w, minlength=n_bins)
 
-            n_bin = mask.sum().item()
-            if n_bin == 0:
-                continue
-
-            avg_confidence = pred[mask].mean().item()
-            avg_accuracy = target[mask].mean().item()
-
-            ece += (n_bin / total) * abs(avg_confidence - avg_accuracy)
+        prop = count / count.sum()
+        ece = (torch.abs(conf_sum - acc_sum) / count.clamp(min=1) * prop).sum()
 
         return ece
 
