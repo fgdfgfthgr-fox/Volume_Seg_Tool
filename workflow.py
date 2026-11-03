@@ -1,6 +1,7 @@
 import os
 import math
 import gc
+import tifffile
 import time
 import threading
 import argparse
@@ -118,6 +119,7 @@ def generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, pers
         if args.read_existing_model:
             trainer.fit(model,
                         ckpt_path=args.existing_model_path,
+                        weights_only=False,
                         val_dataloaders=val_loader,
                         train_dataloaders=train_loader)
         else:
@@ -168,12 +170,19 @@ def stitch(indexed_files, image_meta, current_offset, instance_mode):
         stitched_volume_c = Utils.stitch_output_volume(indexed_files[1], dim_info, args.predict_hw_size,
                                                        args.predict_depth_size, current_offset)
         current_offset += total_multiplier
-        return ((stitched_volume_p, out_file_name), (stitched_volume_c, out_file_name)), current_offset
+        tifffile.imwrite(f'Datasets/result/Pixels_{out_file_name}',
+                         data=stitched_volume_p.numpy(), bigtiff=Utils.tiff_size_estimate(stitched_volume_p[0].numpy()))
+        tifffile.imwrite(f'Datasets/result/Contour_{out_file_name}',
+                         data=stitched_volume_c.numpy(), bigtiff=Utils.tiff_size_estimate(stitched_volume_c[0].numpy()))
+        stitched_volume_p = stitched_volume_p >= 128
+        # Treat contour map with lower threshold to ensure separation
+        stitched_volume_c = stitched_volume_c >= 64
+        return stitched_volume_p, stitched_volume_c, out_file_name, current_offset
     else:
         stitched_volume = Utils.stitch_output_volume(indexed_files, dim_info, args.predict_hw_size,
                                                      args.predict_depth_size, current_offset)
         current_offset += total_multiplier
-        return (stitched_volume, out_file_name), current_offset
+        return stitched_volume, out_file_name, current_offset
 
 
 def save_stitched_volume(stitched_volume, instance_mode):
@@ -198,16 +207,19 @@ def delete_indexed_files(indexed_files):
 
 def start_work_flow(args):
     torch.set_float32_matmul_precision('medium')
+    os.environ["TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL"] = "1"
     if torch.cuda.is_available() and torch.version.cuda:
         print('Optimising computing and memory use via cuDNN! (NVIDIA GPU only).')
         torch.backends.cudnn.enabled = True
         torch.backends.cudnn.benchmark = True
     elif torch.cuda.is_available() and torch.version.hip:
         print('Optimising computing using TunableOp! (AMD GPU only).')
-        torch.backends.cudnn.enabled = False
+        #torch.backends.cudnn.enabled = False
         #os.environ["PYTORCH_TUNABLEOP_HIPBLASLT_ENABLED"] = "0"
-        #torch.cuda.tunable.enable()
-        #torch.cuda.tunable.set_filename('TunableOp_results')
+        os.environ['TORCH_BLAS_PREFER_HIPBLASLT'] = '0'
+        os.environ['DISABLE_ADDMM_CUDA_LT'] = '1'
+        torch.cuda.tunable.enable()
+        torch.cuda.tunable.set_filename('TunableOp_results')
     if args.train_offload:
         TD = Datasets_Chunked.TrainDatasetChunked
         UTD = Datasets_Chunked.UnsupervisedDatasetChunked
@@ -255,8 +267,19 @@ def start_work_flow(args):
             indexed_files = Utils.load_indexed_files_for_stitching("Semantic_")
         current_offset = 0
         for image_meta in meta_info:
-            stitched_volume, current_offset = stitch(indexed_files, image_meta, current_offset, instance_mode)
-            save_stitched_volume(stitched_volume, instance_mode)
+            if instance_mode:
+                if args.instance_seg_mode:
+                    mode = 'watershed'
+                else:
+                    mode = 'simple'
+                stitched_volume_p, stitched_volume_c, out_file_name, current_offset = stitch(indexed_files, image_meta, current_offset, True)
+                Utils.predictions_to_final_img_instance(stitched_volume_p, stitched_volume_c, out_file_name,
+                                                        direc=args.result_folder_path,
+                                                        segmentation_mode=mode, dynamic=args.watershed_dynamic,
+                                                        pixel_reclaim=args.pixel_reclaim)
+            else:
+                stitched_volume, out_file_name, current_offset = stitch(indexed_files, image_meta, current_offset, False)
+                Utils.predictions_to_final_img(stitched_volume, out_file_name, direc=args.result_folder_path,)
         end_time = time.time()
         print(f"Converting and saving taken: {end_time - start_time} seconds")
         if instance_mode:

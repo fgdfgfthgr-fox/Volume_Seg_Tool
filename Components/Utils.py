@@ -263,7 +263,7 @@ def stitch_output_volume(indexed_files, dim_info, hw_size, depth_size, start_idx
     depth, height, width, depth_multiplier, height_multiplier, width_multiplier, total_multiplier = dim_info
     result_volume = torch.zeros((depth,
                                  height,
-                                 width), dtype=torch.float16)
+                                 width), dtype=torch.uint8)
 
     for i in range(total_multiplier):
         patch_path = indexed_files[start_idx + i][1]
@@ -282,7 +282,7 @@ def stitch_output_volume(indexed_files, dim_info, hw_size, depth_size, start_idx
 
         result_volume[depth_start:depth_start + patch.shape[0],
         height_start:height_start + patch.shape[1],
-        width_start:width_start + patch.shape[2]] = patch
+        width_start:width_start + patch.shape[2]] = (patch * 255).to(torch.uint8)
     return result_volume
 
 def load_indexed_files_for_stitching(prefix):
@@ -366,7 +366,7 @@ def stitch_output_volumes(prefix, meta_list, hw_size=128, depth_size=128):
     return output_list
 
 
-def predictions_to_final_img(stitched_volume, direc):
+def predictions_to_final_img(stitched_volume, out_file_name, direc):
     """
     Save the stitched patches into the selected directory.\n
     This one is for semantic segmentation.
@@ -374,9 +374,9 @@ def predictions_to_final_img(stitched_volume, direc):
     Args:
         direc (str): Directory where the final images will be saved to.
     """
-    array = stitched_volume[0].numpy()
-    array = np.where(array >= 0.5, np.uint8(1), np.uint8(0))
-    imageio.v3.imwrite(uri=f'{direc}/{stitched_volume[1]}', image=array)
+    array = np.where(stitched_volume.numpy() >= 0.5, np.uint8(1), np.uint8(0))
+    tifffile.imwrite(f'{direc}/Instance_{out_file_name}',
+                     data=array, bigtiff=tiff_size_estimate(array))
 
 def tiff_size_estimate(tensor: np.ndarray):
     threshold = 3.95*(1024**3)
@@ -388,26 +388,23 @@ def tiff_size_estimate(tensor: np.ndarray):
         return False
 
 
-def predictions_to_final_img_instance(stitched_volume_p, stitched_volume_c, direc, segmentation_mode='simple', dynamic=10, pixel_reclaim=True):
+def predictions_to_final_img_instance(stitched_volume_p, stitched_volume_c, out_file_name, direc, segmentation_mode='simple', dynamic=10, pixel_reclaim=True):
     """
     Save the switched patches into the selected directory.\n
     This one is for instance segmentation.
 
     Args:
-        stitched_volume_p, stitched_volume_c (torch.Tensor): Volumes to save.
+        stitched_volume_p, stitched_volume_c (torch.Tensor): Volumes to compute the final instance segmentation.
         direc (str): Directory where the final images will be saved to.
+        out_file_name (str): Name of the output file. (Will have Instance_ prefix to it)
         segmentation_mode (str): If 'simple', will identify objects via simple connected component labelling. If 'watershed', will use a distance transform watershed instead, which is slower but yield much less under-segment.
         dynamic (int): Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges. Default: 10.
         pixel_reclaim (bool): Whether to reclaim lost pixel during the instance segmentation, a slow process. Default: True
     """
-    tifffile.imwrite(f'{direc}/Pixels_{stitched_volume_p[1]}',
-                     data=stitched_volume_p[0].numpy(), bigtiff=tiff_size_estimate(stitched_volume_p[0].numpy()))
-    tifffile.imwrite(f'{direc}/Contour_{stitched_volume_c[1]}',
-                     data=stitched_volume_c[0].numpy(), bigtiff=tiff_size_estimate(stitched_volume_c[0].numpy()))
-    print(f'Computing instance segmentation using contour data for {stitched_volume_c[1]}... Can take a while if the image is big.')
-    instance_array = instance_segmentation_simple(stitched_volume_p[0], stitched_volume_c[0],
+    print(f'Computing instance segmentation using contour data for {out_file_name}... Can take a while if the image is big.')
+    instance_array = instance_segmentation_simple(stitched_volume_p, stitched_volume_c,
                                                   mode=segmentation_mode, dynamic=dynamic, pixel_reclaim=pixel_reclaim)
-    tifffile.imwrite(f'{direc}/Instance_{stitched_volume_c[1]}',
+    tifffile.imwrite(f'{direc}/Instance_{out_file_name}',
                      data=instance_array, bigtiff=tiff_size_estimate(instance_array))
 
 
@@ -466,7 +463,7 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
     Pixels in touching areas are assigned to the closest object based on the largest proportion of pixels within 5 pixel distance to the pixel.
 
     Args:
-        semantic_map (torch.Tensor): The input semantic segmented map.
+        semantic_map (torch.Tensor): The input semantic segmented map. Will get modified.
         contour_map (torch.Tensor): The input contour segmented map.
         size_threshold (int): The minimal size in pixel of each object. Object smaller than this will be removed.
         mode (str): If 'simple', will identify objects via simple connected component labelling. If 'watershed', will use a distance transform watershed instead, which is slower but yield much less under-segment.
@@ -477,16 +474,11 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
     Returns:
         np.Array: uint16 instance segmented map where 0 is background and every other value represent an object.
     """
-    semantic_map = torch.where(semantic_map >= 0.5, True, False)
-    # Treat contour map with lower threshold to ensure separation
-    contour_map = torch.where(contour_map >= 0.2, True, False)
-
     # Find boundary that lies within foreground objects
     touching_map = torch.logical_and(contour_map, semantic_map)
     # Remove touching area between foreground objects
-    segmentation = torch.logical_xor(semantic_map, touching_map)
-    del semantic_map
-    segmentation = segmentation.numpy().astype(np.uint16)
+    torch.logical_xor(semantic_map, touching_map, out=semantic_map)
+    semantic_map = semantic_map.numpy().astype(np.uint16)
     gc.collect()
 
     structure = np.array([
@@ -501,22 +493,22 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
          [0, 0, 0]]
     ], dtype=np.byte)
     if mode == 'simple':
-        label(segmentation, structure=structure, output=segmentation)
+        label(semantic_map, structure=structure, output=semantic_map)
     elif mode == 'watershed':
-        segmentation = perform_watershed(segmentation, dynamic)
+        semantic_map = perform_watershed(semantic_map, dynamic)
 
-    Morph.remove_small_labels(segmentation, min_size=size_threshold)
+    Morph.remove_small_labels(semantic_map, min_size=size_threshold)
     del structure
-    Morph.rag_merge_by_contour(segmentation, contour_map.numpy())
+    Morph.rag_merge_by_contour(semantic_map, contour_map.numpy())
 
     if pixel_reclaim:
         start_time = time.time()
-        segmentation = Morph.pixel_reclaim(touching_map.numpy(), segmentation, distance_threshold)
+        semantic_map = Morph.pixel_reclaim(touching_map.numpy(), semantic_map, distance_threshold)
         del touching_map
         elapsed_time = time.time() - start_time
         print(f"Time taken for pixel reclaim: {elapsed_time}")
-        img_max = segmentation.max()
-        if len(np.unique(segmentation)) <= 2:
+        img_max = semantic_map.max()
+        if len(np.unique(semantic_map)) <= 2:
             new_dtype = np.bool_
         elif img_max <= np.iinfo(np.uint8).max:
             new_dtype = np.uint8
@@ -524,10 +516,10 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
             new_dtype = np.uint16
         else:
             new_dtype = np.uint32
-        segmentation = segmentation.astype(new_dtype, copy=False)
+        semantic_map = semantic_map.astype(new_dtype, copy=False)
     else:
-        img_max = segmentation.max()
-        if len(np.unique(segmentation)) <= 2:
+        img_max = semantic_map.max()
+        if len(np.unique(semantic_map)) <= 2:
             new_dtype = np.bool_
         elif img_max <= np.iinfo(np.uint8).max:
             new_dtype = np.uint8
@@ -535,8 +527,8 @@ def instance_segmentation_simple(semantic_map, contour_map, size_threshold=10, m
             new_dtype = np.uint16
         else:
             new_dtype = np.uint32
-        segmentation = segmentation.astype(new_dtype, copy=False)
-    return segmentation
+        semantic_map = semantic_map.astype(new_dtype, copy=False)
+    return semantic_map
 
 
 def load_tiff_stack(folder_path: str, prefix: str) -> torch.Tensor:
