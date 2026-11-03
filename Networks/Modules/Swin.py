@@ -3,7 +3,8 @@ import numpy as np
 import torch.nn as nn
 from timm.layers import trunc_normal_
 from torch.utils.checkpoint import checkpoint
-from aule import scaled_dot_product_attention
+#from aule import scaled_dot_product_attention
+from torch.nn.functional import scaled_dot_product_attention
 
 # Mostly implementation from Timm, just changed to 3D
 
@@ -300,7 +301,8 @@ class SwinTransformerBlock(nn.Module):
         x: (B, L, C) where L = D*H*W
         """
         #x = x + self.gamma_1.to(x.dtype) * self.full_attn(x, attn_mask)
-        x = x + self.norm1(self.full_attn(x, attn_mask))
+        attn = self.full_attn(x, attn_mask)
+        x = x + self.norm1(attn)
 
         # FFN
         #x = x + self.gamma_2.to(x.dtype) * self.mlp(x)
