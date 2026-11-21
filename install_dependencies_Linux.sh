@@ -114,11 +114,10 @@ torch_command_set=0
 
 # Check for NVIDIA driver and CUDA version
 if command -v nvidia-smi &> /dev/null; then
-    cuda_version=$(nvidia-smi --query 2>/dev/null | grep "CUDA Version" | awk '{print $NF}')
-    # Fallback to regular nvidia-smi output if --query fails
-    if [ -z "$cuda_version" ]; then
-        cuda_version=$(nvidia-smi 2>/dev/null | grep -i "cuda version" | awk -F': ' '{print $2}' | awk '{print $1}')
-    fi
+    cuda_version=$(nvidia-smi 2>/dev/null \
+        | grep -iE 'CUDA( UMD)? Version' \
+        | head -n1 \
+        | sed -E 's/.*CUDA( UMD)? Version:[[:space:]]*([0-9]+(\.[0-9]+)?).*/\2/')
 fi
 
 # Check for ROCm version - try multiple detection methods in priority order

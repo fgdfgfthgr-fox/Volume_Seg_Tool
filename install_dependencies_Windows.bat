@@ -39,16 +39,26 @@ set cuda_version=
 set torch_command_set=0
 set gpu_failure_reason=
 
-:: Check for NVIDIA GPU via wmic
+:: Check for NVIDIA GPU via PowerShell CIM (reliable encoding on modern Windows).
+:: wmic emits UTF-16LE when redirected, which for /f misreads as ANSI with embedded
+:: NUL bytes - that leaves gpu_list non-empty but unmatchable by findstr, and also
+:: prevents the fallback from ever running.
 set gpu_list=
-for /f "skip=1 tokens=*" %%i in ('wmic path win32_videocontroller get caption 2^>nul') do (
+for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name" 2^>nul`) do (
     set "line=%%i"
     if not "!line!"=="" set gpu_list=!gpu_list! !line!
 )
 
-:: Fallback to PowerShell CIM if wmic is missing or returned nothing
-if not defined gpu_list (
-    for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name" 2^>nul`) do (
+:: Track whether PowerShell already identified an NVIDIA GPU
+set gpu_found_nvidia=0
+if defined gpu_list (
+    echo !gpu_list! | findstr /i "NVIDIA" >nul
+    if !errorlevel! equ 0 set gpu_found_nvidia=1
+)
+
+:: Fallback to wmic only if PowerShell didn't find NVIDIA (e.g. PS disabled)
+if !gpu_found_nvidia! equ 0 (
+    for /f "skip=1 tokens=*" %%i in ('wmic path win32_videocontroller get caption 2^>nul') do (
         set "line=%%i"
         if not "!line!"=="" set gpu_list=!gpu_list! !line!
     )
@@ -57,7 +67,12 @@ if not defined gpu_list (
 :: Detect NVIDIA - either via GPU name or via presence of nvidia-smi
 set has_nvidia_smi=0
 where nvidia-smi >nul 2>nul
-if !errorlevel! equ 0 set has_nvidia_smi=1
+if !errorlevel! equ 0 (
+    set has_nvidia_smi=1
+) else if exist "%ProgramFiles%\NVIDIA Corporation\NVSMI\nvidia-smi.exe" (
+    set "PATH=%ProgramFiles%\NVIDIA Corporation\NVSMI;!PATH!"
+    set has_nvidia_smi=1
+)
 
 set has_nvidia=!has_nvidia_smi!
 if defined gpu_list (
@@ -68,8 +83,10 @@ if defined gpu_list (
 if !has_nvidia! equ 1 (
     :: NVIDIA GPU detected - try to get CUDA version
     if !has_nvidia_smi! equ 1 (
-        for /f "tokens=*" %%i in ('nvidia-smi 2^>nul ^| findstr /c:"CUDA Version"') do (
+        for /f "tokens=*" %%i in ('nvidia-smi 2^>nul ^| findstr /i /c:"CUDA Version" /c:"CUDA UMD Version"') do (
             set "line=%%i"
+            rem Normalize new driver label to the old one, then strip up to it
+            set "line=!line:CUDA UMD Version:=CUDA Version:!"
             set "line=!line:*CUDA Version:=!"
             for /f "tokens=1" %%v in ("!line!") do set cuda_version=%%v
         )
