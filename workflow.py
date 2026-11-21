@@ -32,7 +32,12 @@ def create_logger(args):
 def start_tensorboard(args):
     # Read the TENSORBOARD_PORT from the environment, or use the default
     tensorboard_port = os.environ.get('TENSORBOARD_PORT', 6006)
-    subprocess.run(f"tensorboard --logdir={args.tensorboard_path} --port={str(tensorboard_port)}", shell=True)
+    subprocess.Popen(
+        f"tensorboard --logdir={args.tensorboard_path} --port={str(tensorboard_port)}",
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     tensorboard_url = f'http://localhost:{tensorboard_port}'
     webbrowser.open(tensorboard_url)
 

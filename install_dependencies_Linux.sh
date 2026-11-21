@@ -46,6 +46,45 @@ ensure_tkinter() {
     return 1
 }
 
+# Detect the best pywebview backend for Linux.
+#
+# Priority: explicit $PYWEBVIEW_BACKEND override > GTK (if importable) > Qt (pip fallback)
+#
+# Notes:
+#   - GTK backend requires PyGObject (gi) and WebKit2 to be importable from the
+#     target python. A normal venv cannot see system PyGObject, so this check
+#     runs *after* venv activation. Users who want GTK must either create the
+#     venv with --system-site-packages (and have python3-gi + webkit2gtk
+#     installed), or pip-install PyGObject into the venv.
+#   - Qt backend (`pywebview[qt]`) is fully pip-installable and works in any
+#     venv. It is the safe default when GTK is not importable.
+#   - Any other value (e.g. "cef", "pyside6") is passed through unchanged and
+#     forwarded to pip as `pywebview[<value>]`.
+detect_pywebview_backend() {
+    local gtk_ok=0
+    if "${python_cmd}" -c "import gi; gi.require_version('Gtk', '3.0'); gi.require_version('WebKit2', '4.1')" &>/dev/null; then
+        gtk_ok=1
+    elif "${python_cmd}" -c "import gi; gi.require_version('Gtk', '3.0'); gi.require_version('WebKit2', '4.0')" &>/dev/null; then
+        gtk_ok=1
+    fi
+
+    if [[ -n "${PYWEBVIEW_BACKEND:-}" ]]; then
+        if [[ "${PYWEBVIEW_BACKEND}" == "gtk" ]] && [[ $gtk_ok -eq 0 ]]; then
+            printf "\e[1m\e[33mWARNING: PYWEBVIEW_BACKEND=gtk was requested but gi/WebKit2 is not importable from this python. Falling back to qt.\e[0m\n"
+            echo "qt"
+            return
+        fi
+        echo "${PYWEBVIEW_BACKEND}"
+        return
+    fi
+
+    if [[ $gtk_ok -eq 1 ]]; then
+        echo "gtk"
+    else
+        echo "qt"
+    fi
+}
+
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 if [[ -z "${install_dir}" ]]
@@ -241,6 +280,12 @@ then
 else
     printf "python venv already activate: ${VIRTUAL_ENV}"
 fi
+
+# Choose the pywebview backend now that we are inside the target venv.
+# (Detection must happen post-activation so the `import gi` check reflects
+# the actual site-packages the venv can see.)
+export PYWEBVIEW_BACKEND="$(detect_pywebview_backend)"
+printf "\e[1m\e[32mpywebview backend selected: %s\e[0m\n" "${PYWEBVIEW_BACKEND}"
 
 "${python_cmd}" -u "${ENV_SCRIPT}" "$@"
 

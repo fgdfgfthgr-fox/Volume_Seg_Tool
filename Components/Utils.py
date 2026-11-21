@@ -375,7 +375,7 @@ def predictions_to_final_img(stitched_volume, out_file_name, direc):
         direc (str): Directory where the final images will be saved to.
     """
     array = np.where(stitched_volume.numpy() >= 0.5, np.uint8(1), np.uint8(0))
-    tifffile.imwrite(f'{direc}/Instance_{out_file_name}',
+    tifffile.imwrite(f'{direc}/Mask_{out_file_name}',
                      data=array, bigtiff=tiff_size_estimate(array))
 
 def tiff_size_estimate(tensor: np.ndarray):

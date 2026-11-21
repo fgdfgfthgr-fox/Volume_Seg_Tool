@@ -1,42 +1,50 @@
 import gc
+import io
 import os
+import sys
+import json
 import math
-import torch
+import base64
+import threading
 
-import gradio as gr
+import torch
 import tkinter as tk
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
+import webview
+from PIL import Image
+from tkinter import filedialog
 
 from Components import Utils, Metrics, Datasets
-from tkinter import filedialog
 from read_tensorboard import read_all_tensorboard_event_files, write_to_excel
 from torchvision.datasets.folder import has_file_allowed_extension
 from command_executor import CommandExecutor
 
 document_symbol = '\U0001F4C4'
 
-command_executor = CommandExecutor()
 
+# ---------------------------------------------------------------------------
+# Helpers (preserved from the Gradio version)
+# ---------------------------------------------------------------------------
 
-def open_folder():
+def open_folder_dialog():
     root = tk.Tk()
-    #root.withdraw()  # Hide the main window
-    root.attributes('-topmost', True)  # Display the dialog in the foreground.
-    root.iconify()  # Hide the little window.
+    root.attributes('-topmost', True)
+    root.iconify()
     folder_path = filedialog.askdirectory()
     root.destroy()
-    return str(folder_path)
+    return str(folder_path) if folder_path else ''
 
 
-def open_file():
+def open_file_dialog():
     root = tk.Tk()
-    #root.withdraw()  # Hide the main window
-    root.attributes('-topmost', True)  # Display the dialog in the foreground.
-    root.iconify()  # Hide the little window.
+    root.attributes('-topmost', True)
+    root.iconify()
     file_path = filedialog.askopenfilename()
     root.destroy()
-    return str(file_path)
+    return str(file_path) if file_path else ''
 
 
 def count_num_image_files(dataset_path, exclude_labels=True):
@@ -69,155 +77,29 @@ def classify_gpu_type(name):
     return 'discrete'
 
 
-def start_work_flow(inputs):
-    workflow_box_n = " ".join(inputs[workflow_box])
-    existing_model_path_n = f'"{inputs[existing_model_path]}"' if inputs[existing_model_path] else ""
-    train_dataset_mode_n = f'"{inputs[train_dataset_mode]}"'
-    val_dataset_mode_n = f'"{inputs[val_dataset_mode]}"'
-    test_dataset_mode_n = f'"{inputs[test_dataset_mode]}"'
-    augmentation_csv_path_n = f'"{inputs[augmentation_csv_path]}"'
-    cmd = (
-           f"python workflow.py "
-           f"--workflow_box {workflow_box_n} --segmentation_mode {inputs[segmentation_mode]} "
-           f"--train_dataset_path {inputs[train_dataset_path]} "
-           f"--augmentation_csv_path {augmentation_csv_path_n} --train_multiplier {inputs[train_multiplier]} "
-           f"--batch_size {inputs[batch_size]} --num_epochs {inputs[num_epochs]} "
-           f"--unsupervised_train_dataset_path {inputs[unsupervised_train_dataset_path]} "
-           f"--unsupervised_train_multiplier {inputs[unsupervised_train_multiplier]} "
-           f"--tensorboard_path {inputs[tensorboard_path]} "
-           f"--val_dataset_path {inputs[val_dataset_path]} --test_dataset_path {inputs[test_dataset_path]} "
-           f"--predict_dataset_path {inputs[predict_dataset_path]} "
-           f"--existing_model_path {existing_model_path_n} "
-           f"--precision {inputs[precision]} "
-           f"--save_model_name {inputs[save_model_name]} --save_model_path {inputs[save_model_path]} "
-           f"--train_key_name {inputs[train_key_name]} --val_key_name {inputs[val_key_name]} "
-           f"--test_key_name {inputs[test_key_name]} --predict_key_name {inputs[predict_key_name]} "
-           f"--hw_size {inputs[hw_size]} --d_size {inputs[d_size]} "
-           f"--predict_hw_size {inputs[predict_hw_size]} --predict_depth_size {inputs[predict_depth_size]} "
-           f"--predict_hw_overlap {inputs[predict_hw_overlap]} --predict_depth_overlap {inputs[predict_depth_overlap]} "
-           f"--watershed_dynamic {inputs[watershed_dynamic]} "
-           f"--result_folder_path {inputs[result_folder_path]} "
-           f"--model_architecture {inputs[model_architecture]} "
-           f"--model_patch_size_xy {inputs[model_patch_size_xy]} --model_patch_size_z {inputs[model_patch_size_z]} "
-           #f"--model_window_size {inputs[model_window_size]} "
-           f"--model_depth {inputs[model_depth]} --z_to_xy_ratio {inputs[z_to_xy_ratio]} "
-           f"--model_depth_multiplier {inputs[model_depth_multiplier]} "
-           f"--train_dataset_mode {train_dataset_mode_n} "
-           #f"--exclude_edge_size_in {inputs[exclude_edge_size_in]} --exclude_edge_size_out {inputs[exclude_edge_size_out]} "
-           f"--contour_map_width {inputs[contour_map_width]} "
-           f"--val_dataset_mode {val_dataset_mode_n} --test_dataset_mode {test_dataset_mode_n} ")
-    if inputs[pairing_samples]:
-        cmd += " --pairing_samples "
-    if inputs[enable_tensorboard]:
-        cmd += "--enable_tensorboard "
-    if inputs[enable_unsupervised]:
-        cmd += "--enable_unsupervised "
-    if inputs[memory_saving_mode]:
-        cmd += "--memory_saving_mode "
-    if inputs[read_existing_model]:
-        cmd += "--read_existing_model "
-    '''if inputs[exclude_edge]:
-        cmd += "--exclude_edge "'''
-    if not inputs[enable_mid_visualization]:
-        cmd += "--mid_visualization "
-    if inputs[train_offload]:
-        cmd += "--train_offload "
-    if inputs[val_offload]:
-        cmd += "--val_offload "
-    if inputs[test_offload]:
-        cmd += "--test_offload "
-    if inputs[predict_offload]:
-        cmd += "--predict_offload "
-    #if inputs[model_se]:
-    #    cmd += "--model_se "
-    #if inputs[find_max_channel_count]:
-    #    cmd += "--find_max_channel_count "
-    if inputs[instance_seg_mode]:
-        cmd += "--instance_seg_mode "
-    if inputs[pixel_reclaim]:
-        cmd += "--pixel_reclaim "
-
-    command_executor.execute_command(cmd)
+def calculate_val_num_patch(val_dataset_path, hw_size, d_size, val_key_name='Default'):
+    file_list = Utils.make_label_pair_tv(val_dataset_path)
+    counter = 0
+    for file in file_list:
+        file = Utils.multiple_loader(file[0], val_key_name)
+        depth, height, width = file.shape
+        depth_multiplier = max(math.ceil(depth / d_size), 1)
+        height_multiplier = max(math.ceil(height / hw_size), 1)
+        width_multiplier = max(math.ceil(width / hw_size), 1)
+        total = depth_multiplier * height_multiplier * width_multiplier
+        counter += total
+    return counter
 
 
-'''def visualisation_activations(existing_model_path, example_image, slice_to_show):
-    model = V_N_PLModule.load_from_checkpoint(existing_model_path).to('cpu')
-    figure_list = []
-    tensor = DataComponents.path_to_array(example_image).unsqueeze(0).unsqueeze(0)
-    # Pass the test tensor through the model
-    with torch.no_grad():
-        model(tensor)
+def steps_to_epochs(train_steps, train_multiplier, num_t_files):
+    return math.ceil(train_steps / (train_multiplier * num_t_files))
 
-    plt.figure(figsize=(16, 9))
-    plt.suptitle(f'Input')
-    initial = tensor[:, :, slice_to_show:slice_to_show+1, :, :].squeeze()
-    plt.imshow(initial.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
-    # Render the figure to an image buffer and convert it to a NumPy array
-    canvas = plt.get_current_fig_manager().canvas
-    canvas.draw()
-    img_buffer = np.array(canvas.renderer.buffer_rgba())
-    plt.close()
-    figure_list.append(img_buffer)
 
-    for i, activation in enumerate(model.activations):
-        if len(activation.shape) == 5:
-            tensor_depth = activation.shape[-3]
-            if tensor_depth <= slice_to_show:
-                activation = activation[:, :, 0:1, :, :]
-            else:
-                activation = activation[:, :, slice_to_show:slice_to_show+1, :, :]
-            tensor_width = activation.shape[-1]
-            tensor_height = activation.shape[-2]
-            if tensor_width >= 4 and tensor_height >= 4:
-                plt.figure(figsize=(16, 9))
-                channels = torch.split(activation, 1, dim=1)
-                num_channels = len(channels)
-                plt.suptitle(f'Activation Layer {i}, {num_channels} channels, {tensor_width} * {tensor_height}')
-
-                # Create a grid of subplots to display channels
-                rows = math.floor(math.sqrt(num_channels))
-                cols = math.ceil(num_channels/rows)
-
-                for j, channel in enumerate(channels):
-                    channel = channel.squeeze()
-                    plt.subplot(rows, cols, j + 1)
-                    plt.imshow(channel.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
-                    plt.axis('off')
-
-                plt.subplots_adjust(wspace=0.1, hspace=0.1)  # Reduce spacing between subplots
-                canvas = plt.get_current_fig_manager().canvas
-                canvas.draw()
-                img_buffer = np.array(canvas.renderer.buffer_rgba())
-                plt.close()
-                figure_list.append(img_buffer)
-
-    plt.figure(figsize=(16, 9))
-    plt.suptitle(f'Semantic Output Layer')
-    sigmoids = model.p_outs
-    avg_sigmoid = torch.stack(sigmoids).mean(dim=0)
-    avg_sigmoid = avg_sigmoid[:, :, slice_to_show:slice_to_show+1, :, :].squeeze()
-    plt.imshow(avg_sigmoid.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
-    plt.colorbar()
-    plt.axis('off')
-    canvas = plt.get_current_fig_manager().canvas
-    canvas.draw()
-    img_buffer = np.array(canvas.renderer.buffer_rgba())
-    plt.close()
-    figure_list.append(img_buffer)
-
-    if len(model.c_outs) != 0:
-        plt.figure(figsize=(16, 9))
-        plt.suptitle(f'Contour Output Layer')
-        output = model.c_outs[-1][:, :, slice_to_show:slice_to_show + 1, :, :].squeeze()
-        plt.imshow(output.cpu().numpy(), cmap='gist_gray', interpolation='nearest')
-        plt.colorbar()
-        plt.axis('off')
-        canvas = plt.get_current_fig_manager().canvas
-        canvas.draw()
-        img_buffer = np.array(canvas.renderer.buffer_rgba())
-        plt.close()
-        figure_list.append(img_buffer)
-    return figure_list'''
+def calculate_train_multiplier(val_num_patch, num_t_files, workflow_box):
+    if 'Validation' in workflow_box:
+        return min(round(9 * (val_num_patch / num_t_files)), 128)
+    else:
+        return math.ceil(128 / num_t_files)
 
 
 def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_csv,
@@ -230,721 +112,1217 @@ def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_cs
     else:
         instance_mode = True
         img_each_col = 3
-    dataset = Datasets.TrainDataset(train_dataset_path, augmentation_csv, 1, hw_size, d_size,
-                                    instance_mode, contour_map_width, train_key_name)
+
+    dataset = Datasets.TrainDataset(train_dataset_path, augmentation_csv, 1,
+                                    hw_size, d_size, instance_mode,
+                                    contour_map_width, train_key_name)
+
     if pairing_samples:
         types = [' - positive', ' - negative']
     else:
         types = ['']
+
     figure_list = []
     num_data = len(dataset.img_tensors)
-    for type in types:
-        if type == ' - positive':
+
+    for type_str in types:
+        if type_str == ' - positive':
             arg = 'positive'
-        elif type == ' - negative':
+        elif type_str == ' - negative':
             arg = 'negative'
-        elif type == '':
+        else:
             arg = None
+
         for i in range(0, num_data):
-            # 900 x 450
             plt.figure(figsize=(9, 4.5))
             image_name = str(dataset.file_list[i][0])
-            plt.suptitle(f'{image_name + type}')
+            plt.suptitle(f'{image_name}{type_str}')
             rows = math.floor(math.sqrt(num_copies * img_each_col))
             cols = math.ceil(num_copies / rows)
+
             for k in range(0, num_copies):
                 pair = dataset.__getitem__((i, arg))
-                image = pair[0][:, slice_to_show:slice_to_show+1, :, :].squeeze()
-                label = pair[1][:, slice_to_show:slice_to_show+1, :, :].squeeze()
-                if len(pair) == 3: contour = pair[2][:, slice_to_show:slice_to_show+1, :, :].squeeze()
+                image = pair[0][:, slice_to_show:slice_to_show + 1, :, :].squeeze()
+                label = pair[1][:, slice_to_show:slice_to_show + 1, :, :].squeeze()
+                contour = None
+                if len(pair) == 3:
+                    contour = pair[2][:, slice_to_show:slice_to_show + 1, :, :].squeeze()
 
-                # Plot Image
                 plt.subplot(rows, img_each_col * cols, img_each_col * k + 1)
                 plt.imshow(image.cpu().numpy(), cmap='gist_gray')
                 plt.axis('off')
 
-                # Plot Label
                 plt.subplot(rows, img_each_col * cols, img_each_col * k + 2)
                 plt.imshow(label.cpu().numpy(), cmap='gist_gray')
                 plt.axis('off')
 
-                if len(pair) == 3:
-                    # Plot Contour
+                if contour is not None:
                     plt.subplot(rows, img_each_col * cols, img_each_col * k + 3)
                     plt.imshow(contour.cpu().numpy(), cmap='gist_gray')
                     plt.axis('off')
 
-            plt.subplots_adjust(wspace=0.1, hspace=0.1)  # Reduce spacing between subplots
-            canvas = plt.get_current_fig_manager().canvas
-            canvas.draw()
-            img_buffer = np.array(canvas.renderer.buffer_rgba())
+            plt.subplots_adjust(wspace=0.1, hspace=0.1)
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', dpi=80)
             plt.close()
-            figure_list.append(img_buffer)
+            figure_list.append(buf.getvalue())
+
     return figure_list
 
 
 def tensorboard_to_excel(log_path, save_log_name, save_log_path):
-    # Read all TensorBoard event files in the folder and merge results
     merged_data = read_all_tensorboard_event_files(log_path)
-
-    # Write merged data to Excel file
-    write_to_excel(merged_data, save_log_path+save_log_name)
-
-    print(f"Data from all TensorBoard event files in {log_path} has been merged and written to {save_log_name}.")
-
-
-available_architectures = ['SwinTransformer']
+    write_to_excel(merged_data, os.path.join(save_log_path, save_log_name))
+    return f"Data from all TensorBoard event files in {log_path} has been merged and written to {save_log_name}."
 
 
 def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_threshold):
     ground_truth = Utils.path_to_array(groundtruth_path, label=True)
     predicted = Utils.path_to_array(predicted_path, label=True)
     if stat_mode == 'Semantic':
-        ground_truth, predicted = torch.clamp(torch.from_numpy(ground_truth), 0, 1), torch.clamp(torch.from_numpy(predicted), 0, 1)
+        ground_truth = torch.clamp(torch.from_numpy(ground_truth), 0, 1)
+        predicted = torch.clamp(torch.from_numpy(predicted), 0, 1)
         intersection = 2 * torch.sum(ground_truth * predicted) + 0.001
         union = torch.sum(predicted) + torch.sum(ground_truth) + 0.001
-        tp = (predicted*ground_truth).sum()
-        fn = ((1-predicted)*ground_truth).sum()
-        tn = ((1-predicted)*(1-ground_truth)).sum()
-        fp = (predicted*(1-ground_truth)).sum()
-        dice = intersection/union
-        sensitivity = tp/(tp+fn)
-        specificity = tn/(tn+fp)
-        fpr = fp/(fp+tn)
-        fnr = fn/(fn+tp)
-        out = (dice.item(), sensitivity.item(), specificity.item(), fpr.item(), fnr.item())
-    elif stat_mode == 'Instance':
-        tpr, fpr, fnr, precision, recall = Metrics.instance_segmentation_metrics(predicted, ground_truth, iou_threshold)
-        out = (tpr.item(), fpr.item(), fnr.item(), precision.item(), recall.item())
+        tp = (predicted * ground_truth).sum()
+        fn = ((1 - predicted) * ground_truth).sum()
+        tn = ((1 - predicted) * (1 - ground_truth)).sum()
+        fp = (predicted * (1 - ground_truth)).sum()
+        dice = intersection / union
+        sensitivity = tp / (tp + fn)
+        specificity = tn / (tn + fp)
+        fpr = fp / (fp + tn)
+        fnr = fn / (fn + tp)
+        return [dice.item(), sensitivity.item(), specificity.item(),
+                fpr.item(), fnr.item()]
+    else:
+        tpr, fpr, fnr, precision, recall = Metrics.instance_segmentation_metrics(
+            predicted, ground_truth, iou_threshold)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
-    return out
+        return [tpr.item(), fpr.item(), fnr.item(), precision.item(), recall.item()]
+
+
+def auto_precision_logic():
+    if not torch.cuda.is_available():
+        return '32', ('Warning: No GPU detected! Will default to fp32 and '
+                      'training will be SLOW (if it happens at all)!'), 'warning'
+
+    devices = []
+    for i in range(torch.cuda.device_count()):
+        name = torch.cuda.get_device_name(i)
+        gpu_type = classify_gpu_type(name)
+        devices.append((name, gpu_type, i))
+    devices.sort(key=lambda x: (0 if x[1] == 'discrete' else 1, x[2]))
+    main_name, _, main_index = devices[0]
+
+    if any(kw in main_name.lower() for kw in ['nvidia', 'geforce', 'quadro', 'tesla', 'titan', 'rtx']):
+        capability = torch.cuda.get_device_capability(main_index)
+        cc = capability[0] + capability[1] / 10.0
+        if cc >= 8.0:
+            return 'bf16-mixed', f'Newer Nvidia GPU detected: {main_name}!', 'info'
+        elif cc >= 7.0:
+            return '16-mixed', f'Older Nvidia GPU detected: {main_name}!', 'info'
+        else:
+            return '32', f'Really old Nvidia GPU detected: {main_name}, defaulting to fp32.', 'warning'
+
+    if 'amd' in main_name.lower() or 'radeon' in main_name.lower():
+        name_lower = main_name.lower()
+        newer_amd_keywords = [
+            'radeon rx 9', 'radeon rx 7', 'rdna 3', 'rdna 4',
+            'radeon pro w7', 'radeon pro w9', 'ai pro r9',
+            '780m', '760m', '740m', '890m', '880m', '8060s', '8050s',
+            'mi200', 'mi210', 'mi250', 'mi300', 'mi325', 'mi350', 'mi355', 'mi400',
+        ]
+        if any(kw in name_lower for kw in newer_amd_keywords):
+            return 'bf16-mixed', f'Newer AMD GPU detected: {main_name}!', 'info'
+        elif 'mi100' in name_lower:
+            return '16-mixed', 'MI100 GPU detected!', 'info'
+        else:
+            return '32', (f'Really old AMD GPU detected: {main_name}, defaulting to fp32. '
+                          f'If you are using a newer GPU (2026+) and this shows up, '
+                          f'please report it in the GitHub repository.'), 'warning'
+
+    return '32', 'Unknown GPU type detected, defaulting to fp32.', 'warning'
+
+
+# ---------------------------------------------------------------------------
+# Image embedding (base64) for the accordion comparison figures
+# ---------------------------------------------------------------------------
+
+def _img_data_uri(rel_path, max_width=400, max_bytes=150_000):
+    """Embed a reference image as a small data URI.
+
+    WebView2's NavigateToString() rejects oversized HTML, so we downscale
+    and re-encode before inlining. The CSS caps displayed width at 400 px,
+    so this is lossless from the user's perspective.
+    """
+    try:
+        with Image.open(rel_path) as img:
+            img = img.convert('RGB')
+            width = min(max_width, img.width)
+            while width >= 80:
+                if img.width != width:
+                    ratio = width / img.width
+                    resized = img.resize(
+                        (width, max(1, int(img.height * ratio))),
+                        Image.LANCZOS,
+                    )
+                else:
+                    resized = img
+                buf = io.BytesIO()
+                resized.save(buf, format='JPEG', quality=80, optimize=True)
+                data = buf.getvalue()
+                if len(data) <= max_bytes:
+                    b64 = base64.b64encode(data).decode('ascii')
+                    return 'data:image/jpeg;base64,' + b64
+                width = int(width * 0.7)
+        print(f'Warning: could not shrink {rel_path} below {max_bytes} bytes; skipping.')
+        return ''
+    except Exception as e:
+        print(f'Warning: could not embed {rel_path} as data URI: {e}')
+        return ''
+
+
+IMG_TOKENS = {
+    '__IMG_ROI_TOO_SMALL__': 'GitHub_Res/roi too small.png',
+    '__IMG_ROI_JUST_RIGHT__': 'GitHub_Res/roi just right.png',
+    '__IMG_ROI_TOO_BIG__': 'GitHub_Res/roi too big.png',
+    '__IMG_REQUIRE_BS2__': 'GitHub_Res/require bs 2.png',
+    '__IMG_DO_NOT_REQUIRE_BS2__': 'GitHub_Res/do not require bs 2.png',
+}
+
+
+def build_html():
+    html = HTML
+    for token, path in IMG_TOKENS.items():
+        html = html.replace(token, _img_data_uri(path))
+    return html
+
+
+# ---------------------------------------------------------------------------
+# pywebview API
+# ---------------------------------------------------------------------------
+
+class WebUIApi:
+    def __init__(self):
+        self.executor = CommandExecutor(on_output=self._on_output,
+                                        on_finish=self._on_finish)
+
+    @staticmethod
+    def _get_window():
+        return webview.windows[0] if webview.windows else None
+
+    def _on_output(self, line, mode='newline'):
+        window = self._get_window()
+        if window is None:
+            return
+        try:
+            window.evaluate_js(f'appendLog({json.dumps(line)}, {json.dumps(mode)})')
+        except Exception:
+            pass
+
+    def _on_finish(self, return_code):
+        window = self._get_window()
+        if window is None:
+            return
+        try:
+            window.evaluate_js(f'onWorkflowFinished({json.dumps(return_code)})')
+        except Exception:
+            pass
+
+    def open_folder(self):
+        return open_folder_dialog()
+
+    def open_file(self):
+        return open_file_dialog()
+
+    def count_num_image_files_api(self, path, exclude_labels=True):
+        try:
+            return {'status': 'ok', 'count': count_num_image_files(path, exclude_labels)}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+
+    def get_auto_parameters_api(self, workflow_box, train_dataset_path, val_dataset_path,
+                                hw_size, d_size, batch_size, train_steps,
+                                enable_unsupervised, unsupervised_train_dataset_path):
+        try:
+            if 'Validation' in workflow_box:
+                val_num_patch = calculate_val_num_patch(val_dataset_path, hw_size, d_size)
+            else:
+                val_num_patch = None
+
+            num_t_files = count_num_image_files(train_dataset_path)
+            if enable_unsupervised:
+                num_u_files = count_num_image_files(unsupervised_train_dataset_path)
+            else:
+                num_u_files = 1
+
+            train_multiplier = calculate_train_multiplier(val_num_patch, num_t_files, workflow_box)
+            unsupervised_train_multiplier = (train_multiplier * num_t_files) // max(num_u_files, 1)
+            num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files) * batch_size
+
+            return {
+                'status': 'ok',
+                'val_num_patch': val_num_patch,
+                'num_t_files': num_t_files,
+                'num_u_files': num_u_files,
+                'train_multiplier': train_multiplier,
+                'unsupervised_train_multiplier': unsupervised_train_multiplier,
+                'num_epochs': num_epochs,
+            }
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+
+    def visualise_augmentations_api(self, train_dataset_path, hw_size, d_size,
+                                    augmentation_csv, slice_to_show, num_copies,
+                                    pairing_samples, segmentation_mode,
+                                    contour_map_width, train_key_name):
+        try:
+            pngs = visualise_augmentations(
+                train_dataset_path, hw_size, d_size, augmentation_csv,
+                int(slice_to_show), int(num_copies), pairing_samples,
+                segmentation_mode, int(contour_map_width), train_key_name)
+            imgs = ['data:image/png;base64,' + base64.b64encode(p).decode() for p in pngs]
+            return {'status': 'ok', 'images': imgs}
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {'status': 'error', 'message': str(e)}
+
+    def tensorboard_to_excel_api(self, log_path, save_log_name, save_log_path):
+        try:
+            msg = tensorboard_to_excel(log_path, save_log_name, save_log_path)
+            return {'status': 'ok', 'message': msg}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+
+    def get_stats_between_maps_api(self, stat_mode, predicted_path, groundtruth_path, iou_threshold):
+        try:
+            vals = get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, float(iou_threshold))
+            return {'status': 'ok', 'values': vals}
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {'status': 'error', 'message': str(e)}
+
+    def auto_precision_api(self):
+        try:
+            precision, message, level = auto_precision_logic()
+            return {'status': 'ok', 'precision': precision, 'message': message, 'level': level}
+        except Exception as e:
+            return {'status': 'error', 'message': str(e)}
+
+    def is_workflow_running(self):
+        return self.executor.is_running()
+
+    def interrupt_workflow(self):
+        return {'status': 'ok', 'killed': self.executor.kill_command()}
+
+    def start_workflow(self, inputs):
+        if self.executor.is_running():
+            return {'success': False, 'message': 'A workflow is already running.'}
+        try:
+            cmd = self._build_command(inputs)
+        except Exception as e:
+            return {'success': False, 'message': f'Failed to build command: {e}'}
+
+        ok = self.executor.execute_command(cmd)
+        if not ok:
+            return {'success': False, 'message': 'Failed to start subprocess.'}
+        return {'success': True, 'command': cmd}
+
+    @staticmethod
+    def _build_command(inputs):
+        wf_str = " ".join(inputs['workflow_box'])
+        existing_model_arg = ''
+        if inputs.get('existing_model_path'):
+            existing_model_arg = f'--existing_model_path "{inputs["existing_model_path"]}"'
+
+        parts = [
+            f'"{sys.executable}"', 'workflow.py',
+            '--workflow_box', wf_str,
+            '--segmentation_mode', inputs['segmentation_mode'],
+            '--train_dataset_path', inputs['train_dataset_path'],
+            '--augmentation_csv_path', f'"{inputs["augmentation_csv_path"]}"',
+            '--train_multiplier', str(inputs['train_multiplier']),
+            '--batch_size', str(inputs['batch_size']),
+            '--num_epochs', str(inputs['num_epochs']),
+            '--unsupervised_train_dataset_path', inputs['unsupervised_train_dataset_path'],
+            '--unsupervised_train_multiplier', str(inputs['unsupervised_train_multiplier']),
+            '--tensorboard_path', inputs['tensorboard_path'],
+            '--val_dataset_path', inputs['val_dataset_path'],
+            '--test_dataset_path', inputs['test_dataset_path'],
+            '--predict_dataset_path', inputs['predict_dataset_path'],
+            '--precision', inputs['precision'],
+            '--save_model_name', inputs['save_model_name'],
+            '--save_model_path', inputs['save_model_path'],
+            '--train_key_name', inputs['train_key_name'],
+            '--val_key_name', inputs['val_key_name'],
+            '--test_key_name', inputs['test_key_name'],
+            '--predict_key_name', inputs['predict_key_name'],
+            '--hw_size', str(inputs['hw_size']),
+            '--d_size', str(inputs['d_size']),
+            '--predict_hw_size', str(inputs['predict_hw_size']),
+            '--predict_depth_size', str(inputs['predict_depth_size']),
+            '--predict_hw_overlap', str(inputs['predict_hw_overlap']),
+            '--predict_depth_overlap', str(inputs['predict_depth_overlap']),
+            '--watershed_dynamic', str(inputs['watershed_dynamic']),
+            '--result_folder_path', inputs['result_folder_path'],
+            '--model_architecture', inputs['model_architecture'],
+            '--model_patch_size_xy', str(inputs['model_patch_size_xy']),
+            '--model_patch_size_z', str(inputs['model_patch_size_z']),
+            '--model_depth', str(inputs['model_depth']),
+            '--z_to_xy_ratio', str(inputs['z_to_xy_ratio']),
+            '--model_depth_multiplier', str(inputs['model_depth_multiplier']),
+            '--train_dataset_mode', f'"{inputs["train_dataset_mode"]}"',
+            '--contour_map_width', str(inputs['contour_map_width']),
+            '--val_dataset_mode', f'"{inputs["val_dataset_mode"]}"',
+            '--test_dataset_mode', f'"{inputs["test_dataset_mode"]}"',
+        ]
+
+        if existing_model_arg:
+            parts.append(existing_model_arg)
+        if inputs['pairing_samples']:
+            parts.append('--pairing_samples')
+        if inputs['enable_tensorboard']:
+            parts.append('--enable_tensorboard')
+        if inputs['enable_unsupervised']:
+            parts.append('--enable_unsupervised')
+        if inputs['memory_saving_mode']:
+            parts.append('--memory_saving_mode')
+        if inputs['read_existing_model']:
+            parts.append('--read_existing_model')
+        if not inputs['enable_mid_visualization']:
+            parts.append('--mid_visualization')
+        if inputs['train_offload']:
+            parts.append('--train_offload')
+        if inputs['val_offload']:
+            parts.append('--val_offload')
+        if inputs['test_offload']:
+            parts.append('--test_offload')
+        if inputs['predict_offload']:
+            parts.append('--predict_offload')
+        if inputs['instance_seg_mode']:
+            parts.append('--instance_seg_mode')
+        if inputs['pixel_reclaim']:
+            parts.append('--pixel_reclaim')
+
+        return ' '.join(parts)
+
+
+# ---------------------------------------------------------------------------
+# HTML / JS / CSS
+# ---------------------------------------------------------------------------
+
+HTML = r"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Volume Seg Tool</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; margin: 0; padding: 0; background: #f5f5f5; color: #222; }
+.tabs { display: flex; background: #2c3e50; }
+.tab-btn { padding: 10px 22px; background: transparent; color: #ecf0f1; border: none; cursor: pointer; font-size: 14px; }
+.tab-btn.active { background: #34495e; }
+.tab-btn:hover { background: #3b5998; }
+.tab-content { display: none; padding: 15px; }
+.tab-content.active { display: block; }
+section { border: 1px solid #d0d0d0; padding: 12px 14px; margin-bottom: 12px; border-radius: 4px; background: #fff; }
+section h3 { margin-top: 0; margin-bottom: 8px; font-size: 15px; color: #2c3e50; }
+label { display: inline-block; margin: 4px 12px 4px 0; font-size: 13px; }
+/* Native tooltip cursor — labels with a `title=` show the help cursor */
+label[title] { cursor: help; }
+input[type=text], input[type=number], select { padding: 4px 6px; border: 1px solid #ccc; border-radius: 3px; font-size: 13px; width: 220px; margin-left: 4px; }
+input[type=text]:read-only, input[type=number]:read-only { background: #eee; color: #666; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 4px; }
+.btn { padding: 7px 14px; cursor: pointer; border: 1px solid transparent; border-radius: 4px; font-size: 13px; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { background: #2980b9; color: white; }
+.btn-primary:hover:not(:disabled) { background: #2471a3; }
+.btn-danger { background: #c0392b; color: white; }
+.btn-danger:hover:not(:disabled) { background: #a93226; }
+.btn-default { background: #ecf0f1; border-color: #bdc3c7; }
+.btn-default:hover:not(:disabled) { background: #dfe4e5; }
+.btn-icon { padding: 4px 8px; }
+#log-output { background: #1e1e1e; color: #d4d4d4; padding: 10px; height: 220px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word; border-radius: 4px; }
+#log-output div { padding: 1px 0; }
+#status-bar { padding: 10px 15px; background: #ecf0f1; font-weight: bold; font-size: 13px; border-bottom: 1px solid #ccc; }
+.status-idle { background: #ecf0f1 !important; color: #555; }
+.status-running { background: #f39c12 !important; color: #fff; }
+.status-finished { background: #27ae60 !important; color: #fff; }
+.status-failed { background: #c0392b !important; color: #fff; }
+.gallery { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.gallery img { max-width: 500px; border: 1px solid #ccc; border-radius: 3px; }
+.toast { position: fixed; top: 20px; right: 20px; padding: 12px 18px; border-radius: 4px; z-index: 1000;
+         box-shadow: 0 2px 8px rgba(0,0,0,0.25); font-size: 13px; max-width: 400px; }
+.toast.info { background: #d1ecf1; color: #0c5460; }
+.toast.warning { background: #fff3cd; color: #856404; }
+.toast.error { background: #f8d7da; color: #721c24; }
+.hidden { display: none !important; }
+.hint { font-size: 12px; color: #666; margin: 4px 0; }
+.note { font-size: 12px; color: #6c4400; background: #fff8e1; padding: 6px 10px;
+        border-left: 3px solid #f39c12; border-radius: 3px; margin: 6px 0; }
+
+/* Accordions (using <details>) */
+details.accordion { border: 1px solid #d0d0d0; border-radius: 4px; margin: 8px 0; background: #fafafa; }
+details.accordion > summary { cursor: pointer; padding: 8px 12px; font-weight: bold; font-size: 14px; color: #2c3e50; user-select: none; }
+details.accordion > summary:hover { background: #eef0f1; }
+details.accordion[open] > summary { border-bottom: 1px solid #d0d0d0; }
+.accordion-body { padding: 10px 14px; font-size: 13px; }
+.accordion-body p { margin: 4px 0; }
+.accordion-body .img-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.accordion-body figure { margin: 0; flex: 1; min-width: 220px; max-width: 400px; }
+.accordion-body figure img { width: 100%; border: 1px solid #ccc; border-radius: 3px; background: #fff; min-height: 60px; }
+.accordion-body figcaption { font-size: 12px; color: #555; margin-top: 4px; text-align: center; }
+.workflow-checkboxes label { margin-right: 16px; }
+</style>
+</head>
+<body>
+
+<div id="status-bar" class="status-idle">Idle</div>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="main">Main</button>
+  <button class="tab-btn" data-tab="extras">Extras</button>
+</div>
+
+<!-- ==================== MAIN TAB ==================== -->
+<div id="main-tab" class="tab-content active">
+
+  <section>
+    <h3>Workflow</h3>
+    <div class="row">
+      <span>Segmentation Mode:</span>
+      <label><input type="radio" name="segmentation_mode" value="Semantic" checked onchange="segmentationModeChanged()"> Semantic</label>
+      <label><input type="radio" name="segmentation_mode" value="Instance" onchange="segmentationModeChanged()"> Instance</label>
+    </div>
+    <div class="row workflow-checkboxes">
+      <span>Components to enable:</span>
+      <label><input type="checkbox" id="wf_training" checked> Training</label>
+      <label><input type="checkbox" id="wf_validation" checked> Validation</label>
+      <label><input type="checkbox" id="wf_test"> Test</label>
+      <label><input type="checkbox" id="wf_predict" checked> Predict</label>
+    </div>
+    <details class="accordion">
+      <summary>Workflows Explanation</summary>
+      <div class="accordion-body">
+        <p>Training: Train a network using the training dataset.</p>
+        <p>Validation: Use a Validation Dataset to evaluate the segmentation quality during training.</p>
+        <p>Test: Similar to Validation, but only run once after the model has finished training.</p>
+        <p>Predict: Use a (trained) network to predict the label of the predict dataset.</p>
+        <p>Note that if the validation is not enabled, the script will use train dataset loss to determine when to reduce the learning rate.</p>
+      </div>
+    </details>
+  </section>
+
+  <section>
+    <h3>Dataset Information</h3>
+    <p class="hint">Necessary questions regarding the dataset in order to compute some hyperparameters.</p>
+    <p class="hint">Should always be filled.</p>
+    <div class="row">
+      <label title="Given a square shaped 2d patch randomly taken from your dataset, what's the minimum side length (in pixels) you (as a human) would need to tell and segment the cellular structure of interest from the patch? Is used to compute the size of images send into the network.">Size to spot feature: <input type="number" id="size_to_spot" value="32" step="1" oninput="calculateDHWSize()"></label>
+      <label title="The ratio of the z-resolution of the images in the dataset to their xy-resolution. Usually is 1.0 or larger if the dataset is anisotropic (e.g. SBF-SEM). We assume xy has the same resolution.">Z-resolution to XY-resolution ratio: <input type="number" id="z_to_xy_ratio" value="1.0" step="0.1" oninput="calculateDHWSize()"></label>
+      <label>Check to allow manual editing of the parameters below, instead of being calculated automatically <input type="checkbox" id="manual_mode" onchange="manualModeChanged()"></label>
+    </div>
+    <details class="accordion">
+      <summary>Example of various field of view</summary>
+      <div class="accordion-body">
+        <div class="img-row">
+          <figure>
+            <img src="__IMG_ROI_TOO_SMALL__" alt="Field of view too small" onerror="this.alt='(GitHub_Res/roi too small.png not found)'">
+            <figcaption>Field of view too small, cannot tell the feature</figcaption>
+          </figure>
+          <figure>
+            <img src="__IMG_ROI_JUST_RIGHT__" alt="Field of view just right" onerror="this.alt='(GitHub_Res/roi just right.png not found)'">
+            <figcaption>Field of view just right</figcaption>
+          </figure>
+          <figure>
+            <img src="__IMG_ROI_TOO_BIG__" alt="Field of view too big" onerror="this.alt='(GitHub_Res/roi too big.png not found)'">
+            <figcaption>Field of view too big, unnecessary computation and memory use</figcaption>
+          </figure>
+        </div>
+      </div>
+    </details>
+    <details class="accordion">
+      <summary>Automatically computed hyperparameters</summary>
+      <div class="accordion-body">
+        <div class="row">
+          <label>Height and Width (px) of training image: <input type="number" id="hw_size" value="64" readonly oninput="calculatePredictParameters()"></label>
+          <label>Depth (px) of training image: <input type="number" id="d_size" value="64" readonly oninput="calculatePredictParameters()"></label>
+        </div>
+        <div class="row">
+          <label>Patch Height and Width (px): <input type="number" id="model_patch_size_xy" value="4" readonly oninput="calculatePredictParameters()"></label>
+          <label>Patch Depth (px): <input type="number" id="model_patch_size_z" value="4" readonly oninput="calculatePredictParameters()"></label>
+          <label>Number of Transformer layers: <input type="number" id="model_depth" value="8" readonly></label>
+        </div>
+      </div>
+    </details>
+    <div class="row" style="margin-top:8px">
+      <label title="Allow using unlabelled data to enhance performance."><input type="checkbox" id="enable_unsupervised" onchange="enableUnsupervisedChanged()"> Enable Unsupervised Learning</label>
+    </div>
+    <div id="unsupervised_section" class="hidden">
+      <div class="row">
+        <label>Unsupervised Train Dataset Path:
+          <input type="text" id="unsupervised_train_dataset_path" value="Datasets/unsupervised_train">
+        </label>
+        <button class="btn btn-default btn-icon" onclick="pickFolder('unsupervised_train_dataset_path')">📄</button>
+      </div>
+      <div class="row">
+        <label>Number of image files in the unsupervised training set: <input type="number" id="num_u_files" value="1" readonly></label>
+        <label>Unsupervised Train Multiplier (Repeats): <input type="number" id="unsupervised_train_multiplier" value="1" readonly></label>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h3>Validation Settings</h3>
+    <div class="row">
+      <label title="If you are using hdf5 type image, you need to provide its data set name so VST could extract the correct data from it.">hdf5 dataset name: <input type="text" id="val_key_name" value="Default"></label>
+    </div>
+    <div class="row">
+      <label title="Instead of having all the validation data in memory, offload them to your disk and load only the parts in need. Can reduce memory use. At the expense of your disk space and potentially slower training. Allows datasets that are larger than your memory. Each individual file still needs to be smaller, though."><input type="checkbox" id="val_offload"> Offload validation dataset to disk</label>
+    </div>
+    <div class="row">
+      <label>Validation Dataset Path: <input type="text" id="val_dataset_path" value="Datasets/val"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFolder('val_dataset_path')">📄</button>
+    </div>
+    <div class="row">
+      <label>Number of patches in validation set, automatically computed: <input type="number" id="val_num_patch" readonly></label>
+      <label>Dataset Mode:
+        <select id="val_dataset_mode">
+          <option>Fully Labelled</option>
+          <option>Sparsely Labelled</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <h3>Training Settings</h3>
+    <div class="row">
+      <label title="If you are using hdf5 type image, you need to provide its dataset name.">hdf5 dataset name: <input type="text" id="train_key_name" value="Default"></label>
+    </div>
+    <div class="row">
+      <label title="Instead of having all the training data (including unsupervised) in memory, offload them to your disk and load only the parts in need. Can reduce memory use. At the expense of your disk space and potentially slower training. Allows datasets that are larger than your memory. Each individual file still needs to be smaller, though."><input type="checkbox" id="train_offload"> Offload training dataset to disk</label>
+    </div>
+    <div class="row">
+      <label>Train Dataset Path: <input type="text" id="train_dataset_path" value="Datasets/train"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFolder('train_dataset_path')">📄</button>
+    </div>
+    <div class="row">
+      <label title="Number of training patch to feed into the network at once.">Batch Size: <input type="number" id="batch_size" value="1" readonly></label>
+      <label title="Tick this if your training data contain large area without any foreground object, or large area without any background object. If in doubt, tick it."><input type="checkbox" id="pairing_samples" onchange="pairingChanged()"> Pairing positive and negative samples</label>
+      <label>Number of image files in the training set: <input type="number" id="num_t_files" readonly></label>
+    </div>
+    <details class="accordion">
+      <summary>When do you need to pair positive and negative sample</summary>
+      <div class="accordion-body">
+        <div class="img-row">
+          <figure>
+            <img src="__IMG_REQUIRE_BS2__" alt="Requires pairing" onerror="this.alt='(GitHub_Res/require bs 2.png not found)'">
+            <figcaption>Require the box to be ticked due to large area of empty space outside the cell</figcaption>
+          </figure>
+          <figure>
+            <img src="__IMG_DO_NOT_REQUIRE_BS2__" alt="Does not require pairing" onerror="this.alt='(GitHub_Res/do not require bs 2.png not found)'">
+            <figcaption>Does not Require the box to be ticked</figcaption>
+          </figure>
+        </div>
+      </div>
+    </details>
+    <div class="row">
+      <label title="Automatically calculated to aim for 10% steps in validation, 90% in train. Limit to a max of 128.">Train Multiplier (Repeats): <input type="number" id="train_multiplier" readonly></label>
+    </div>
+    <div class="row">
+      <label>Training Duration:
+        <select id="train_length" onchange="trainLengthChanged()">
+          <option>Short</option>
+          <option>Medium</option>
+          <option>Long</option>
+          <option>Custom</option>
+        </select>
+      </label>
+      <label>Training Steps: <input type="number" id="train_steps" value="2000" readonly></label>
+      <label>Maximum Number of Epochs, automatically calculated: <input type="number" id="num_epochs" readonly></label>
+    </div>
+    <div class="row">
+      <button class="btn btn-default" onclick="calculateRepeats()">Calculate Training Repeats and Epochs</button>
+    </div>
+    <!-- enable_tensorboard was `visible=False` in the original — hidden here too, but defaults to True -->
+    <input type="checkbox" id="enable_tensorboard" checked class="hidden">
+    <div class="row">
+      <label>Path to the folder which the training log will be save to: <input type="text" id="tensorboard_path" value="lightning_logs"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFolder('tensorboard_path')">📄</button>
+    </div>
+    <div class="row">
+      <label>Dataset Mode:
+        <select id="train_dataset_mode">
+          <option>Fully Labelled</option>
+          <option>Sparsely Labelled</option>
+        </select>
+      </label>
+      <label id="contour_map_width_row" class="hidden">Width of contour (outward): <input type="number" id="contour_map_width" value="1" min="1"></label>
+    </div>
+    <div class="row">
+      <label>Csv File for Data Augmentation Settings. You should change it to the isotropic version if your data have isotropic resolution.: <input type="text" id="augmentation_csv_path" value="Augmentation Parameters Anisotropic.csv" style="width:340px"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFile('augmentation_csv_path')">📄</button>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" onclick="showAugmentations(this)">Show some example patches from your training dataset, under the current patch size and augmentation settings. (Warning: fairly slow, and do not click if your training dataset is larger than your RAM)</button>
+    </div>
+    <div id="aug_gallery" class="gallery"></div>
+  </section>
+
+  <section>
+    <h3>Test Settings</h3>
+    <p class="note">Due to the limitation of the built-in test function. The dice score obtained via the test workflow may not represent the actual overall dice score.</p>
+    <p class="note">If you want to obtain the actual dice score, it's recommended to process the image via the Predict workflow first. Then use the 'Extras' tab above to extract the overall dice score.</p>
+    <div class="row">
+      <label title="If you are using hdf5 type image, you need to provide its dataset name.">hdf5 dataset name: <input type="text" id="test_key_name" value="Default"></label>
+    </div>
+    <div class="row">
+      <label title="Instead of having all the test data in memory, offload them to your disk and load only the parts in need. Can reduce memory use. At the expense of your disk space and slower starting up time. Allows datasets that are larger than your memory. Each individual file still needs to be smaller, though."><input type="checkbox" id="test_offload"> Offload test dataset to disk</label>
+    </div>
+    <div class="row">
+      <label>Test Dataset Path: <input type="text" id="test_dataset_path" value="Datasets/test"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFolder('test_dataset_path')">📄</button>
+    </div>
+    <div class="row">
+      <label>Dataset Mode:
+        <select id="test_dataset_mode">
+          <option>Fully Labelled</option>
+          <option>Sparsely Labelled</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <h3>Predict Settings</h3>
+    <div class="row">
+      <label title="If you are using hdf5 type image, you need to provide its dataset name.">hdf5 dataset name: <input type="text" id="predict_key_name" value="Default"></label>
+    </div>
+    <div class="row">
+      <label title="Instead of having all the predict data in memory, offload them to your disk and load only the parts in need. Can reduce memory use. At the expense of your disk space and potentially slower predicting. Allows datasets that are larger than your memory. Each individual file still needs to be smaller, though."><input type="checkbox" id="predict_offload"> Offload predict dataset to disk</label>
+    </div>
+    <div class="row">
+      <label>Predict Dataset Path: <input type="text" id="predict_dataset_path" value="Datasets/predict"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFolder('predict_dataset_path')">📄</button>
+    </div>
+    <div class="row">
+      <label>Expansion in Height and Width for each Patch (px): <input type="number" id="predict_hw_overlap" value="8" readonly></label>
+      <label>Expansion in Depth for each Patch (px): <input type="number" id="predict_depth_overlap" value="8" readonly></label>
+      <label>Height and Width of each Patch (px): <input type="number" id="predict_hw_size" value="48" readonly></label>
+      <label>Depth of each Patch (px): <input type="number" id="predict_depth_size" value="48" readonly></label>
+    </div>
+    <div class="row">
+      <label>Result Folder Path: <input type="text" id="result_folder_path" value="Datasets/result"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFolder('result_folder_path')">📄</button>
+    </div>
+    <div class="row">
+      <label title="Use a slower and more memory intensive watershed method for separate touching objects, instead of simple connected component labelling. Will yield result with much less under-segment objects."><input type="checkbox" id="instance_seg_mode"> Use distance transform watershed for instance segmentation</label>
+      <label>Dynamic of intensity for the search of regional minima in the distance transform image. Increasing its value will yield more object merges.: <input type="number" id="watershed_dynamic" value="10"></label>
+    </div>
+    <div class="row">
+      <label title="Due to how instance segmentation works, some pixels will be lost when separating touching objects, this settings will try to reclaim some of those lost pixels, but can take quite some time."><input type="checkbox" id="pixel_reclaim"> Enable Pixel reclaim operation for instance segmentation</label>
+    </div>
+  </section>
+
+  <section>
+    <h3>Model & Training Controls</h3>
+    <div class="row">
+      <label title="Else it will create a new model with randomised weight."><input type="checkbox" id="read_existing_model" onchange="readExistingModelChanged()"> Read Existing Model Weight File</label>
+    </div>
+    <div class="row">
+      <label>Path to Existing Model Weight File, it should be a file with 'ckpt' at the end.: <input type="text" id="existing_model_path" value="trained_model/example_name.ckpt"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFile('existing_model_path')">📄</button>
+    </div>
+    <div id="model_config_section">
+      <div class="row">
+        <label>Model Architecture:
+          <select id="model_architecture">
+            <option>SwinTransformer</option>
+          </select>
+        </label>
+        <label title="Increasing this numbe makes the model deeper, which can help if you want more accuracy at the expense of speed and video memory usage.">Model Depth multiplier: <input type="number" id="model_depth_multiplier" value="1.0" step="0.1"></label>
+      </div>
+    </div>
+    <!-- enable_mid_visualization lived inside a `visible=False` accordion in the original.
+         Hidden here too, but defaults to True. -->
+    <input type="checkbox" id="enable_mid_visualization" checked class="hidden">
+    <div class="row">
+      <label title="If you are experiencing running out of system memory (Not CUDA memory!) during training, This option could help by using only 1 thread to do data loading. Can significantly slow down the training if your system have low single core performance."><input type="checkbox" id="memory_saving_mode"> Memory Saving Mode</label>
+    </div>
+    <div class="row">
+      <label title="fp16 or bf16 precision could significantly cut the VRAM usage.bf16 is recommended over fp16 if you are using a newer GPU.">Precision:
+        <select id="precision">
+          <option value="32">32</option>
+          <option value="16-mixed">16-mixed</option>
+          <option value="bf16-mixed">bf16-mixed</option>
+        </select>
+      </label>
+      <button class="btn btn-default" onclick="autoPrecision()">Find suitable precision based on your GPU</button>
+    </div>
+    <div class="row">
+      <label>File Name for Model Saved, do not include extension: <input type="text" id="save_model_name" value="example_name"></label>
+      <label title="For path with space in it, put '' on both sides">Path to Save the Model Weight: <input type="text" id="save_model_path" value="trained_model"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFolder('save_model_path')">📄</button>
+    </div>
+  </section>
+
+  <div class="row" style="margin-bottom:12px">
+    <button id="start-btn" class="btn btn-primary" onclick="startWorkflow()" style="font-size:15px;padding:10px 24px">Start!</button>
+    <button id="interrupt-btn" class="btn btn-danger" onclick="interruptWorkflow()" disabled style="font-size:15px;padding:10px 24px">Interrupt!</button>
+  </div>
+
+  <section>
+    <h3>Live Output</h3>
+    <div id="log-output"></div>
+  </section>
+</div>
+
+<!-- ==================== EXTRAS TAB ==================== -->
+<div id="extras-tab" class="tab-content">
+
+  <section>
+    <h3>Output TensorBoard log to Excel</h3>
+    <div class="row">
+      <label>Path to the folder which the tensorboard log are saved to: <input type="text" id="tensorboard_path_e" value="lightning_logs"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFolder('tensorboard_path_e')">📄</button>
+    </div>
+    <div class="row">
+      <label>File name for the output Excel file, including extension: <input type="text" id="save_log_name" value="output.xlsx"></label>
+      <label>Path to Save the Excel file: <input type="text" id="save_log_path" value=""></label>
+      <button class="btn btn-default btn-icon" onclick="pickFolder('save_log_path')">📄</button>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" onclick="tensorboardToExcel()">Output TensorBoard log to Excel</button>
+    </div>
+  </section>
+
+  <section>
+    <h3>Calculate statistics between the predicted labels and ground truth labels</h3>
+    <p class="note">Calculate instance segmentation metrics is hard and VST uses your GPU to accelerate the process. It would be painfully slow if you are using a CPU! And still not fast if you do have a GPU...</p>
+    <div class="row">
+      <span>Mode:</span>
+      <label><input type="radio" name="stat_mode" value="Semantic" checked onchange="statModeChanged()"> Semantic</label>
+      <label><input type="radio" name="stat_mode" value="Instance" onchange="statModeChanged()"> Instance</label>
+    </div>
+    <div class="row">
+      <label>Path to the predicted image: <input type="text" id="predicted_img_path" style="width:340px"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFile('predicted_img_path')">📄</button>
+    </div>
+    <div class="row">
+      <label>Path to the ground truth image: <input type="text" id="ground_truth_img_path" style="width:340px"></label>
+      <button class="btn btn-default btn-icon" onclick="pickFile('ground_truth_img_path')">📄</button>
+    </div>
+    <div class="row" id="iou_threshold_row" style="display:none">
+      <label>IOU threshold: <input type="number" id="iou_threshold" value="0.5" step="0.05"></label>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" onclick="getStats()">Get statistics!</button>
+    </div>
+    <div class="row">
+      <label><span id="stat-label-0">Dice Score</span>: <input type="number" id="stat-output-0" readonly></label>
+      <label><span id="stat-label-1">Sensitivity (True Positive Rate)</span>: <input type="number" id="stat-output-1" readonly></label>
+      <label><span id="stat-label-2">Specificity (True Negative Rate)</span>: <input type="number" id="stat-output-2" readonly></label>
+      <label><span id="stat-label-3">False Positive Rate</span>: <input type="number" id="stat-output-3" readonly></label>
+      <label><span id="stat-label-4">False Negative Rate</span>: <input type="number" id="stat-output-4" readonly></label>
+    </div>
+  </section>
+</div>
+
+<script>
+// ---------- utilities ----------
+function $(id) { return document.getElementById(id); }
+function numVal(id) { const v = parseFloat($(id).value); return isNaN(v) ? 0 : v; }
+function intVal(id) { const v = parseInt($(id).value); return isNaN(v) ? 0 : v; }
+function strVal(id) { return $(id).value; }
+function boolVal(id) { return $(id).checked; }
+function radioVal(name) { return document.querySelector(`input[name="${name}"]:checked`).value; }
+const WF_IDS = { 'wf_training': 'Training', 'wf_validation': 'Validation', 'wf_test': 'Test', 'wf_predict': 'Predict' };
+function checkedWorkflows() {
+  return Object.keys(WF_IDS).filter(id => $(id).checked).map(id => WF_IDS[id]);
+}
+
+// ---------- tabs ----------
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    const target = btn.dataset.tab === 'main' ? 'main-tab' : 'extras-tab';
+    $(target).classList.add('active');
+  });
+});
+
+// ---------- toast ----------
+function showToast(message, level) {
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + (level || 'info');
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
+
+// ---------- status bar ----------
+function setStatus(text, cls) {
+  const bar = $('status-bar');
+  bar.textContent = text;
+  bar.className = 'status-' + cls;
+}
+
+// ---------- logging ----------
+window.appendLog = function(line, mode) {
+  mode = mode || 'newline';
+  const logEl = $('log-output');
+  const wasAtBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+
+  const replacePrevious =
+    mode === 'carriage' &&
+    logEl._lastWasCarriage &&
+    logEl.lastElementChild &&
+    line.length > 0;
+
+  if (replacePrevious) {
+    logEl.lastElementChild.textContent = line;
+  } else {
+    const lineEl = document.createElement('div');
+    lineEl.textContent = line;
+    logEl.appendChild(lineEl);
+    while (logEl.children.length > 5000) logEl.removeChild(logEl.firstChild);
+  }
+  logEl._lastWasCarriage = (mode === 'carriage');
+  if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
+};
+
+// ---------- dataset info auto-calc ----------
+function manualModeChanged() {
+  const editable = $('manual_mode').checked;
+  ['hw_size', 'd_size', 'model_patch_size_xy', 'model_patch_size_z', 'model_depth'].forEach(id => {
+    $(id).readOnly = !editable;
+  });
+  if (!editable) calculateDHWSize();
+}
+
+function calculateDHWSize() {
+  if ($('manual_mode').checked) return;
+  const sizeToSpot = numVal('size_to_spot');
+  const ratio = numVal('z_to_xy_ratio') || 1.0;
+
+  const hwEstimate = 1.5 * sizeToSpot;
+  const hwPatchSize = Math.trunc(Math.cbrt(64 * ratio));
+  const dPatchSize = Math.trunc(Math.cbrt(64 / ratio));
+  const windowSize = 4;
+  const hwInterval = hwPatchSize * windowSize;
+  const dInterval = dPatchSize * windowSize;
+  const hwSize = hwInterval * Math.max(Math.round(hwEstimate / hwInterval), 1);
+  const dSize = dInterval * Math.max(Math.round(hwEstimate / dInterval / ratio), 1);
+  const depth = Math.ceil(hwEstimate / hwInterval);
+
+  $('hw_size').value = hwSize;
+  $('d_size').value = dSize;
+  $('model_patch_size_xy').value = hwPatchSize;
+  $('model_patch_size_z').value = dPatchSize;
+  $('model_depth').value = depth;
+  calculatePredictParameters();
+}
+
+function calculatePredictParameters() {
+  const mpxy = intVal('model_patch_size_xy') || 4;
+  const mpz = intVal('model_patch_size_z') || 4;
+  const hwSize = intVal('hw_size') || 64;
+  const dSize = intVal('d_size') || 64;
+
+  const hwMult = hwSize <= 64 ? 1 : (hwSize <= 192 ? 2 : 3);
+  const dMult = dSize <= 64 ? 1 : (dSize <= 192 ? 2 : 3);
+
+  const hwOverlap = mpxy * 2 * hwMult;
+  const dOverlap = mpz * 2 * dMult;
+  $('predict_hw_overlap').value = hwOverlap;
+  $('predict_depth_overlap').value = dOverlap;
+  $('predict_hw_size').value = hwSize - 2 * hwOverlap;
+  $('predict_depth_size').value = dSize - 2 * dOverlap;
+}
+
+// ---------- training settings ----------
+function pairingChanged() {
+  $('batch_size').value = $('pairing_samples').checked ? 2 : 1;
+}
+
+function trainLengthChanged() {
+  const v = $('train_length').value;
+  const steps = $('train_steps');
+  if (v === 'Short') { steps.value = 2000; steps.readOnly = true; }
+  else if (v === 'Medium') { steps.value = 5000; steps.readOnly = true; }
+  else if (v === 'Long') { steps.value = 12000; steps.readOnly = true; }
+  else { steps.readOnly = false; }
+}
+
+async function calculateRepeats() {
+  const result = await pywebview.api.get_auto_parameters_api(
+    checkedWorkflows(),
+    strVal('train_dataset_path'),
+    strVal('val_dataset_path'),
+    intVal('hw_size'),
+    intVal('d_size'),
+    intVal('batch_size'),
+    intVal('train_steps'),
+    boolVal('enable_unsupervised'),
+    strVal('unsupervised_train_dataset_path'),
+  );
+  if (result.status !== 'ok') {
+    showToast('Error: ' + result.message, 'error');
+    return;
+  }
+  $('val_num_patch').value = result.val_num_patch ?? '';
+  $('num_t_files').value = result.num_t_files;
+  $('num_u_files').value = result.num_u_files;
+  $('train_multiplier').value = result.train_multiplier;
+  $('unsupervised_train_multiplier').value = result.unsupervised_train_multiplier;
+  $('num_epochs').value = result.num_epochs;
+  showToast('Repeats and epochs calculated.', 'info');
+}
+
+// ---------- conditional visibility ----------
+function segmentationModeChanged() {
+  const mode = radioVal('segmentation_mode');
+  $('contour_map_width_row').classList.toggle('hidden', mode !== 'Instance');
+}
+
+function enableUnsupervisedChanged() {
+  $('unsupervised_section').classList.toggle('hidden', !$('enable_unsupervised').checked);
+}
+
+function readExistingModelChanged() {
+  $('model_config_section').classList.toggle('hidden', $('read_existing_model').checked);
+}
+
+function statModeChanged() {
+  const mode = radioVal('stat_mode');
+  const labels = mode === 'Instance'
+    ? ['True Positive Rate', 'False Positive Rate', 'False Negative Rate', 'Precision', 'Recall']
+    : ['Dice Score', 'Sensitivity (True Positive Rate)', 'Specificity (True Negative Rate)',
+       'False Positive Rate', 'False Negative Rate'];
+  for (let i = 0; i < 5; i++) {
+    $('stat-label-' + i).textContent = labels[i];
+    $('stat-output-' + i).value = '';
+  }
+  $('iou_threshold_row').style.display = mode === 'Instance' ? 'flex' : 'none';
+}
+
+// ---------- augmentation gallery ----------
+async function showAugmentations(btn) {
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Loading…';
+  $('aug_gallery').innerHTML = '';
+  try {
+    const result = await pywebview.api.visualise_augmentations_api(
+      strVal('train_dataset_path'),
+      intVal('hw_size'),
+      intVal('d_size'),
+      strVal('augmentation_csv_path'),
+      0, 6,
+      boolVal('pairing_samples'),
+      radioVal('segmentation_mode'),
+      intVal('contour_map_width'),
+      strVal('train_key_name'),
+    );
+    if (result.status !== 'ok') {
+      showToast('Error: ' + result.message, 'error');
+      return;
+    }
+    const gallery = $('aug_gallery');
+    for (const src of result.images) {
+      const img = document.createElement('img');
+      img.src = src;
+      gallery.appendChild(img);
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+// ---------- extras ----------
+async function tensorboardToExcel() {
+  const result = await pywebview.api.tensorboard_to_excel_api(
+    strVal('tensorboard_path_e'),
+    strVal('save_log_name'),
+    strVal('save_log_path'),
+  );
+  showToast(result.status === 'ok' ? result.message : ('Error: ' + result.message),
+            result.status === 'ok' ? 'info' : 'error');
+}
+
+async function getStats() {
+  const result = await pywebview.api.get_stats_between_maps_api(
+    radioVal('stat_mode'),
+    strVal('predicted_img_path'),
+    strVal('ground_truth_img_path'),
+    numVal('iou_threshold'),
+  );
+  if (result.status !== 'ok') {
+    showToast('Error: ' + result.message, 'error');
+    return;
+  }
+  for (let i = 0; i < 5; i++) $('stat-output-' + i).value = result.values[i];
+}
+
+// ---------- auto precision ----------
+async function autoPrecision() {
+  const result = await pywebview.api.auto_precision_api();
+  if (result.status !== 'ok') {
+    showToast('Error: ' + result.message, 'error');
+    return;
+  }
+  $('precision').value = result.precision;
+  if (result.message) showToast(result.message, result.level || 'info');
+}
+
+// ---------- workflow control ----------
+function gatherInputs() {
+  return {
+    workflow_box: checkedWorkflows(),
+    segmentation_mode: radioVal('segmentation_mode'),
+    train_dataset_path: strVal('train_dataset_path'),
+    augmentation_csv_path: strVal('augmentation_csv_path'),
+    train_multiplier: intVal('train_multiplier'),
+    batch_size: intVal('batch_size'),
+    num_epochs: intVal('num_epochs'),
+    enable_unsupervised: boolVal('enable_unsupervised'),
+    unsupervised_train_dataset_path: strVal('unsupervised_train_dataset_path'),
+    unsupervised_train_multiplier: intVal('unsupervised_train_multiplier'),
+    enable_tensorboard: boolVal('enable_tensorboard'),
+    tensorboard_path: strVal('tensorboard_path'),
+    val_dataset_path: strVal('val_dataset_path'),
+    test_dataset_path: strVal('test_dataset_path'),
+    predict_dataset_path: strVal('predict_dataset_path'),
+    read_existing_model: boolVal('read_existing_model'),
+    existing_model_path: strVal('existing_model_path'),
+    precision: strVal('precision'),
+    save_model_name: strVal('save_model_name'),
+    save_model_path: strVal('save_model_path'),
+    train_key_name: strVal('train_key_name'),
+    val_key_name: strVal('val_key_name'),
+    test_key_name: strVal('test_key_name'),
+    predict_key_name: strVal('predict_key_name'),
+    train_offload: boolVal('train_offload'),
+    val_offload: boolVal('val_offload'),
+    test_offload: boolVal('test_offload'),
+    predict_offload: boolVal('predict_offload'),
+    hw_size: intVal('hw_size'),
+    d_size: intVal('d_size'),
+    predict_hw_size: intVal('predict_hw_size'),
+    predict_depth_size: intVal('predict_depth_size'),
+    predict_hw_overlap: intVal('predict_hw_overlap'),
+    predict_depth_overlap: intVal('predict_depth_overlap'),
+    watershed_dynamic: intVal('watershed_dynamic'),
+    result_folder_path: strVal('result_folder_path'),
+    enable_mid_visualization: boolVal('enable_mid_visualization'),
+    model_architecture: strVal('model_architecture'),
+    model_patch_size_xy: intVal('model_patch_size_xy'),
+    model_patch_size_z: intVal('model_patch_size_z'),
+    model_depth: intVal('model_depth'),
+    z_to_xy_ratio: numVal('z_to_xy_ratio'),
+    model_depth_multiplier: numVal('model_depth_multiplier'),
+    train_dataset_mode: strVal('train_dataset_mode'),
+    contour_map_width: intVal('contour_map_width'),
+    val_dataset_mode: strVal('val_dataset_mode'),
+    test_dataset_mode: strVal('test_dataset_mode'),
+    pairing_samples: boolVal('pairing_samples'),
+    memory_saving_mode: boolVal('memory_saving_mode'),
+    instance_seg_mode: boolVal('instance_seg_mode'),
+    pixel_reclaim: boolVal('pixel_reclaim'),
+  };
+}
+
+function validateInputs(inputs) {
+  if (inputs.workflow_box.length === 0) {
+    showToast('Please select at least one workflow component.', 'warning');
+    return false;
+  }
+  if (inputs.workflow_box.includes('Training') && !inputs.train_multiplier) {
+    showToast('Please click "Calculate Training Repeats and Epochs" first!', 'warning');
+    return false;
+  }
+  return true;
+}
+
+async function startWorkflow() {
+  const inputs = gatherInputs();
+  if (!validateInputs(inputs)) return;
+
+  $('start-btn').disabled = true;
+  $('interrupt-btn').disabled = false;
+  setStatus('Running…', 'running');
+  appendLog('===== Starting workflow =====');
+
+  const result = await pywebview.api.start_workflow(inputs);
+  if (!result.success) {
+    $('start-btn').disabled = false;
+    $('interrupt-btn').disabled = true;
+    setStatus('Idle', 'idle');
+    showToast('Failed to start workflow: ' + result.message, 'error');
+    return;
+  }
+  appendLog('$ ' + result.command);
+}
+
+async function interruptWorkflow() {
+  $('interrupt-btn').disabled = true;
+  setStatus('Interrupting…', 'running');
+  await pywebview.api.interrupt_workflow();
+}
+
+window.onWorkflowFinished = function(returnCode) {
+  $('start-btn').disabled = false;
+  $('interrupt-btn').disabled = true;
+  if (returnCode === 0 || returnCode === null) {
+    setStatus('Workflow finished.', 'finished');
+    appendLog('===== Workflow finished =====');
+  } else {
+    setStatus('Workflow exited with code ' + returnCode + '.', 'failed');
+    appendLog('===== Workflow exited with code ' + returnCode + ' =====');
+  }
+};
+
+// initial UI state
+calculatePredictParameters();
+</script>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    api = WebUIApi()
+    window = webview.create_window(
+        'Volume Seg Tool',
+        html=build_html(),
+        width=1400,
+        height=900,
+        resizable=True,
+    )
+
+    # Expose individual callables to avoid pywebview serializing the whole
+    # API object (which previously triggered the AccessibilityObject spam).
+    for name in dir(api):
+        if name.startswith('_'):
+            continue
+        attr = getattr(api, name)
+        if callable(attr):
+            window.expose(attr)
+
+    webview.start(debug=False)
 
 
 if __name__ == "__main__":
-    with gr.Blocks(title=f"Volume Seg Tool") as WebUI:
-        with gr.Tab("Main"):
-            segmentation_mode = gr.Radio(["Semantic", "Instance"], value="Semantic", label="Segmentation Mode")
-            workflow_box = gr.CheckboxGroup(["Training", "Validation", "Test", "Predict"],
-                                            label="Components to enable")
-            with gr.Accordion("Workflows Explanation", open=False):
-                gr.Markdown("Training: Train a network using the training dataset.")
-                gr.Markdown("Validation: Use a Validation Dataset to evaluate the segmentation quality during training.")
-                gr.Markdown("Test: Similar to Validation, but only run once after the model has finished training.")
-                gr.Markdown("Predict: Use a (trained) network to predict the label of the predict dataset.")
-                gr.Markdown("Note that if the validation is not enabled, the script will use train dataset loss to determine when to reduce the learning rate.")
-            with gr.Tab("Dataset Information"):
-                gr.Markdown("Necessary questions regarding the dataset in order to compute some hyperparameters.")
-                gr.Markdown("Should always be filled.")
-                with gr.Row():
-                    size_to_spot = gr.Number(32,
-                                             label="Size to spot feature",
-                                             info="Given a square shaped 2d patch randomly taken from your dataset,"
-                                               " what's the minimum side length (in pixels) you (as a human) would need to tell"
-                                               " and segment the cellular structure of interest from the patch? "
-                                               "\nIs used to compute the size of images send into the network.",
-                                             precision=0)
-                    z_to_xy_ratio = gr.Number(1.0, label="Z-resolution to XY-resolution ratio",
-                                              info="The ratio of the z-resolution of the images in the dataset to their xy-resolution. "
-                                                   "Usually is 1.0 or larger if the dataset is anisotropic (e.g. SBF-SEM). "
-                                                   "We assume xy has the same resolution.")
-                    manual_mode = gr.Checkbox(scale=0,
-                                              label="Check to allow manual editing of the parameters below, "
-                                                    "instead of being calculated automatically")
-                with gr.Accordion("Example of various field of view", open=False):
-                    with gr.Row():
-                        gr.Image("GitHub_Res/roi too small.png", image_mode="L",
-                                 interactive=False, label="Field of view too small, cannot tell the feature")
-                        gr.Image("GitHub_Res/roi just right.png", image_mode="L",
-                                 interactive=False, label="Field of view just right")
-                        gr.Image("GitHub_Res/roi too big.png", image_mode="L",
-                                 interactive=False, label="Field of view too big, unnecessary computation and memory use")
-                with gr.Accordion("Automatically computed hyperparameters", open=False):
-                    with gr.Row():
-                        hw_size = gr.Number(64, label="Height and Width (px) of training image", interactive=False, precision=0)
-                        d_size = gr.Number(64, label="Depth (px) of training image", interactive=False, precision=0)
-                        model_patch_size_xy = gr.Number(4, label="Patch Height and Width (px)", interactive=False, precision=0)
-                        model_patch_size_z = gr.Number(4, label="Patch Depth (px)", interactive=False, precision=0)
-                        model_depth = gr.Number(8, label="Number of Transformer layers", interactive=False, precision=0)
-
-                    def change_dataset_info_mode(choice):
-                        interactive = True if choice else False
-                        options = (gr.Number(64, label="Height and Width (px) of training image", interactive=interactive, precision=0),
-                                   gr.Number(64, label="Depth (px) of training image", interactive=interactive, precision=0),
-                                   gr.Number(4, label="Patch Height and Width (px)", interactive=interactive, precision=0),
-                                   gr.Number(4, label="Patch Depth (px)", interactive=interactive, precision=0),
-                                   gr.Number(8, label="Number of Transformer layers", interactive=interactive, precision=0))
-                        return options
-                    manual_mode.change(fn=change_dataset_info_mode, inputs=manual_mode,
-                                       outputs=[hw_size, d_size, model_patch_size_xy, model_patch_size_z, model_depth])
-
-                    def calculate_dhw_size(size_to_spot, z_to_xy_ratio):
-                        hw_estimate = 1.5 * size_to_spot
-                        hw_patch_size = int(math.cbrt(64*z_to_xy_ratio))
-                        d_patch_size = int(math.cbrt(64/z_to_xy_ratio))
-
-                        window_size = 4 # Hardcoded value that seems good enough
-
-                        hw_size_interval = hw_patch_size * window_size
-                        d_size_interval = d_patch_size * window_size
-
-                        hw_size = hw_size_interval * max(round(hw_estimate / hw_size_interval), 1)
-                        d_size = d_size_interval * max(round(hw_estimate / d_size_interval / z_to_xy_ratio), 1)
-
-                        depth = math.ceil(hw_estimate / hw_size_interval)
-
-                        return hw_size, d_size, hw_patch_size, d_patch_size, depth
-                    size_to_spot.change(calculate_dhw_size, inputs=[size_to_spot, z_to_xy_ratio],
-                                        outputs=[hw_size, d_size, model_patch_size_xy, model_patch_size_z, model_depth])
-                    z_to_xy_ratio.change(calculate_dhw_size, inputs=[size_to_spot, z_to_xy_ratio],
-                                         outputs=[hw_size, d_size, model_patch_size_xy, model_patch_size_z, model_depth])
-                with gr.Row():
-                    enable_unsupervised = gr.Checkbox(scale=0, label="Enable Unsupervised Learning",
-                                                      info="Allow using unlabelled data to enhance performance.")
-                    unsupervised_train_dataset_path = gr.Textbox('Datasets/unsupervised_train', scale=2,
-                                                                 label="Unsupervised Train Dataset Path", visible=False)
-                    folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=unsupervised_train_dataset_path)
-                    num_u_files = gr.Number(None,
-                                            label="Number of image files in the unsupervised training set.",
-                                            interactive=False, visible=False)
-                    unsupervised_train_multiplier = gr.Number(1, label="Unsupervised Train Multiplier (Repeats)",
-                                                              interactive=False, visible=False)
-
-                    def show_hide_unsupervised_folder(enable_unsupervised):
-                        visible = True if enable_unsupervised else False
-                        options = (gr.Textbox('Datasets/unsupervised_train', scale=2,
-                                   label="Unsupervised Train Dataset Path", visible=visible),
-                                   gr.Number(1, label="Unsupervised Train Multiplier (Repeats)",
-                                             interactive=False, visible=visible))
-                        return options
-                    enable_unsupervised.change(show_hide_unsupervised_folder,
-                                               inputs=enable_unsupervised,
-                                               outputs=[unsupervised_train_dataset_path, unsupervised_train_multiplier])
-
-            with gr.Tab("Validation Settings"):
-                with gr.Row():
-                    val_key_name = gr.Textbox('Default', label="hdf5 dataset name",
-                                              info='If you are using hdf5 type image, you need to provide its '
-                                                   'data set name so VST could extract the correct data from it.')
-                with gr.Row():
-                    val_offload = gr.Checkbox(label="Offload validation dataset to disk",
-                                              info="Instead of having all the validation data in memory, offload them to"
-                                                   " your disk and load only the parts in need. Can reduce memory use."
-                                                   " At the expense of your disk space and potentially slower training."
-                                                   "\nAllows datasets that are larger than your memory. Each individual"
-                                                   " file still needs to be smaller, though.")
-                with gr.Row():
-                    val_dataset_path = gr.Textbox('Datasets/val', scale=2, label="Validation Dataset Path")
-                    folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=val_dataset_path)
-
-                    def calculate_val_num_patch(val_dataset_path, hw_size, d_size):
-                        print('Calculating the number of patches for validation set!')
-                        file_list = Utils.make_label_pair_tv(val_dataset_path)
-                        counter = 0
-                        for file in file_list:
-                            file = Utils.multiple_loader(file[0], val_key_name)
-                            depth, height, width = file.shape
-                            depth_multiplier = max(math.ceil(depth / d_size), 1)
-                            height_multiplier = max(math.ceil(height / hw_size), 1)
-                            width_multiplier = max(math.ceil(width / hw_size), 1)
-                            total = depth_multiplier * height_multiplier * width_multiplier
-                            counter += total
-                        return counter
-                    val_num_patch = gr.Number(None,
-                                              label="Number of patches in validation set, automatically computed",
-                                              precision=0, minimum=0, interactive=False)
-                val_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
-                                            label="Dataset Mode")
-            with gr.Tab("Training Settings"):
-                with gr.Row():
-                    train_key_name = gr.Textbox('Default', label="hdf5 dataset name",
-                                                info='If you are using hdf5 type image, you need to provide its '
-                                                     'dataset name.')
-                with gr.Row():
-                    train_offload = gr.Checkbox(label="Offload training dataset to disk",
-                                                info="Instead of having all the training data (including unsupervised) in memory,"
-                                                     " offload them to your disk and load only the parts in need. Can reduce memory use."
-                                                     " At the expense of your disk space and potentially slower training."
-                                                     "\nAllows datasets that are larger than your memory. Each individual"
-                                                     " file still needs to be smaller, though.")
-                with gr.Row():
-                    train_dataset_path = gr.Textbox('Datasets/train', scale=2, label="Train Dataset Path")
-                    folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=train_dataset_path)
-                with gr.Row():
-                    batch_size = gr.Number(1, label="Batch Size", precision=0, minimum=1, interactive=False,
-                                           info="Number of training patch to feed into the network at once.")
-                    pairing_samples = gr.Checkbox(label="Pairing positive and negative samples",
-                                                  info="Tick this if your training data contain large area without any foreground object,"
-                                                       "or large area without any background object."
-                                                       "\nIf in doubt, tick it.")
-                    def change_batch_size(choice):
-                        if choice: bs = 2
-                        else: bs = 1
-                        return gr.Number(bs, label="Batch Size", precision=0, minimum=1, interactive=False,
-                                         info="Number of training patch to feed into the network at once.")
-                    pairing_samples.change(change_batch_size, inputs=pairing_samples, outputs=batch_size)
-                    num_t_files = gr.Number(1,
-                                            label="Number of image files in the training set.",
-                                            interactive=False, visible=False)
-                with gr.Accordion("When do you need to pair positive and negative sample", open=False):
-                    with gr.Row():
-                        gr.Image("GitHub_Res/require bs 2.png", image_mode="L",
-                                 interactive=False, label="Require the box to be ticked due to large area of empty space outside the cell")
-                        gr.Image("GitHub_Res/do not require bs 2.png", image_mode="L",
-                                 interactive=False, label="Does not Require the box to be ticked")
-                with gr.Row():
-                    train_multiplier = gr.Number(None, label="Train Multiplier (Repeats)",
-                                                 info="Automatically calculated to aim for 10% steps in validation, 90% in train. "
-                                                      "Limit to a max of 128.",
-                                                 interactive=False)
-                with gr.Row():
-                    train_length = gr.Radio(["Short", "Medium", "Long", "Custom"], value="Short",
-                                            label="Training Duration")
-                    train_steps = gr.Number(2000, label="Training Steps", interactive=False)
-
-                    def length_to_steps(train_length):
-                        if train_length == "Short":
-                            return gr.Number(2000, label="Training Steps", interactive=False)
-                        if train_length == "Medium":
-                            return gr.Number(5000, label="Training Steps", interactive=False)
-                        if train_length == "Long":
-                            return gr.Number(12000, label="Training Steps", interactive=False)
-                        if train_length == "Custom":
-                            return gr.Number(1, label="Training Steps", interactive=True, precision=0, minimum=1)
-                    train_length.change(length_to_steps, inputs=train_length, outputs=train_steps)
-                    num_epochs = gr.Number(None, label="Maximum Number of Epochs, automatically calculated", precision=0, minimum=1)
-
-                    def steps_to_epochs(train_steps, train_multiplier, num_t_files):
-                        return math.ceil(train_steps/(train_multiplier*num_t_files))
-
-                with gr.Row():
-                    enable_tensorboard = gr.Checkbox(True, scale=0, label="Enable TensorBoard Logging", visible=False)
-                    tensorboard_path = gr.Textbox('lightning_logs', scale=2, label="Path to the folder which the training log will be save to")
-                    folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=tensorboard_path)
-                train_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
-                                              label="Dataset Mode")
-                with gr.Row():
-                    contour_map_width = gr.Number(1, label="Width of contour (outward)", precision=0, visible=False, minimum=1)
-
-
-                def change_contour_map_width_value(choice):
-                    visible = True if choice == "Instance" else False
-                    return gr.Number(1, label="Width of contour (outward)", precision=0, visible=visible, minimum=1)
-                segmentation_mode.change(fn=change_contour_map_width_value, inputs=segmentation_mode, outputs=contour_map_width)
-                with gr.Row():
-                    augmentation_csv_path = gr.Textbox('Augmentation Parameters Anisotropic.csv', scale=2,
-                                                       label="Csv File for Data Augmentation Settings."
-                                                             " You should change it to the isotropic version if your data have isotropic resolution.")
-                    file_button = gr.Button(document_symbol, scale=0)
-                    file_button.click(open_file, outputs=augmentation_csv_path)
-                with gr.Row():
-                    outputs = gr.Gallery(label="Output Images", format="png", preview=True, selected_index=0)
-                    slice_to_show = gr.Number(0, visible=False)
-                    number_copies = gr.Number(6, visible=False)
-                    start_button = gr.Button("Show some example patches from your training dataset,"
-                                             " under the current patch size and augmentation settings."
-                                             "\nWarning: This is fairly slow, so please be patient."
-                                             " And do not click it if your training dataset is larger than your RAM", scale=0)
-                    start_button.click(visualise_augmentations,
-                                       inputs=[train_dataset_path, hw_size, d_size, augmentation_csv_path, slice_to_show,
-                                               number_copies, pairing_samples, segmentation_mode,
-                                               contour_map_width, train_key_name],
-                                       outputs=outputs)
-            with gr.Tab("Test Settings"):
-                gr.Markdown("Due to the limitation of the built-in test function. The dice score obtained via the "
-                            "test workflow may not represent the actual overall dice score.")
-                gr.Markdown("If you want to obtain the actual dice score, it's recommended to process the image via "
-                            "the Predict workflow first. Then use the 'Extras' tab above to extract the overall dice score.")
-                with gr.Row():
-                    test_key_name = gr.Textbox('Default', label="hdf5 dataset name",
-                                               info='If you are using hdf5 type image, you need to provide its dataset name.')
-                with gr.Row():
-                    test_offload = gr.Checkbox(label="Offload test dataset to disk",
-                                              info="Instead of having all the test data in memory, offload them to"
-                                                   " your disk and load only the parts in need. Can reduce memory use."
-                                                   " At the expense of your disk space and slower starting up time."
-                                                   "\nAllows datasets that are larger than your memory. Each individual"
-                                                   " file still needs to be smaller, though.")
-                with gr.Row():
-                    test_dataset_path = gr.Textbox('Datasets/test', scale=2, label="Test Dataset Path")
-                    folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=test_dataset_path)
-                test_dataset_mode = gr.Radio(["Fully Labelled", "Sparsely Labelled"], value="Fully Labelled",
-                                             label="Dataset Mode")
-            with gr.Tab("Predict Settings"):
-                with gr.Row():
-                    predict_key_name = gr.Textbox('Default', label="hdf5 dataset name",
-                                                  info='If you are using hdf5 type image, you need to provide its '
-                                                       'dataset name.')
-                with gr.Row():
-                    predict_offload = gr.Checkbox(label="Offload predict dataset to disk",
-                                                  info="Instead of having all the predict data in memory, offload them to"
-                                                       " your disk and load only the parts in need. Can reduce memory use."
-                                                       " At the expense of your disk space and potentially slower predicting."
-                                                       "\nAllows datasets that are larger than your memory. Each individual"
-                                                       " file still needs to be smaller, though.")
-                with gr.Row():
-                    predict_dataset_path = gr.Textbox('Datasets/predict', scale=2, label="Predict Dataset Path")
-                    folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=predict_dataset_path)
-                with gr.Row():
-                    predict_hw_overlap = gr.Number(model_patch_size_xy.value*2,
-                                                   label="Expansion in Height and Width for each Patch (px)",
-                                                   precision=0, interactive=False)
-                    predict_depth_overlap = gr.Number(model_patch_size_z.value*2,
-                                                      label="Expansion in Depth for each Patch (px)",
-                                                      precision=0, interactive=False)
-                    predict_hw_size = gr.Number(hw_size.value-2*predict_hw_overlap.value,
-                                                label="Height and Width of each Patch (px)", precision=0, interactive=False)
-                    predict_depth_size = gr.Number(d_size.value-2*predict_depth_overlap.value,
-                                                   label="Depth of each Patch (px)", precision=0, interactive=False)
-
-                    def calculate_predict_parameters(model_patch_size_xy, model_patch_size_z, hw_size, d_size):
-                        if hw_size <= 64:
-                            hw_overlap_multiplier = 1
-                        elif hw_size <= 192:
-                            hw_overlap_multiplier = 2
-                        else:
-                            hw_overlap_multiplier = 3
-                        if d_size <= 64:
-                            d_overlap_multiplier = 1
-                        elif d_size <= 192:
-                            d_overlap_multiplier = 2
-                        else:
-                            d_overlap_multiplier = 3
-                        predict_hw_overlap = model_patch_size_xy * 2 * hw_overlap_multiplier
-                        predict_depth_overlap = model_patch_size_z * 2 * d_overlap_multiplier
-                        predict_hw_size = hw_size-2*predict_hw_overlap
-                        predict_depth_size = d_size-2*predict_depth_overlap
-                        options = (gr.Number(predict_hw_overlap, label="Expansion in Height and Width for each Patch (px)", interactive=False),
-                                   gr.Number(predict_depth_overlap, label="Expansion in Depth for each Patch (px)", interactive=False),
-                                   gr.Number(predict_hw_size, label="Height and Width of each Patch (px)", interactive=False),
-                                   gr.Number(predict_depth_size, label="Depth of each Patch (px)", interactive=False))
-                        return options
-                    hw_size.change(calculate_predict_parameters,
-                                   inputs=[model_patch_size_xy, model_patch_size_z, hw_size, d_size],
-                                   outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
-                    d_size.change(calculate_predict_parameters,
-                                  inputs=[model_patch_size_xy, model_patch_size_z, hw_size, d_size],
-                                  outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
-                    model_patch_size_xy.change(calculate_predict_parameters,
-                                               inputs=[model_patch_size_xy, model_patch_size_z, hw_size, d_size],
-                                               outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
-                    model_patch_size_z.change(calculate_predict_parameters,
-                                               inputs=[model_patch_size_xy, model_patch_size_z, hw_size, d_size],
-                                               outputs=[predict_hw_overlap, predict_depth_overlap, predict_hw_size, predict_depth_size])
-                with gr.Row():
-                    result_folder_path = gr.Textbox('Datasets/result', scale=2, label="Result Folder Path")
-                    folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=result_folder_path)
-                with gr.Row():
-                    instance_seg_mode = gr.Checkbox(label="Use distance transform watershed for instance segmentation",
-                                                    info="Use a slower and more memory intensive watershed method for separate touching objects, "
-                                                         "instead of simple connected component labelling. "
-                                                         "Will yield result with much less under-segment objects.")
-                    watershed_dynamic = gr.Number(10, label="Dynamic of intensity for the search of regional minima in the distance transform image."
-                                                            " Increasing its value will yield more object merges.")
-                    pixel_reclaim = gr.Checkbox(label="Enable Pixel reclaim operation for instance segmentation",
-                                                info="Due to how instance segmentation works, some pixels will be lost when separating touching objects, "
-                                                     "this settings will try to reclaim some of those lost pixels, but can take quite some time.")
-                    #TTA_z = gr.Checkbox(label="Enable Test-Time Augmentation for z dimension", info="Depth Wise flip the image")
-            with gr.Row():
-                calculate_repeats = gr.Button(value="Calculate Training Repeats and Epochs!")
-                def calculate_train_multiplier(val_num_patch, num_t_files, workflow_box):
-                    if 'Validation' in workflow_box:
-                        # Aiming to have 10% steps in val, 90% steps in train
-                        return min(round(9 * (val_num_patch / num_t_files)), 128)
-                    else:
-                        return math.ceil(128 / num_t_files)
-
-                def get_auto_parameters(workflow_box, train_dataset_path, val_dataset_path, hw_size, d_size, batch_size, train_steps, enable_unsupervised, unsupervised_train_dataset_path):
-                    if 'Validation' in workflow_box:
-                        val_num_patch = calculate_val_num_patch(val_dataset_path, hw_size, d_size)
-                    else:
-                        val_num_patch = None
-                    num_t_files = count_num_image_files(train_dataset_path)
-                    if enable_unsupervised:
-                        num_u_files = count_num_image_files(unsupervised_train_dataset_path)
-                    else:
-                        num_u_files = 1
-                    train_multiplier = calculate_train_multiplier(val_num_patch, num_t_files, workflow_box)
-                    unsupervised_train_multiplier = train_multiplier * num_t_files // num_u_files
-                    num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files) * batch_size
-                    return val_num_patch, num_t_files, num_u_files, train_multiplier, unsupervised_train_multiplier, num_epochs
-                calculate_repeats.click(get_auto_parameters,
-                                        [workflow_box, train_dataset_path, val_dataset_path, hw_size, d_size, batch_size, train_steps, enable_unsupervised, unsupervised_train_dataset_path],
-                                        [val_num_patch, num_t_files, num_u_files, train_multiplier, unsupervised_train_multiplier, num_epochs])
-            with gr.Row():
-                read_existing_model = gr.Checkbox(label="Read Existing Model Weight File", scale=0,
-                                                  info="Else it will create a new model with randomised weight.")
-                existing_model_path = gr.Textbox('trained_model/example_name.ckpt', label="Path to Existing Model Weight File, it should be a file with 'ckpt' at the end.")
-                file_button = gr.Button(document_symbol, scale=0)
-                file_button.click(open_file, outputs=existing_model_path)
-            with gr.Row():
-                memory_saving_mode = gr.Checkbox(label="Memory Saving Mode",
-                                                 info="If you are experiencing running out of system memory (Not CUDA memory!) during training, "
-                                                      "This option could help by using only 1 thread to do data loading. "
-                                                      "Can significantly slow down the training if your system have low single core performance.")
-            with gr.Row():
-                precision = gr.Dropdown(["32", "16-mixed", "bf16-mixed"], value="32", label="Precision",
-                                        info="fp16 or bf16 precision could significantly cut the VRAM usage."
-                                             "bf16 is recommended over fp16 if you are using a newer GPU.")
-                auto_precision_button = gr.Button("Find suitable precision based on your GPU")
-                def auto_precision():
-                    if not torch.cuda.is_available():
-                        gr.Warning('Warning: No GPU detected! Will default to fp32 and training will be SLOW (if happen at all)!')
-                        return '32'
-                    devices = []
-                    for i in range(torch.cuda.device_count()):
-                        name = torch.cuda.get_device_name(i)
-                        gpu_type = classify_gpu_type(name)
-                        devices.append((name, gpu_type, i))
-                    devices.sort(key=lambda x: (0 if x[1] == 'discrete' else 1, x[2]))
-                    main_device = devices[0]
-                    main_name, _, main_index = main_device
-                    if any(kw in main_name.lower() for kw in ['nvidia', 'geforce', 'quadro', 'tesla', 'titan', 'rtx']):
-                        capability = torch.cuda.get_device_capability(main_index)
-                        compute_capability = capability[0] + capability[1] / 10.0
-                        if compute_capability >= 8.0:
-                            gr.Info(f'Newer Nvidia GPU detected: {main_name}!')
-                            return 'bf16-mixed'
-                        elif compute_capability >= 7.0:
-                            gr.Info(f'Older Nvidia GPU detected: {main_name}!')
-                            return '16-mixed'
-                        else:
-                            gr.Warning(f'Really old Nvidia GPU detected: {main_name}, defaulting to fp32.')
-                            return '32'
-                    elif 'amd' in main_name.lower() or 'radeon' in main_name.lower():
-                        name_lower = main_name.lower()
-
-                        # GPUs that support bf16 well (RDNA 3/4, CDNA 2+)
-                        newer_amd_keywords = [
-                            # Discrete Radeon — RX 7000 (RDNA 3) and RX 9000 (RDNA 4)
-                            'radeon rx 9',  # RX 9000 series (RDNA 4)
-                            'radeon rx 7',  # RX 7000 series (RDNA 3)
-                            'rdna 3', 'rdna 4',
-
-                            # Workstation
-                            'radeon pro w7',  # Radeon PRO W7000 (RDNA 3)
-                            'radeon pro w9',  # Radeon PRO W9000 (RDNA 4)
-                            'ai pro r9',  # Radeon AI PRO R9700 (RDNA 4)
-
-                            # Integrated (RDNA 3 / 3.5 APUs) — bare model numbers so
-                            # "Radeon(TM) 780M" style strings still match
-                            '780m', '760m', '740m',
-                            '890m', '880m',
-                            '8060s', '8050s',
-
-                            # Instinct (CDNA 2+)
-                            'mi200', 'mi210', 'mi250', 'mi300',
-                            'mi325', 'mi350', 'mi355', 'mi400',
-                        ]
-
-                        if any(kw in name_lower for kw in newer_amd_keywords):
-                            gr.Info(f'Newer AMD GPU detected: {main_name}!')
-                            return 'bf16-mixed'
-                        elif 'mi100' in name_lower:
-                            gr.Info(f'MI100 GPU detected!')
-                            return '16-mixed'
-                        else:
-                            gr.Warning(
-                                f'Really old AMD GPU detected: {main_name}, defaulting to fp32. '
-                                f'If you are using a newer GPU (2026+) and this shows up, '
-                                f'please report it in the GitHub repository.'
-                            )
-                            return '32'
-                auto_precision_button.click(auto_precision, outputs=precision)
-            with gr.Row():
-                model_architecture = gr.Dropdown(available_architectures, label="Model Architecture")
-                model_depth_multiplier = gr.Number(1.0, label="Model Depth multiplier",
-                                                info="Increasing this numbe makes the model deeper, "
-                                                     "which can help if you want more accuracy at the expense of speed and video memory usage.")
-                '''find = gr.Markdown("Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.")
-                find_max_channel_count = gr.Button("Automatically find the largest channel count")
-                def calculate_channel_count(hw_size, d_size, batch_size, precision, dk):
-                    # Reserve around 500 mb
-                    vram_available = (torch.cuda.get_device_properties(0).total_memory / (1024**2)) - 500
-                    batch_size_multiplier = 1.96 if batch_size == 2 else 1
-                    if precision == '32':
-                        precision_multiplier = 1
-                    elif precision == '16-mixed':
-                        precision_multiplier = 0.54
-                    elif precision == 'bf16-mixed':
-                        precision_multiplier = 0.53
-                    dk_multiplier = (1-(dk-2)*0.1)
-                    channel_count = (7385 * vram_available - 1e7) / ((hw_size**2 * d_size) * batch_size_multiplier * precision_multiplier * dk_multiplier)
-                    channel_count = min(math.floor(channel_count/4) * 4, 64)
-                    if channel_count == 0:
-                        gr.Warning('Warning: Could not find a channel count that will fit into your video memory! A default minimal of 4 is selected. Consider reduce your patch size or get a better GPU.')
-                        return 4
-                    else:
-                        return channel_count
-                find_max_channel_count.click(calculate_channel_count, inputs=[hw_size, d_size, batch_size, precision, dk], outputs=model_channel_count)'''
-                def show_hide_model_tab(read_existing_model):
-                    visible = False if read_existing_model else True
-                    options = (gr.Dropdown(available_architectures, label="Model Architecture", visible=visible),
-                               gr.Number(1.0, label="Model Size multiplier",
-                                         info="Increasing this numbe makes the model deeper, "
-                                              "which can help if you want more accuracy at the expense of speed and video memory usage.", visible=visible))
-                               #gr.Markdown(
-                               #    "Use a preset formula to find the largest channel count that doesn't result in an Out-of-memory error. Isn't always accurate, only a rough estimate.", visible=visible),
-                               #gr.Button("Automatically find the largest channel count", visible=visible))
-                    return options
-
-                read_existing_model.change(show_hide_model_tab, inputs=[read_existing_model], outputs=[model_architecture, model_depth_multiplier])
-            with gr.Accordion("Visualising example network output on the fly", visible=False):
-                gr.Markdown("Note: Gradio doesn't support direct display of 3D image. The result are displayed in the tensorboard.")
-                gr.Markdown("Could slow down training process, especially if the image is big.")
-                gr.Markdown("Highly recommend cropping this image into the same size as the patches that feeds into the network.")
-                enable_mid_visualization = gr.Checkbox(True, label="Enable Visualisation", container=False)
-            with gr.Row():
-                save_model_name = gr.Textbox('example_name', label="File Name for Model Saved, do not include extension")
-                save_model_path = gr.Textbox("trained_model", scale=2, label="Path to Save the Model Weight",
-                                             info="For path with space in it, put '' on both sides")
-                folder_button = gr.Button(document_symbol, scale=0)
-                folder_button.click(open_folder, outputs=save_model_path)
-            input_dict = {
-                workflow_box,
-                segmentation_mode,
-                train_dataset_path,
-                augmentation_csv_path,
-                train_multiplier,
-                batch_size,
-                pairing_samples,
-                num_epochs,
-                enable_unsupervised,
-                unsupervised_train_dataset_path,
-                unsupervised_train_multiplier,
-                enable_tensorboard,
-                tensorboard_path,
-                val_dataset_path,
-                test_dataset_path,
-                predict_dataset_path,
-                read_existing_model,
-                existing_model_path,
-                precision,
-                save_model_name,
-                save_model_path,
-                train_key_name,
-                val_key_name,
-                test_key_name,
-                predict_key_name,
-                train_offload,
-                val_offload,
-                test_offload,
-                predict_offload,
-                hw_size,
-                d_size,
-                predict_hw_size,
-                predict_depth_size,
-                predict_hw_overlap,
-                predict_depth_overlap,
-                result_folder_path,
-                enable_mid_visualization,
-                model_architecture,
-                model_patch_size_xy,
-                model_patch_size_z,
-                model_depth_multiplier,
-                memory_saving_mode,
-                model_depth,
-                z_to_xy_ratio,
-                train_dataset_mode,
-                contour_map_width,
-                val_dataset_mode,
-                test_dataset_mode,
-                instance_seg_mode,
-                watershed_dynamic,
-                pixel_reclaim,
-                }
-            with gr.Row():
-                start_button = gr.Button("Start!", elem_id="start_button")
-                start_button.click(start_work_flow, inputs=input_dict)
-                stop_button = gr.Button("Interrupt!", elem_id="stop_button")
-                #stop_button.click(stop_training_callback)
-                stop_button.click(command_executor.kill_command)
-
-        '''
-        with gr.Tab("Activations Visualisation"):
-            gr.Markdown("Given an example image and a trained model weight, visualize the model output in each activation layers.")
-            gr.Markdown("As well as the sigmoid layer (the layer right before the output).")
-            with gr.Row():
-                existing_model_path_av = gr.Textbox(label="Path to the Model Weight File")
-                file_button = gr.Button(document_symbol, scale=0)
-                file_button.click(open_file, outputs=existing_model_path_av)
-            with gr.Row():
-                image_path_av = gr.Textbox(label="Path to the Example Image")
-                file_button = gr.Button(document_symbol, scale=0)
-                file_button.click(open_file, outputs=image_path_av)
-            slice_to_show = gr.Number(0, label="Depth Slice to show", precision=0, minimum=0)
-            outputs = gr.Gallery(label="Output Images", preview=True, selected_index=0)
-            start_button = gr.Button("Show Visualization")
-            start_button.click(visualisation_activations, inputs=[existing_model_path_av, image_path_av, slice_to_show], outputs=outputs)
-        '''
-
-        with gr.Tab("Extras"):
-            with gr.Accordion("Output TensorBoard log to Excel"):
-                with gr.Row():
-                    tensorboard_path_e = gr.Textbox('lightning_logs', scale=2,
-                                                    label="Path to the folder which the tensorboard log are saved to")
-                    folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=tensorboard_path_e)
-                with gr.Row():
-                    save_log_name = gr.Textbox('output.xlsx',
-                                               label="File name for the output Excel file, including extension")
-                    save_log_path = gr.Textbox(scale=2, label="Path to Save the Excel file")
-                    folder_button = gr.Button(document_symbol, scale=0)
-                    folder_button.click(open_folder, outputs=save_log_path)
-                save_button = gr.Button("Output TensorBoard log to Excel")
-                save_button.click(tensorboard_to_excel, inputs=[tensorboard_path_e, save_log_name, save_log_path])
-            with gr.Accordion("Calculate statistics between the predicted labels and ground truth labels"):
-                def switch_stat_output(stat_mode):
-                    if stat_mode == 'Instance':
-                        stats = (gr.Number(interactive=False, label="True Positive Rate"),
-                                 gr.Number(interactive=False, label="False Positive Rate"),
-                                 gr.Number(interactive=False, label="False Negative Rate"),
-                                 gr.Number(interactive=False, label="Precision"),
-                                 gr.Number(interactive=False, label="Recall"),)
-                    else:
-                        stats = (gr.Number(interactive=False, label="Dice Score"),
-                                 gr.Number(interactive=False, label="Sensitivity (True Positive Rate)"),
-                                 gr.Number(interactive=False, label="Specificity (True Negative Rate)"),
-                                 gr.Number(interactive=False, label="False Positive Rate"),
-                                 gr.Number(interactive=False, label="False Negative Rate"),)
-                    return stats
-                def switch_stat_input(stat_mode):
-                    if stat_mode == 'Instance':
-                        visible = True
-                    else:
-                        visible = False
-                    return gr.Number(0.5, interactive=True, label="IOU threshold", visible=visible)
-                stat_mode = gr.Radio(["Semantic", "Instance"], value="Semantic", label="Mode")
-                gr.Markdown('Calculate instance segmentation metrics is hard and VST uses your GPU to accelerate the process. It would be painfully slow if you are using a CPU! '
-                            'And still not fast if you do have a GPU...')
-                with gr.Row():
-                    predicted_img_path = gr.Textbox(label='Path to the predicted image')
-                    file_button = gr.Button(document_symbol, scale=0)
-                    file_button.click(open_file, outputs=predicted_img_path)
-                with gr.Row():
-                    ground_truth_img_path = gr.Textbox(label='Path to the ground truth image')
-                    file_button = gr.Button(document_symbol, scale=0)
-                    file_button.click(open_file, outputs=ground_truth_img_path)
-                with gr.Row():
-                    iou_threshold = gr.Number(0.5, interactive=True, label="IOU threshold", visible=False)
-                with gr.Row():
-                    dice = gr.Number(interactive=False, label="Dice Score")
-                    sensitivity = gr.Number(interactive=False, label="Sensitivity (True Positive Rate)")
-                    specificity = gr.Number(interactive=False, label="Specificity (True Negative Rate)")
-                    fpr = gr.Number(interactive=False, label="False Positive Rate")
-                    fnr = gr.Number(interactive=False, label="False Negative Rate")
-                stat_mode.change(switch_stat_output, inputs=stat_mode, outputs=[dice, sensitivity, specificity, fpr, fnr])
-                stat_mode.change(switch_stat_input, inputs=stat_mode, outputs=iou_threshold)
-                start_button = gr.Button("Get statistics!")
-                start_button.click(get_stats_between_maps, inputs=[stat_mode, predicted_img_path, ground_truth_img_path, iou_threshold],
-                                    outputs=[dice, sensitivity, specificity, fpr, fnr])
-
-    WebUI.launch(inbrowser=True, theme=gr.themes.Base())
+    main()
