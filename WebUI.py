@@ -1,11 +1,11 @@
 import gc
 import io
+import re
 import os
 import sys
 import json
 import math
 import base64
-import threading
 
 import torch
 import tkinter as tk
@@ -24,29 +24,7 @@ from command_executor import CommandExecutor
 
 document_symbol = '\U0001F4C4'
 
-
-# ---------------------------------------------------------------------------
-# Helpers (preserved from the Gradio version)
-# ---------------------------------------------------------------------------
-
-def open_folder_dialog():
-    root = tk.Tk()
-    root.attributes('-topmost', True)
-    root.iconify()
-    folder_path = filedialog.askdirectory()
-    root.destroy()
-    return str(folder_path) if folder_path else ''
-
-
-def open_file_dialog():
-    root = tk.Tk()
-    root.attributes('-topmost', True)
-    root.iconify()
-    file_path = filedialog.askopenfilename()
-    root.destroy()
-    return str(file_path) if file_path else ''
-
-
+# Helpers
 def count_num_image_files(dataset_path, exclude_labels=True):
     count = 0
     files = os.listdir(dataset_path)
@@ -58,23 +36,75 @@ def count_num_image_files(dataset_path, exclude_labels=True):
     return count
 
 
-def classify_gpu_type(name):
-    name_lower = name.lower()
-    nvidia_keywords = ['nvidia', 'geforce', 'quadro', 'tesla', 'titan', 'rtx']
-    amd_discrete_keywords = ['radeon rx', 'radeon pro', 'radeon r9', 'radeon r7',
-                             'vega frontier', 'mi100', 'mi200', 'mi250', 'mi300']
-    amd_integrated_keywords = ['radeon vega', 'radeon graphics', 'graphics']
-    intel_keywords = ['intel', 'uhd', 'iris', 'hd graphics']
+# AMD APUs report as "Radeon Graphics", "Radeon Vega <n>", or (post-2015)
+# "Radeon <nnn>M" / "Radeon <nnnn>S". Numbers starting below 6 are legacy
+# mobile dGPUs (e.g. "Radeon 520M") and are intentionally excluded.
+_AMD_APU_RE = re.compile(r'\bradeon (?:graphics|vega|[6-9]\d{2,3}[ms])\b')
 
-    if any(kw in name_lower for kw in nvidia_keywords):
-        return 'discrete'
-    if any(kw in name_lower for kw in intel_keywords):
-        return 'integrated'
-    if any(kw in name_lower for kw in amd_discrete_keywords):
-        return 'discrete'
-    if any(kw in name_lower for kw in amd_integrated_keywords):
-        return 'integrated'
-    return 'discrete'
+# NVIDIA marketing names always contain at least one of these tokens.
+_NVIDIA_RE = re.compile(
+    r'\b(?:nvidia|geforce|rtx|gtx|gt|quadro|tesla|titan|mx\d+)\b'
+)
+
+
+def classify_gpu_type(name):
+    """Return 'integrated' for AMD APUs, 'discrete' for everything else.
+
+    Only AMD and NVIDIA hardware is supported, so anything that is not a
+    recognised AMD APU is treated as a discrete GPU.
+    """
+    lower = name.lower()
+    # The Vega *Frontier Edition* is a discrete workstation card, not an APU.
+    if 'vega frontier' in lower:
+        return "discrete"
+    return "integrated" if _AMD_APU_RE.search(lower) else "discrete"
+
+
+def auto_precision_logic():
+    if not torch.cuda.is_available():
+        return '32', ('Warning: No GPU detected! Will default to fp32 and '
+                      'training will be SLOW (if it happens at all)!'), 'warning'
+
+    devices = [(torch.cuda.get_device_name(i), i)
+               for i in range(torch.cuda.device_count())]
+    if not devices:                                       # defensive, shouldn't happen
+        return '32', 'No CUDA devices found, defaulting to fp32.', 'warning'
+
+    # Prefer a discrete GPU; break ties by CUDA index.
+    devices.sort(key=lambda d: (classify_gpu_type(d[0]) != 'discrete', d[1]))
+    main_name, main_index = devices[0]
+    main_lower = main_name.lower()
+
+    # Nvidia
+    if _NVIDIA_RE.search(main_lower):
+        major, minor = torch.cuda.get_device_capability(main_index)
+        cc = major + minor / 10.0
+        if cc >= 8.0:
+            return 'bf16-mixed', f'Newer Nvidia GPU detected: {main_name}!', 'info'
+        if cc >= 7.0:
+            return '16-mixed', f'Older Nvidia GPU detected: {main_name}!', 'info'
+        return '32', (f'Really old Nvidia GPU detected: {main_name}, '
+                      f'defaulting to fp32.'), 'warning'
+
+    # AMD
+    if 'amd' in main_lower or 'radeon' in main_lower:
+        newer_amd = (
+            'radeon rx 9', 'radeon rx 7', 'rdna 3', 'rdna 4',
+            'radeon pro w7', 'radeon pro w9', 'ai pro r9',
+            '660m', '680m', '740m', '760m', '780m', '880m', '890m',
+            '8050s', '8060s',
+            'mi200', 'mi210', 'mi250', 'mi300', 'mi325', 'mi350',
+            'mi355', 'mi400',
+        )
+        if any(kw in main_lower for kw in newer_amd):
+            return 'bf16-mixed', f'Newer AMD GPU detected: {main_name}!', 'info'
+        if 'mi100' in main_lower:
+            return '16-mixed', 'MI100 GPU detected!', 'info'
+        return '32', (f'Really old AMD GPU detected: {main_name}, defaulting '
+                      f'to fp32. If you are using a newer GPU (2026+) and this '
+                      f'shows up, please report it in the GitHub repository.'), 'warning'
+
+    return '32', 'Unknown GPU type detected, defaulting to fp32.', 'warning'
 
 
 def calculate_val_num_patch(val_dataset_path, hw_size, d_size, val_key_name='Default'):
@@ -196,67 +226,18 @@ def get_stats_between_maps(stat_mode, predicted_path, groundtruth_path, iou_thre
         return [dice.item(), sensitivity.item(), specificity.item(),
                 fpr.item(), fnr.item()]
     else:
-        tpr, fpr, fnr, precision, recall = Metrics.instance_segmentation_metrics(
-            predicted, ground_truth, iou_threshold)
+        tpr, fpr, fnr, precision, recall = Metrics.instance_segmentation_metrics(predicted, ground_truth, iou_threshold)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
         return [tpr.item(), fpr.item(), fnr.item(), precision.item(), recall.item()]
 
 
-def auto_precision_logic():
-    if not torch.cuda.is_available():
-        return '32', ('Warning: No GPU detected! Will default to fp32 and '
-                      'training will be SLOW (if it happens at all)!'), 'warning'
-
-    devices = []
-    for i in range(torch.cuda.device_count()):
-        name = torch.cuda.get_device_name(i)
-        gpu_type = classify_gpu_type(name)
-        devices.append((name, gpu_type, i))
-    devices.sort(key=lambda x: (0 if x[1] == 'discrete' else 1, x[2]))
-    main_name, _, main_index = devices[0]
-
-    if any(kw in main_name.lower() for kw in ['nvidia', 'geforce', 'quadro', 'tesla', 'titan', 'rtx']):
-        capability = torch.cuda.get_device_capability(main_index)
-        cc = capability[0] + capability[1] / 10.0
-        if cc >= 8.0:
-            return 'bf16-mixed', f'Newer Nvidia GPU detected: {main_name}!', 'info'
-        elif cc >= 7.0:
-            return '16-mixed', f'Older Nvidia GPU detected: {main_name}!', 'info'
-        else:
-            return '32', f'Really old Nvidia GPU detected: {main_name}, defaulting to fp32.', 'warning'
-
-    if 'amd' in main_name.lower() or 'radeon' in main_name.lower():
-        name_lower = main_name.lower()
-        newer_amd_keywords = [
-            'radeon rx 9', 'radeon rx 7', 'rdna 3', 'rdna 4',
-            'radeon pro w7', 'radeon pro w9', 'ai pro r9',
-            '780m', '760m', '740m', '890m', '880m', '8060s', '8050s',
-            'mi200', 'mi210', 'mi250', 'mi300', 'mi325', 'mi350', 'mi355', 'mi400',
-        ]
-        if any(kw in name_lower for kw in newer_amd_keywords):
-            return 'bf16-mixed', f'Newer AMD GPU detected: {main_name}!', 'info'
-        elif 'mi100' in name_lower:
-            return '16-mixed', 'MI100 GPU detected!', 'info'
-        else:
-            return '32', (f'Really old AMD GPU detected: {main_name}, defaulting to fp32. '
-                          f'If you are using a newer GPU (2026+) and this shows up, '
-                          f'please report it in the GitHub repository.'), 'warning'
-
-    return '32', 'Unknown GPU type detected, defaulting to fp32.', 'warning'
-
-
-# ---------------------------------------------------------------------------
-# Image embedding (base64) for the accordion comparison figures
-# ---------------------------------------------------------------------------
-
 def _img_data_uri(rel_path, max_width=400, max_bytes=150_000):
     """Embed a reference image as a small data URI.
 
-    WebView2's NavigateToString() rejects oversized HTML, so we downscale
-    and re-encode before inlining. The CSS caps displayed width at 400 px,
-    so this is lossless from the user's perspective.
+    WebView2's NavigateToString() rejects oversized HTML, so needs to downscale
+    and re-encode before inlining.
     """
     try:
         with Image.open(rel_path) as img:
@@ -272,7 +253,7 @@ def _img_data_uri(rel_path, max_width=400, max_bytes=150_000):
                 else:
                     resized = img
                 buf = io.BytesIO()
-                resized.save(buf, format='JPEG', quality=80, optimize=True)
+                resized.save(buf, format='JPEG', quality=90, optimize=True)
                 data = buf.getvalue()
                 if len(data) <= max_bytes:
                     b64 = base64.b64encode(data).decode('ascii')
@@ -301,9 +282,7 @@ def build_html():
     return html
 
 
-# ---------------------------------------------------------------------------
 # pywebview API
-# ---------------------------------------------------------------------------
 
 class WebUIApi:
     def __init__(self):
@@ -333,10 +312,20 @@ class WebUIApi:
             pass
 
     def open_folder(self):
-        return open_folder_dialog()
+        root = tk.Tk()
+        root.attributes('-topmost', True)
+        root.iconify()
+        folder_path = filedialog.askdirectory()
+        root.destroy()
+        return str(folder_path) if folder_path else ''
 
     def open_file(self):
-        return open_file_dialog()
+        root = tk.Tk()
+        root.attributes('-topmost', True)
+        root.iconify()
+        file_path = filedialog.askopenfilename()
+        root.destroy()
+        return str(file_path) if file_path else ''
 
     def count_num_image_files_api(self, path, exclude_labels=True):
         try:
@@ -1297,10 +1286,7 @@ calculatePredictParameters();
 </html>
 """
 
-
-# ---------------------------------------------------------------------------
 # Entry point
-# ---------------------------------------------------------------------------
 
 def main():
     api = WebUIApi()
@@ -1312,8 +1298,7 @@ def main():
         resizable=True,
     )
 
-    # Expose individual callables to avoid pywebview serializing the whole
-    # API object (which previously triggered the AccessibilityObject spam).
+    # Expose individual callables to avoid pywebview serializing the whole API object.
     for name in dir(api):
         if name.startswith('_'):
             continue

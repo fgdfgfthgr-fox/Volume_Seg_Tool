@@ -51,7 +51,7 @@ def path_to_array(path, label=False, key='default'):
         key (str): If trying to load from a hdf5 file, will load the File object with this name.
 
     Returns:
-        torch.Tensor: transformed Tensor.
+        numpy array
     """
     img = multiple_loader(path, key)
 
