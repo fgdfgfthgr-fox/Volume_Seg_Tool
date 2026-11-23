@@ -5,6 +5,7 @@ from itertools import product
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 
 from Components.Augmentations import apply_aug, apply_aug_unsupervised, binarisation
 from Components.Utils import make_label_pair_tv, path_to_array, make_path_list_predict, calculate_val_start_end, \
@@ -160,23 +161,35 @@ class ValDataset(torch.utils.data.Dataset):
             total_multiplier = depth_multiplier * height_multiplier * width_multiplier
             self.total_patches += total_multiplier
             self.leave_out_list = []
-            # Loop through each depth, height, and width index
             for depth_idx, height_idx, width_idx in product(range(depth_multiplier),
                                                             range(height_multiplier),
                                                             range(width_multiplier)):
-                # Calculate the start and end indices for depth, height, and width
                 depth_start, depth_end = calculate_val_start_end(depth_multiplier, d_size, depth, depth_idx)
                 height_start, height_end = calculate_val_start_end(height_multiplier, hw_size, height, height_idx)
                 width_start, width_end = calculate_val_start_end(width_multiplier, hw_size, width, width_idx)
 
-                cropped_img = torch.from_numpy(pairs[0][depth_start:depth_end, height_start:height_end,
-                                                        width_start:width_end])
-                cropped_lab = torch.from_numpy(pairs[1][depth_start:depth_end, height_start:height_end,
-                                                        width_start:width_end])
+                cropped_img = torch.from_numpy(pairs[0][depth_start:depth_end,
+                                               height_start:height_end,
+                                               width_start:width_end])
+                cropped_lab = torch.from_numpy(pairs[1][depth_start:depth_end,
+                                               height_start:height_end,
+                                               width_start:width_end])
+
+                # pad chunks that are smaller than required
+                pad_d = max(0, d_size - cropped_img.shape[0])
+                pad_h = max(0, hw_size - cropped_img.shape[1])
+                pad_w = max(0, hw_size - cropped_img.shape[2])
+                if pad_d or pad_h or pad_w:
+                    pad_tuple = (0, pad_w, 0, pad_h, 0, pad_d)
+                    cropped_img = F.pad(cropped_img, pad_tuple, value=0)
+                    cropped_lab = F.pad(cropped_lab, pad_tuple, value=0)
+
                 if instance_mode:
                     cropped_contour = torch.from_numpy(pairs[2][depth_start:depth_end,
-                                                                height_start:height_end,
-                                                                width_start:width_end])
+                                                       height_start:height_end,
+                                                       width_start:width_end])
+                    if pad_d or pad_h or pad_w:
+                        cropped_contour = F.pad(cropped_contour, pad_tuple, value=0)
                     self.chopped_array_pairs.append((cropped_img, cropped_lab, cropped_contour))
                 else:
                     self.chopped_array_pairs.append((cropped_img, cropped_lab))
@@ -286,6 +299,17 @@ class PredictDataset(torch.utils.data.Dataset):
                            depth_start:depth_end,
                            height_start:height_end,
                            width_start:width_end].to(torch.float32)
+
+        expected_d = self.depth_size + 2 * self.depth_overlap
+        expected_h = self.hw_size + 2 * self.hw_overlap
+        expected_w = self.hw_size + 2 * self.hw_overlap
+        pad_d = max(0, expected_d - patch.shape[1])
+        pad_h = max(0, expected_h - patch.shape[2])
+        pad_w = max(0, expected_w - patch.shape[3])
+        if pad_d or pad_h or pad_w:
+            patch = F.pad(patch, (0, pad_w, 0, pad_h, 0, pad_d), value=0)
+
+        patch = patch.to(torch.float32)
 
         return patch, self.hw_overlap, self.depth_overlap
 

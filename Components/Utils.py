@@ -280,9 +280,14 @@ def stitch_output_volume(indexed_files, dim_info, hw_size, depth_size, start_idx
         width_start = math.floor((hw_size - (hw_size * width_multiplier - width) / (
                 width_multiplier - 1)) * width_idx) if width_multiplier > 1 else 0
 
+        d_end = min(depth_start + patch.shape[0], depth)
+        h_end = min(height_start + patch.shape[1], height)
+        w_end = min(width_start + patch.shape[2], width)
+
         result_volume[depth_start:depth_start + patch.shape[0],
         height_start:height_start + patch.shape[1],
-        width_start:width_start + patch.shape[2]] = (patch * 255).to(torch.uint8)
+        width_start:width_start + patch.shape[2]] = \
+        (patch[:d_end - depth_start, :h_end - height_start, :w_end - width_start] * 255).to(torch.uint8)
     return result_volume
 
 def load_indexed_files_for_stitching(prefix):
@@ -375,7 +380,7 @@ def predictions_to_final_img(stitched_volume, out_file_name, direc):
         direc (str): Directory where the final images will be saved to.
     """
     array = np.where(stitched_volume.numpy() >= 0.5, np.uint8(1), np.uint8(0))
-    tifffile.imwrite(f'{direc}/Mask_{out_file_name}',
+    tifffile.imwrite(f'{direc}/{out_file_name}',
                      data=array, bigtiff=tiff_size_estimate(array))
 
 def tiff_size_estimate(tensor: np.ndarray):

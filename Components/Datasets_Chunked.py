@@ -316,6 +316,14 @@ class ValDatasetChunked(torch.utils.data.Dataset):
                             height_start:height_end,
                             width_start:width_end]
 
+                pad_d = max(0, self.d_size - img_patch.shape[0])
+                pad_h = max(0, self.hw_size - img_patch.shape[1])
+                pad_w = max(0, self.hw_size - img_patch.shape[2])
+                if pad_d or pad_h or pad_w:
+                    pad_width = ((0, pad_d), (0, pad_h), (0, pad_w))
+                    img_patch = np.pad(img_patch, pad_width, mode='constant')
+                    lab_patch = np.pad(lab_patch, pad_width, mode='constant')
+
                 # Save patches
                 patch_id = f"patch_{depth_idx}_{height_idx}_{width_idx}"
                 img_patch_path = pair_dir / f"{patch_id}_img.tiff"
@@ -401,93 +409,84 @@ class PredictDatasetChunked(torch.utils.data.Dataset):
 
     def process_image_into_patches(self, source_path):
         current_signature = get_file_signature(source_path)
-        base = source_path.stem
+        base      = source_path.stem
         image_dir = self.preprocessed_dir.joinpath(base)
         os.makedirs(image_dir, exist_ok=True)
 
-        # Check if reprocessing is needed
-        source_sig = get_file_signature(source_path)
+        source_sig       = get_file_signature(source_path)
         needs_processing = True
         if source_path in self.source_metadata:
             entry = self.source_metadata[source_path]
-            if (entry['signature'] == source_sig and
-                entry['hw_size'] == self.hw_size and
-                entry['depth_size'] == self.depth_size):
-                # Verify all patch files exist
-                all_patches_exist = True
-                for patch_entry in entry['patch_paths']:
-                    if not Path(patch_entry).exists():
-                        all_patches_exist = False
-
-                if all_patches_exist:
+            if (entry['signature']   == source_sig and
+                entry['hw_size']     == self.hw_size and
+                entry['depth_size']  == self.depth_size):
+                if all(Path(p).exists() for p in entry['patch_paths']):
                     needs_processing = False
 
-        # Check if reprocessing is needed
         if needs_processing:
             print(f"Processing image: {source_path.name}")
-            safe_remove(image_dir)
-            os.makedirs(image_dir, exist_ok=True)
+            safe_remove(image_dir); os.makedirs(image_dir, exist_ok=True)
 
-            # Load and pad the image
-            image = path_to_array(str(source_path), key=self.hdf5_key, label=False)[None, :]  # [1, D, H, W]
+            image = path_to_array(str(source_path), key=self.hdf5_key, label=False)[None, :]   # (1, D, H, W)
             c, depth, height, width = image.shape
 
-            # Calculate number of patches
-            depth_multiplier = math.ceil(depth / self.depth_size)
+            depth_multiplier  = math.ceil(depth  / self.depth_size)
             height_multiplier = math.ceil(height / self.hw_size)
-            width_multiplier = math.ceil(width / self.hw_size)
+            width_multiplier  = math.ceil(width  / self.hw_size)
 
-            # Apply symmetric padding
-            paddings = (
-                (0, 0),
-                (self.depth_overlap, self.depth_overlap),
-                (self.hw_overlap, self.hw_overlap),
-                (self.hw_overlap, self.hw_overlap)
-            )
+            paddings = ((0, 0),
+                        (self.depth_overlap, self.depth_overlap),
+                        (self.hw_overlap,    self.hw_overlap),
+                        (self.hw_overlap,    self.hw_overlap))
             padded_image = np.pad(image, paddings, mode="symmetric")
 
-            # Store patch paths for this image
-            patch_paths = []
+            expected_d = self.depth_size + 2 * self.depth_overlap
+            expected_h = self.hw_size    + 2 * self.hw_overlap
+            expected_w = self.hw_size    + 2 * self.hw_overlap
 
-            # Generate patches
+            patch_paths = []
             for depth_idx, height_idx, width_idx in product(range(depth_multiplier),
                                                             range(height_multiplier),
                                                             range(width_multiplier)):
-                depth_start, depth_end = calculate_predict_start_end(depth_multiplier, self.depth_size, depth, depth_idx,
-                                                                     self.depth_overlap)
-                height_start, height_end = calculate_predict_start_end(height_multiplier, self.hw_size, height, height_idx,
-                                                                       self.hw_overlap)
-                width_start, width_end = calculate_predict_start_end(width_multiplier, self.hw_size, width, width_idx,
-                                                                     self.hw_overlap)
+                depth_start,  depth_end  = calculate_predict_start_end(depth_multiplier,  self.depth_size, depth,  depth_idx,  self.depth_overlap)
+                height_start, height_end = calculate_predict_start_end(height_multiplier, self.hw_size,    height, height_idx, self.hw_overlap)
+                width_start,  width_end  = calculate_predict_start_end(width_multiplier,  self.hw_size,    width,  width_idx,  self.hw_overlap)
 
-                # Extract patch
-                patch = padded_image[
-                        :,
-                        depth_start:depth_end,
-                        height_start:height_end,
-                        width_start:width_end
-                        ]
-                # Save patch as TIFF
+                patch = padded_image[:,
+                                     depth_start:depth_end,
+                                     height_start:height_end,
+                                     width_start:width_end]
+
+                # ---- NEW: pad chunk to expected patch size ----
+                pad_d = max(0, expected_d - patch.shape[1])
+                pad_h = max(0, expected_h - patch.shape[2])
+                pad_w = max(0, expected_w - patch.shape[3])
+                if pad_d or pad_h or pad_w:
+                    patch = np.pad(patch,
+                                   ((0, 0), (0, pad_d), (0, pad_h), (0, pad_w)),
+                                   mode='constant')
+
                 patch_path = image_dir / f"patch_{depth_idx}_{height_idx}_{width_idx}.tiff"
-                tifffile.imwrite(str(patch_path), np.squeeze(patch, axis=0), compression='zstd', compressionargs={'level': 3})
+                tifffile.imwrite(str(patch_path),
+                                 np.squeeze(patch, axis=0),
+                                 compression='zstd',
+                                 compressionargs={'level': 3})
                 patch_paths.append(str(patch_path))
 
-            # Update metadata
             self.source_metadata[str(source_path)] = {
-                'signature': current_signature,
-                'original_shape': list(image.shape),
-                'patch_paths': patch_paths,
-                'hw_size': self.hw_size,
-                'depth_size': self.depth_size,
+                'signature':       current_signature,
+                'original_shape':  list(image.shape),
+                'patch_paths':     patch_paths,
+                'hw_size':         self.hw_size,
+                'depth_size':      self.depth_size,
+                'padding_version': 1,                          # <-- NEW
             }
             self.original_shapes.append(image.shape)
             self.patch_paths.extend(patch_paths)
         else:
-            # Load existing patch paths from metadata
-            patch_paths = self.source_metadata[str(source_path)]['patch_paths']
-            shape = self.source_metadata[str(source_path)]['original_shape']
-            self.patch_paths.extend(patch_paths)
-            self.original_shapes.append(shape)
+            entry = self.source_metadata[str(source_path)]
+            self.patch_paths.extend(entry['patch_paths'])
+            self.original_shapes.append(entry['original_shape'])
 
     def __len__(self):
         return len(self.patch_paths)
