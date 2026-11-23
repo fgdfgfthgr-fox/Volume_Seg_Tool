@@ -11,7 +11,7 @@ Supporting Operating Systems includes: Windows and Linux.
 
 (macOS is supported in theory, however some necessary PyTorch operations needed is not yet supported on MPS backend. Nothing I can do here.)
 
-![UI.png](GitHub_Res%2FUI.png)
+![UI.png](GitHub_Res%2FUI.PNG)
 
 VST just got a new user-interface!
 
