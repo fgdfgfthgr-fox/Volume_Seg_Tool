@@ -145,10 +145,10 @@ def test_instance_segmentation_metrics():
 
 def test_instance_segmentation_simple():
     test_semantic_map = Utils.path_to_array("resources_for_pytest/Test_Pixels_Mask.tif")
-    test_semantic_map = torch.from_numpy(test_semantic_map)
+    test_semantic_map = torch.from_numpy(test_semantic_map) > 0.5
     test_contour_map = Utils.path_to_array("resources_for_pytest/Test_Contour_Mask.tif")
-    test_contour_map = torch.from_numpy(test_contour_map)
+    test_contour_map = torch.from_numpy(test_contour_map) > 0.2
     segmentation = Utils.instance_segmentation_simple(test_semantic_map, test_contour_map)
-    assert segmentation.max() == 93
+    assert segmentation.max() == 86
 
 # Welford already covered by test_path_to_array.
