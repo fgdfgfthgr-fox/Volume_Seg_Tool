@@ -64,7 +64,7 @@ def test_UnsupervisedDataset():
 
 def test_UnsupervisedDatasetChunked():
     dataset = Components.Datasets_Chunked.UnsupervisedDatasetChunked('Datasets/predict', "Augmentation Parameters Anisotropic.csv",
-                                                                     1, 64, 16)
+                                                                     64, 16)
     example_output = dataset.__getitem__(0)[0]
     assert example_output.shape == (1, 16, 64, 64)
 
