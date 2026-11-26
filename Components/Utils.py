@@ -8,6 +8,7 @@ import torch
 import imageio
 import tifffile
 import time
+import random
 import h5py
 import mrcfile
 import numba_morph
@@ -142,111 +143,89 @@ class CollectedDataset(torch.utils.data.Dataset):
         self.dataset_supervised = dataset_supervised
         self.dataset_unsupervised = dataset_unsupervised
         if self.dataset_unsupervised is not None:
-            self.rectified_unsupervised_size = math.floor(len(self.dataset_unsupervised) / 2) * 2
+            self.unsupervised_size = self.dataset_unsupervised
+        else:
+            self.unsupervised_size = 0
 
     def __len__(self):
-        if self.dataset_unsupervised:
-            return len(self.dataset_supervised) + self.rectified_unsupervised_size
-        else:
-            return len(self.dataset_supervised)
+        return len(self.dataset_supervised) + self.unsupervised_size
 
     def __getitem__(self, idx):
-        if self.dataset_unsupervised:
-            if idx[0] < self.rectified_unsupervised_size:
-                return self.dataset_unsupervised[idx[0]]
-            else:
-                idx[0] = idx[0] - self.rectified_unsupervised_size
-                return self.dataset_supervised[idx]
-        else:
-            return self.dataset_supervised[idx]
+        file_idx, negative_control = idx
+        if negative_control == 'unsupervised':
+            return self.dataset_unsupervised[file_idx]
+        return self.dataset_supervised[(file_idx, negative_control)]
 
 
 class CollectedSampler(torch.utils.data.Sampler):
-    def __init__(self, data, batch_size, dataset_unsupervised=None):
+    """
+    Draws from eligibility pools. Larger files are drawn more frequently.
+    Yields tuples ``(file_idx, negative_control)``:
+      * ``(f, None)``         -> mixed patch   (batch_size=1)
+      * ``(f, 'positive')``   -> foreground-rich patch (batch_size=2, first of pair)
+      * ``(f, 'negative')``   -> background-rich patch (batch_size=2, second of pair)
+      * ``(f, 'unsupervised')`` -> unsupervised sample (``f`` is an unsupervised file index)
+    """
+    def __init__(self, dataset_supervised, batch_size, dataset_unsupervised=None):
         super().__init__()
-        self.data = data
+        self.dataset_supervised = dataset_supervised
+        self.dataset_unsupervised = dataset_unsupervised
         self.batch_size = batch_size
         if dataset_unsupervised:
             self.dataset_unsupervised_size = math.floor(len(dataset_unsupervised) / 2) * 2
         else:
             self.dataset_unsupervised_size = 0
+        self.unsupervised_f_s = dataset_unsupervised.log_size if dataset_unsupervised is not None else 0
+        self.target_step_per_epoch = 64
+        self.mixed_pool = np.asarray(self.dataset_supervised.eligible_mixed)
+        self.pos_pool = np.asarray(self.dataset_supervised.eligible_positive)
+        self.neg_pool = np.asarray(self.dataset_supervised.eligible_negative)
+        validate_for_batch_size(batch_size, self.dataset_supervised.num_files, self.dataset_supervised.eligible_positive, self.dataset_supervised.eligible_negative, self.dataset_supervised.eligible_mixed)
+
+    def __len__(self):
+        return self.target_step_per_epoch * self.batch_size
 
     def __iter__(self):
         if self.batch_size == 1:
             if self.dataset_unsupervised_size == 0:
-                array = np.random.permutation(len(self.data))
-                array = [[num, None] for num in array] # To indicate that no negative control is used.
+                array = [[random.choices(self.mixed_pool, weights=self.dataset_supervised.mixed_log_size)[0], None]
+                         for i in range(self.target_step_per_epoch)]
                 return iter(array)
             else:
-                unsupervised_array = np.random.permutation(self.dataset_unsupervised_size)
-                unsupervised_array = [[num, 'unsupervised'] for num in unsupervised_array]
-                supervised_array = np.arange(self.dataset_unsupervised_size, len(self.data))
-                np.random.shuffle(supervised_array)
-                supervised_array = [[num, None] for num in supervised_array]
-                min_size = min(self.dataset_unsupervised_size, len(supervised_array))
+                unsupervised_array = [[random.choices(np.arange(self.dataset_unsupervised_size), weights=self.unsupervised_f_s)[0], 'unsupervised']
+                                       for i in range(self.target_step_per_epoch//2)]
+                supervised_array = [[random.choices(self.mixed_pool, weights=self.dataset_supervised.mixed_log_size)[0], None]
+                                     for i in range(self.target_step_per_epoch//2)]
                 interleaved_array = []
-                for i in range(0, min_size):
+                for i in range(0, self.target_step_per_epoch//2):
                     interleaved_array.append(supervised_array[i])
                     interleaved_array.append(unsupervised_array[i])
-                if len(supervised_array) > min_size:
-                    interleaved_array.extend(supervised_array[min_size:])
-                elif self.dataset_unsupervised_size > min_size:
-                    interleaved_array.extend(unsupervised_array[min_size:])
                 return iter(interleaved_array)
         elif self.batch_size == 2:
+            positive_array = [[random.choices(self.pos_pool, weights=self.dataset_supervised.positive_log_size)[0], 'positive']
+                               for i in range(self.target_step_per_epoch)]
+            negative_array = [[random.choices(self.neg_pool, weights=self.dataset_supervised.negative_log_size)[0], 'negative']
+                               for i in range(self.target_step_per_epoch)]
             if self.dataset_unsupervised_size == 0:
-                original_array = np.arange(len(self.data))
-                if len(original_array) % 2 != 0:
-                    original_array = original_array[:-1]  # drop last index to make even
-                positive_array, negative_array = np.split(original_array, 2)
-                np.random.shuffle(positive_array)
-                positive_array = [[num, 'positive'] for num in positive_array]
-                np.random.shuffle(negative_array)
-                negative_array = [[num, 'negative'] for num in negative_array]
-                shuffled_array = []
+                array = []
                 for i in range(0, len(positive_array)):
-                    shuffled_array.append(positive_array[i])
-                    shuffled_array.append(negative_array[i])
-                return iter(shuffled_array)
+                    array.append(positive_array[i])
+                    array.append(negative_array[i])
+                return iter(array)
             else:
-                unsupervised_array = np.arange(self.dataset_unsupervised_size)
-                np.random.shuffle(unsupervised_array)
-                unsupervised_array = [[num, 'unsupervised'] for num in unsupervised_array]
-                supervised_array = np.arange(self.dataset_unsupervised_size, len(self.data))
-                if len(supervised_array) % 2 != 0:
-                    supervised_array = supervised_array[:-1]  # drop last index
-                positive_array, negative_array = np.split(supervised_array, 2)
-                np.random.shuffle(positive_array)
-                positive_array = [[num, 'positive'] for num in positive_array]
-                np.random.shuffle(negative_array)
-                negative_array = [[num, 'negative'] for num in negative_array]
-                supervised_array = []
-                for i in range(0, len(positive_array)):
-                    supervised_array.append(positive_array[i])
-                    supervised_array.append(negative_array[i])
-
-                min_size = min(self.dataset_unsupervised_size, len(supervised_array))
-
-                # Interleave the pairs as much as possible
+                unsupervised_array = [[random.choices(np.arange(self.dataset_unsupervised_size), weights=self.unsupervised_f_s)[0], 'unsupervised']
+                                       for i in range(self.target_step_per_epoch)]
                 interleaved_array = []
-                for i in range(0, min_size, 2):
-                    interleaved_array.append(supervised_array[i])  # positive
-                    interleaved_array.append(supervised_array[i + 1])  # negative
+                for i in range(0, len(positive_array), 2):
+                    interleaved_array.append(positive_array[i])  # positive
+                    interleaved_array.append(negative_array[i])  # negative
                     interleaved_array.append(unsupervised_array[i])
                     interleaved_array.append(unsupervised_array[i + 1])
-
-                # Append the remaining pairs from the larger dataset
-                if len(supervised_array) > min_size:
-                    interleaved_array.extend(supervised_array[min_size:])
-                elif self.dataset_unsupervised_size > min_size:
-                    interleaved_array.extend(unsupervised_array[min_size:])
 
                 return iter(interleaved_array)
         else:
             raise ValueError("Invalid batch size. We only support 1 or 2.")
 
-    def __len__(self):
-        return 2 * (len(self.data)//2)
 
 
 def custom_collate(batch):
@@ -663,3 +642,40 @@ def get_contour_maps(label_file_path, folder_path='generated_contour_maps', cont
         contour_img = path_to_array(contour_img_path, label=True)
         print(f'Loaded previously saved {contour_img_name}')
     return contour_img
+
+
+def compute_eligibility_masks(fg_proportions, log_size):
+    fg = np.array(fg_proportions)
+    log_size = np.array(log_size)
+    bg = 1.0 - fg
+
+    eligible_positive = fg >= 0.0001
+    eligible_negative = bg >= 0.0001
+    mixed_mask = eligible_positive & eligible_negative
+
+
+    return {
+        "fg_proportions": fg,
+        "eligible_positive": np.where(eligible_positive)[0],
+        "positive_log_size": log_size[np.where(eligible_positive)[0]],
+        "eligible_negative": np.where(eligible_negative)[0],
+        "negative_log_size": log_size[np.where(eligible_negative)[0]],
+        "eligible_mixed": np.where(mixed_mask)[0],
+        "mixed_log_size": log_size[np.where(mixed_mask)[0]],
+    }
+
+def validate_for_batch_size(batch_size, num_files, eligible_positive, eligible_negative, eligible_mixed):
+    if len(eligible_positive) == 0:
+        raise ValueError(
+            f"None of your training samples seems to contain any labelled foreground! Please check if your labels are empty.")
+    if len(eligible_negative) == 0:
+        raise ValueError(
+            f"None of your training samples seems to contain any background (all pixels are foreground)!")
+    if batch_size == 1:
+        if len(eligible_mixed) != num_files:
+            raise ValueError(
+                f"Batch size 1 requires all training sample containing both "
+                f"foreground (>=0.01%) and background (>=0.01%) pixels, but {num_files - len(eligible_mixed)} file(s) "
+                f"are are positive or negative. "
+                f"Please make sure each file is mixed or select batch size 2."
+            )

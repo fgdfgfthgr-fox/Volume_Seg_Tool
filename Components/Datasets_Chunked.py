@@ -14,7 +14,7 @@ import zarr
 
 from Components.Augmentations import apply_aug, apply_aug_unsupervised, binarisation
 from Components.Utils import path_to_array, path_to_array_nonorm, make_label_pair_tv, make_path_list_predict, \
-    calculate_val_start_end, calculate_predict_start_end, get_contour_maps
+    calculate_val_start_end, calculate_predict_start_end, get_contour_maps, compute_eligibility_masks
 
 
 def load_metadata(metadata_file_path):
@@ -37,12 +37,19 @@ def get_file_signature(file_path):
     return f"mtime:{stat.st_mtime_ns}|size:{stat.st_size}"
 
 
-def needs_reprocessing(source_metadata, source_path, zarr_path):
+def needs_reprocessing(source_metadata, source_path, zarr_path, required_attrs=None):
     if not Path(source_path).exists():
         return True
     if not zarr_path.exists():
         return True
-    return source_metadata.get(str(source_path)) != get_file_signature(source_path)
+    if source_metadata.get(str(source_path)) != get_file_signature(source_path):
+        return True
+    if required_attrs:
+        arr = zarr.open(zarr_path, mode='r')  # cheap: only reads .zattrs
+        for attr in required_attrs:
+            if attr not in arr.attrs:
+                return True
+    return False
 
 
 def safe_remove(path):
@@ -56,12 +63,14 @@ def safe_remove(path):
         #print(f"Error removing {path}: {e}")
 
 
-def process_file(preprocessed_dir, source_metadata, hdf5_key, chunk_size, source_path, is_label, processing_func=None):
+def process_file(preprocessed_dir, source_metadata, hdf5_key, chunk_size,
+                 source_path, is_label, processing_func=None):
     zarr.config.set({'async.concurrency': 2, 'async.timeout': None})
     base = source_path.stem
     zarr_path = preprocessed_dir.joinpath(f"{base}.zarr")
 
-    if needs_reprocessing(source_metadata, source_path, zarr_path):
+    required_attrs = ['fg_proportion'] if is_label else ['mean', 'std']
+    if needs_reprocessing(source_metadata, source_path, zarr_path, required_attrs):
         print(f"Converting {base} into zarr format...")
         safe_remove(zarr_path)
         if is_label:
@@ -72,21 +81,21 @@ def process_file(preprocessed_dir, source_metadata, hdf5_key, chunk_size, source
         if processing_func:
             vol = processing_func(vol)
 
+        store = zarr.storage.LocalStore(zarr_path)
+        vol_arr = zarr.create_array(store=store, data=vol, chunks=chunk_size)
         if is_label:
-            zarr.save_array(zarr_path, vol, chunk_shape=chunk_size)
+            # computed once during conversion — no per-epoch loading
+            vol_arr.attrs['fg_proportion'] = float(vol.mean())
         else:
-            store = zarr.storage.LocalStore(zarr_path)
-            # Store the arrays with appropriate chunks
-            vol = zarr.create_array(store=store, data=vol, chunks=chunk_size)
-            vol.attrs['mean'] = float(mean)
-            vol.attrs['std'] = float(std)
+            vol_arr.attrs['mean'] = float(mean)
+            vol_arr.attrs['std'] = float(std)
         source_metadata[str(source_path)] = get_file_signature(source_path)
 
     return zarr_path
 
 
 class TrainDatasetChunked(torch.utils.data.Dataset):
-    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64,
+    def __init__(self, images_dir, augmentation_csv, hw_size=64, d_size=64,
                  instance_mode=False, contour_map_width=1, hdf5_key='Default'):
         self.file_list = np.array(make_label_pair_tv(images_dir))
         self.num_files = len(self.file_list)
@@ -98,7 +107,6 @@ class TrainDatasetChunked(torch.utils.data.Dataset):
         self.source_metadata = load_metadata(self.metadata_file_path)
 
         self.augmentation_params = pd.read_csv(augmentation_csv)
-        self.train_multiplier = train_multiplier
         self.hw_size = hw_size
         self.d_size = d_size
         self.instance_mode = instance_mode
@@ -109,30 +117,65 @@ class TrainDatasetChunked(torch.utils.data.Dataset):
         chunk_hw = 2 ** math.floor(math.log2(hw_size) + 1)
         self.chunk_size = (1, chunk_depth, chunk_hw, chunk_hw)
 
-        self.zarr_paths = self.preprocess_files()
+        self.zarr_paths, fg_proportions = self.preprocess_files()
+
+        # zarr .shape is metadata-only; no chunk data is read here
+        log_size = [math.log(math.prod(zarr.open(p[0], mode='r').shape))
+                    for p in self.zarr_paths]
+
+        masks = compute_eligibility_masks(fg_proportions, log_size)
+        self.fg_proportions    = masks["fg_proportions"]
+        self.eligible_positive = masks["eligible_positive"]
+        self.positive_log_size = masks["positive_log_size"]
+        self.eligible_negative = masks["eligible_negative"]
+        self.negative_log_size = masks["negative_log_size"]
+        self.eligible_mixed    = masks["eligible_mixed"]
+        self.mixed_log_size    = masks["mixed_log_size"]
+
+    def get_statistics(self):
+        return {
+            "num_files": int(self.num_files),
+            "fg_proportions": list(self.fg_proportions),
+            "num_eligible_positive": int(len(self.eligible_positive)),
+            "num_eligible_negative": int(len(self.eligible_negative)),
+            "num_eligible_mixed": int(len(self.eligible_mixed)),
+        }
 
     def preprocess_files(self):
         zarr_paths = []
+        fg_proportions = []
         for img_path, lab_path in self.file_list:
-            img_zarr = process_file(self.preprocessed_dir, self.source_metadata, self.hdf5_key, self.chunk_size, img_path, False)
-            lab_zarr = process_file(self.preprocessed_dir, self.source_metadata, self.hdf5_key, self.chunk_size, lab_path, True, binarisation)
+            img_zarr = process_file(self.preprocessed_dir, self.source_metadata,
+                                    self.hdf5_key, self.chunk_size, img_path, False)
+            lab_zarr = process_file(self.preprocessed_dir, self.source_metadata,
+                                    self.hdf5_key, self.chunk_size, lab_path, True, binarisation)
 
             if self.instance_mode:
-                contour_zarr = self.preprocessed_dir.joinpath(f"Contour_{Path(img_zarr).stem}.zarr")
-                if needs_reprocessing(self.source_metadata, lab_path, contour_zarr):
+                contour_zarr = self.preprocessed_dir.joinpath(
+                    f"Contour_{Path(img_zarr).stem}.zarr")
+                if needs_reprocessing(self.source_metadata, lab_path, contour_zarr,
+                                      required_attrs=['fg_proportion']):
                     print(f"Processing contour: {lab_path}")
                     safe_remove(contour_zarr)
-                    vol = get_contour_maps(lab_path, 'generated_contour_maps', self.contour_map_width)[None, :]
-                    zarr.save_array(contour_zarr, vol, chunk_shape=self.chunk_size)
+                    vol = get_contour_maps(lab_path, 'generated_contour_maps',
+                                           self.contour_map_width)[None, :]
+                    store = zarr.storage.LocalStore(contour_zarr)
+                    contour_arr = zarr.create_array(store=store, data=vol,
+                                                    chunks=self.chunk_size)
+                    contour_arr.attrs['fg_proportion'] = float(vol.mean())
+                fg_proportions.append(
+                    float(zarr.open(contour_zarr, mode='r').attrs['fg_proportion']))
                 zarr_paths.append((img_zarr, lab_zarr, contour_zarr))
             else:
+                fg_proportions.append(
+                    float(zarr.open(lab_zarr, mode='r').attrs['fg_proportion']))
                 zarr_paths.append((img_zarr, lab_zarr))
 
         save_metadata(self.metadata_file_path, self.source_metadata)
-        return zarr_paths
+        return zarr_paths, fg_proportions
 
     def __len__(self):
-        return self.num_files * self.train_multiplier
+        return self.num_files
 
     def __getitem__(self, idx):
         negative_control = idx[1]
@@ -145,7 +188,6 @@ class TrainDatasetChunked(torch.utils.data.Dataset):
         elif negative_control == 'negative':
             background_threshold = 0.01
             foreground_threshold = 0
-        idx = math.floor(idx / self.train_multiplier)
 
         if self.instance_mode:
             img_path, lab_path, contour_path = self.zarr_paths[idx]
@@ -168,7 +210,7 @@ class TrainDatasetChunked(torch.utils.data.Dataset):
 
 
 class UnsupervisedDatasetChunked(torch.utils.data.Dataset):
-    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64, hdf5_key='Default'):
+    def __init__(self, images_dir, augmentation_csv, hw_size=64, d_size=64, hdf5_key='Default'):
         self.file_list = np.array(make_path_list_predict(images_dir))
         self.num_files = len(self.file_list)
         self.preprocessed_dir = Path(os.path.join(images_dir, "zarr_preprocessed"))
@@ -179,7 +221,6 @@ class UnsupervisedDatasetChunked(torch.utils.data.Dataset):
         self.source_metadata = load_metadata(self.metadata_file_path)
 
         self.augmentation_params = pd.read_csv(augmentation_csv)
-        self.train_multiplier = train_multiplier
         self.hw_size = hw_size
         self.d_size = d_size
         self.hdf5_key = hdf5_key
@@ -189,9 +230,11 @@ class UnsupervisedDatasetChunked(torch.utils.data.Dataset):
         self.chunk_size = (1, chunk_depth, chunk_hw, chunk_hw)
 
         self.zarr_paths = self.preprocess_files()
+        self.log_size = [math.log(math.prod(zarr.open(zp, mode='r').shape))
+                         for zp in self.zarr_paths]
 
     def __len__(self):
-        return self.num_files * self.train_multiplier
+        return self.num_files
 
     def preprocess_files(self):
         zarr_paths = []
@@ -203,7 +246,6 @@ class UnsupervisedDatasetChunked(torch.utils.data.Dataset):
         return zarr_paths
 
     def __getitem__(self, idx):
-        idx = math.floor(idx / self.train_multiplier)
         img_vol = zarr.open(self.zarr_paths[idx], mode='r')
         img_mean, img_std = img_vol.attrs['mean'], img_vol.attrs['std']
         img_tensor = apply_aug_unsupervised(img_vol, self.augmentation_params, self.hw_size, self.d_size, True, img_mean, img_std)

@@ -121,15 +121,8 @@ def calculate_val_num_patch(val_dataset_path, hw_size, d_size, val_key_name='Def
     return counter
 
 
-def steps_to_epochs(train_steps, train_multiplier, num_t_files):
-    return math.ceil(train_steps / (train_multiplier * num_t_files))
-
-
-def calculate_train_multiplier(val_num_patch, num_t_files, workflow_box):
-    if 'Validation' in workflow_box:
-        return min(round(9 * (val_num_patch / num_t_files)), 128)
-    else:
-        return math.ceil(128 / num_t_files)
+def steps_to_epochs(train_steps):
+    return math.ceil(train_steps / 64)
 
 
 def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_csv,
@@ -143,7 +136,7 @@ def visualise_augmentations(train_dataset_path, hw_size, d_size, augmentation_cs
         instance_mode = True
         img_each_col = 3
 
-    dataset = Datasets.TrainDataset(train_dataset_path, augmentation_csv, 1,
+    dataset = Datasets.TrainDataset(train_dataset_path, augmentation_csv,
                                     hw_size, d_size, instance_mode,
                                     contour_map_width, train_key_name)
 
@@ -348,17 +341,13 @@ class WebUIApi:
             else:
                 num_u_files = 1
 
-            train_multiplier = calculate_train_multiplier(val_num_patch, num_t_files, workflow_box)
-            unsupervised_train_multiplier = (train_multiplier * num_t_files) // max(num_u_files, 1)
-            num_epochs = steps_to_epochs(train_steps, train_multiplier, num_t_files) * batch_size
+            num_epochs = steps_to_epochs(train_steps) * batch_size
 
             return {
                 'status': 'ok',
                 'val_num_patch': val_num_patch,
                 'num_t_files': num_t_files,
                 'num_u_files': num_u_files,
-                'train_multiplier': train_multiplier,
-                'unsupervised_train_multiplier': unsupervised_train_multiplier,
                 'num_epochs': num_epochs,
             }
         except Exception as e:
@@ -435,11 +424,9 @@ class WebUIApi:
             '--segmentation_mode', inputs['segmentation_mode'],
             '--train_dataset_path', inputs['train_dataset_path'],
             '--augmentation_csv_path', f'"{inputs["augmentation_csv_path"]}"',
-            '--train_multiplier', str(inputs['train_multiplier']),
             '--batch_size', str(inputs['batch_size']),
             '--num_epochs', str(inputs['num_epochs']),
             '--unsupervised_train_dataset_path', inputs['unsupervised_train_dataset_path'],
-            '--unsupervised_train_multiplier', str(inputs['unsupervised_train_multiplier']),
             '--tensorboard_path', inputs['tensorboard_path'],
             '--val_dataset_path', inputs['val_dataset_path'],
             '--test_dataset_path', inputs['test_dataset_path'],
@@ -661,7 +648,6 @@ details.accordion[open] > summary { border-bottom: 1px solid #d0d0d0; }
       </div>
       <div class="row">
         <label>Number of image files in the unsupervised training set: <input type="number" id="num_u_files" value="1" readonly></label>
-        <label>Unsupervised Train Multiplier (Repeats): <input type="number" id="unsupervised_train_multiplier" value="1" readonly></label>
       </div>
     </div>
   </section>
@@ -722,9 +708,6 @@ details.accordion[open] > summary { border-bottom: 1px solid #d0d0d0; }
       </div>
     </details>
     <div class="row">
-      <label title="Automatically calculated to aim for 10% steps in validation, 90% in train. Limit to a max of 128.">Train Multiplier (Repeats): <input type="number" id="train_multiplier" readonly></label>
-    </div>
-    <div class="row">
       <label>Training Duration:
         <select id="train_length" onchange="trainLengthChanged()">
           <option>Short</option>
@@ -737,7 +720,7 @@ details.accordion[open] > summary { border-bottom: 1px solid #d0d0d0; }
       <label>Maximum Number of Epochs, automatically calculated: <input type="number" id="num_epochs" readonly></label>
     </div>
     <div class="row">
-      <button class="btn btn-default" onclick="calculateRepeats()">Calculate Training Repeats and Epochs</button>
+      <button class="btn btn-default" onclick="calculateRepeats()">Calculate Training Epochs</button>
     </div>
     <!-- enable_tensorboard was `visible=False` in the original — hidden here too, but defaults to True -->
     <input type="checkbox" id="enable_tensorboard" checked class="hidden">
@@ -1069,8 +1052,6 @@ async function calculateRepeats() {
   $('val_num_patch').value = result.val_num_patch ?? '';
   $('num_t_files').value = result.num_t_files;
   $('num_u_files').value = result.num_u_files;
-  $('train_multiplier').value = result.train_multiplier;
-  $('unsupervised_train_multiplier').value = result.unsupervised_train_multiplier;
   $('num_epochs').value = result.num_epochs;
   showToast('Repeats and epochs calculated.', 'info');
 }
@@ -1179,12 +1160,10 @@ function gatherInputs() {
     segmentation_mode: radioVal('segmentation_mode'),
     train_dataset_path: strVal('train_dataset_path'),
     augmentation_csv_path: strVal('augmentation_csv_path'),
-    train_multiplier: intVal('train_multiplier'),
     batch_size: intVal('batch_size'),
     num_epochs: intVal('num_epochs'),
     enable_unsupervised: boolVal('enable_unsupervised'),
     unsupervised_train_dataset_path: strVal('unsupervised_train_dataset_path'),
-    unsupervised_train_multiplier: intVal('unsupervised_train_multiplier'),
     enable_tensorboard: boolVal('enable_tensorboard'),
     tensorboard_path: strVal('tensorboard_path'),
     val_dataset_path: strVal('val_dataset_path'),
@@ -1234,8 +1213,8 @@ function validateInputs(inputs) {
     showToast('Please select at least one workflow component.', 'warning');
     return false;
   }
-  if (inputs.workflow_box.includes('Training') && !inputs.train_multiplier) {
-    showToast('Please click "Calculate Training Repeats and Epochs" first!', 'warning');
+  if (inputs.workflow_box.includes('Training') && !inputs.num_epochs) {
+    showToast('Please click "Calculate Training Epochs" first!', 'warning');
     return false;
   }
   return true;

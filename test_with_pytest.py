@@ -45,20 +45,20 @@ def test_make_dataset_predict():
 
 def test_TrainDataset():
     dataset = Components.Datasets.TrainDataset('Datasets/train', "Augmentation Parameters Anisotropic.csv",
-                                               1, 64, 16)
+                                               64, 16)
     example_output = dataset.__getitem__((0, None))[0]
     assert example_output.shape == (1, 16, 64, 64)
 
 def test_TrainDatasetChunked():
     dataset = Components.Datasets_Chunked.TrainDatasetChunked('Datasets/train', "Augmentation Parameters Anisotropic.csv",
-                                                              1, 64, 16)
+                                                              64, 16)
     example_output = dataset.__getitem__((0, None))[0]
     assert example_output.shape == (1, 16, 64, 64)
 
 def test_UnsupervisedDataset():
     # Use the included predict dataset as data source since the "unsupervised_train" folder is empty by default.
     dataset = Components.Datasets.UnsupervisedDataset('Datasets/predict', "Augmentation Parameters Anisotropic.csv",
-                                                      1, 64, 16)
+                                                      64, 16)
     example_output = dataset.__getitem__(0)[0]
     assert example_output.shape == (1, 16, 64, 64)
 

@@ -42,14 +42,13 @@ def start_tensorboard(args):
     webbrowser.open(tensorboard_url)
 
 def generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, persistent_workers):
-    assert args.train_multiplier != "None", "Received None for train_multiplier! Did you forgot to press the 'Calculate Training Repeats and Epochs' button?'"
+    assert args.num_epochs != "None", "Received None for number of Epochs! Did you forgot to press the 'Calculate Training Repeats and Epochs' button?'"
     train_dataset = TD(args.train_dataset_path, args.augmentation_csv_path,
-                       int(args.train_multiplier),
                        args.hw_size, args.d_size, instance_mode,
                        args.contour_map_width, args.train_key_name)
     if args.enable_unsupervised:
         unsupervised_train_dataset = UTD(args.unsupervised_train_dataset_path,
-                                         args.augmentation_csv_path, int(args.unsupervised_train_multiplier),
+                                         args.augmentation_csv_path,
                                          args.hw_size, args.d_size, args.train_key_name)
     else:
         unsupervised_train_dataset = None
@@ -308,7 +307,6 @@ if __name__ == "__main__":
     parser.add_argument("--train_dataset_path", type=str, default="Datasets/train", help="Train Dataset Path")
     parser.add_argument("--augmentation_csv_path", type=str, default="Augmentation Parameters Anisotropic.csv",
                         help="Csv File for Data Augmentation Settings")
-    parser.add_argument("--train_multiplier", type=str, default="128", help="Train Multiplier (Repeats)")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch Size")
     parser.add_argument("--pairing_samples", default=True, action="store_true", help="Pairing positive and negative samples in a batch")
     parser.add_argument("--num_epochs", type=str, default="5", help="Number of Epochs") # Five epoch is enough
@@ -316,7 +314,6 @@ if __name__ == "__main__":
     parser.add_argument("--enable_unsupervised", action="store_true", help="Enable Unsupervised Pretraining")
     parser.add_argument("--memory_saving_mode", action="store_true", help="Try save some system memory by dataloading on just single core")
     parser.add_argument("--unsupervised_train_dataset_path", type=str, default="Datasets/unsupervised_train", help="Unsupervised Dataset Path")
-    parser.add_argument("--unsupervised_train_multiplier", type=str, default="128", help="Unsupervised Train Multiplier (Repeats)")
     parser.add_argument("--tensorboard_path", type=str, default="lightning_logs",
                         help="Path to the folder which the log will be saved to")
     parser.add_argument("--val_dataset_path", type=str, default="Datasets/val", help="Validation Dataset Path")

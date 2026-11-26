@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from Components.Augmentations import apply_aug, apply_aug_unsupervised, binarisation
 from Components.Utils import make_label_pair_tv, path_to_array, make_path_list_predict, calculate_val_start_end, \
-    calculate_predict_start_end, get_contour_maps
+    calculate_predict_start_end, get_contour_maps, compute_eligibility_masks, validate_for_batch_size
 
 
 class TrainDataset(torch.utils.data.Dataset):
@@ -19,7 +19,6 @@ class TrainDataset(torch.utils.data.Dataset):
     Args:
         images_dir (str): Path to the directory where images are stored.
         augmentation_csv (str): Path to the .csv file that contains the image augmentations parameters.
-        train_multiplier (int): A.k.a repeat, the number of training images in each epoch are multiplied by this number. Default: 1
         hw_size (int): The height and width of each generated patch. Default: 64
         d_size (int): The depth of each generated patch. Default: 64
         instance_mode (bool): If true, will prepare contour tensors for instance segmentation. Default: False.
@@ -27,24 +26,46 @@ class TrainDataset(torch.utils.data.Dataset):
         hdf5_key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
 
-    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64,
+    def __init__(self, images_dir, augmentation_csv, hw_size=64, d_size=64,
                  instance_mode=False, contour_map_width=1, hdf5_key='Default'):
         super().__init__()
         # Get a list of file paths for images and labels
         self.file_list = np.array(make_label_pair_tv(images_dir))
         self.num_files = len(self.file_list)
         self.instance_mode = instance_mode
+        self.augmentation_params = pd.read_csv(augmentation_csv)
+        self.hw_size = hw_size
+        self.d_size = d_size
         if instance_mode:
             self.contour_tensors = [torch.from_numpy(get_contour_maps(item[1], 'generated_contour_maps', contour_map_width)) for item in self.file_list]
         self.lab_tensors = [torch.from_numpy(binarisation(path_to_array(item[1], key=hdf5_key, label=True))) for item in self.file_list]
         self.img_tensors = [torch.from_numpy(path_to_array(item[0], key=hdf5_key, label=False)) for item in self.file_list]
-        self.augmentation_params = pd.read_csv(augmentation_csv)
-        self.train_multiplier = train_multiplier
-        self.hw_size = hw_size
-        self.d_size = d_size
+        if instance_mode:
+            fg_proportions = [i.sum().item()/i.numel() for i in self.contour_tensors]
+        else:
+            fg_proportions = [i.sum().item()/i.numel() for i in self.lab_tensors]
+        log_size = [math.log(i.numel()) for i in self.img_tensors] # Relative size of each image file in log
+        masks = compute_eligibility_masks(fg_proportions, log_size)
+        self.fg_proportions = masks["fg_proportions"]
+        self.eligible_positive = masks["eligible_positive"]
+        self.positive_log_size = masks["positive_log_size"]
+        self.eligible_negative = masks["eligible_negative"]
+        self.negative_log_size = masks["negative_log_size"]
+        self.eligible_mixed = masks["eligible_mixed"]
+        self.mixed_log_size = masks["mixed_log_size"]
+
+
+    def get_statistics(self):
+        return {
+            "num_files": int(self.num_files),
+            "fg_proportions": list(self.fg_proportions),
+            "num_eligible_positive": int(len(self.eligible_positive)),
+            "num_eligible_negative": int(len(self.eligible_negative)),
+            "num_eligible_mixed": int(len(self.eligible_mixed)),
+        }
 
     def __len__(self):
-        return self.num_files * self.train_multiplier
+        return self.num_files
 
     def __getitem__(self, idx):
         """
@@ -52,7 +73,7 @@ class TrainDataset(torch.utils.data.Dataset):
                                         If 'positive', allow the returned lab_tensor to be fully positive.
                                         If None, will try to generate lab_tensor that contain both positive and negative pixels. Default: None
         """
-        idx, negative_control = idx
+        file_idx, negative_control = idx
         background_threshold = 0.01
         foreground_threshold = 0.01
         if negative_control == 'positive':
@@ -61,10 +82,9 @@ class TrainDataset(torch.utils.data.Dataset):
         elif negative_control == 'negative':
             background_threshold = 0.01
             foreground_threshold = 0
-        idx = math.floor(idx / self.train_multiplier)
-        img_tensor, lab_tensor = self.img_tensors[idx][None, :], self.lab_tensors[idx][None, :]
+        img_tensor, lab_tensor = self.img_tensors[file_idx][None, :], self.lab_tensors[file_idx][None, :]
         if self.instance_mode:
-            contour_tensor = self.contour_tensors[idx][None, :]
+            contour_tensor = self.contour_tensors[file_idx][None, :]
             img_tensor, lab_tensor, contour_tensor = apply_aug(img_tensor, lab_tensor, contour_tensor,
                                                                self.augmentation_params, self.hw_size, self.d_size,
                                                                foreground_threshold, background_threshold)
@@ -75,21 +95,6 @@ class TrainDataset(torch.utils.data.Dataset):
                                                foreground_threshold, background_threshold)
             return img_tensor, lab_tensor
 
-    '''def get_label_mean(self):
-        numels = 0
-        sum = 0
-        for array in self.lab_tensors:
-            numels += array.dim()
-            sum += array.sum()
-        return sum / numels
-
-    def get_contour_mean(self):
-        numels = 0
-        sum = 0
-        for array in self.contour_tensors:
-            numels += array.dim()
-            sum += array.sum()
-        return sum / numels'''
 
 
 class UnsupervisedDataset(torch.utils.data.Dataset):
@@ -99,25 +104,24 @@ class UnsupervisedDataset(torch.utils.data.Dataset):
     Args:
         images_dir (str): Path to the directory where images are stored.
         augmentation_csv (str): Path to the .csv file that contains the image augmentations parameters.
-        train_multiplier (int): A.k.a repeat, the number of training images in each epoch are multiplied by this number. Default: 1
         hw_size (int): The height and width of each generated patch. Default: 64
         d_size (int): The depth of each generated patch. Default: 64
         hdf5_key (str): If trying to load from a hdf5 file, will load the File object with this name.
     """
-    def __init__(self, images_dir, augmentation_csv, train_multiplier=1, hw_size=64, d_size=64, hdf5_key='Default'):
+    def __init__(self, images_dir, augmentation_csv, hw_size=64, d_size=64, hdf5_key='Default'):
+        super().__init__()
         self.file_list = np.array(make_path_list_predict(images_dir))
         self.num_files = len(self.file_list)
         self.img_tensors = [torch.from_numpy(path_to_array(item, key=hdf5_key, label=False)) for item in self.file_list]
         self.augmentation_params = pd.read_csv(augmentation_csv)
-        self.train_multiplier = train_multiplier
         self.hw_size = hw_size
         self.d_size = d_size
+        self.log_size = [math.log(i.numel()) for i in self.img_tensors]
 
     def __len__(self):
-        return self.num_files * self.train_multiplier
+        return self.num_files
 
     def __getitem__(self, idx):
-        idx = math.floor(idx / self.train_multiplier)
         img_tensor = self.img_tensors[idx][None, :]
         img_tensor = apply_aug_unsupervised(img_tensor, self.augmentation_params, self.hw_size, self.d_size)
         return (img_tensor,)

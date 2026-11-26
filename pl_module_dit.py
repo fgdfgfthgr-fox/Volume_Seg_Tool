@@ -8,6 +8,7 @@ import torch.utils.data
 import torch.utils.tensorboard
 
 import Components.Datasets
+import Components.Datasets_Chunked
 from Components import Metrics, Utils
 from lightning.pytorch.loggers.tensorboard import TensorBoardLogger
 from Networks import *
@@ -386,21 +387,19 @@ if __name__ == "__main__":
         for precision in precisions:
             for batch_size in batch_sizes:
                 #predict_dataset = Components.Datasets.PredictDataset("Datasets/predict", 96, 32, 24, 4)
-                train_dataset = Components.Datasets.TrainDataset("Datasets/train",
+                train_dataset = Components.Datasets_Chunked.TrainDatasetChunked("Datasets/train",
                                                             "Augmentation Parameters Anisotropic.csv",
-                                                                 8,
                                                                  size[0], size[1], False, 1, 'default')
-                #unsupervised_train_dataset = Components.Datasets.UnsupervisedDataset("Datasets/unsupervised_train",
-                #                                                                "Augmentation Parameters Anisotropic.csv",
-                #                                                                     64,
-                #                                                                     size[0], size[1])
-                train_dataset = Utils.CollectedDataset(train_dataset, None)
-                sampler = Utils.CollectedSampler(train_dataset, batch_size, None)
+                unsupervised_train_dataset = Components.Datasets_Chunked.UnsupervisedDatasetChunked("Datasets/unsupervised_train",
+                                                                                "Augmentation Parameters Anisotropic.csv",
+                                                                                     size[0], size[1])
+                collected = Utils.CollectedDataset(train_dataset, unsupervised_train_dataset)
+                sampler = Utils.CollectedSampler(train_dataset, batch_size, unsupervised_train_dataset)
                 collate_fn = Utils.custom_collate
                 train_loader = torch.utils.data.DataLoader(
-                    dataset=train_dataset, batch_size=batch_size,
+                    dataset=collected, batch_size=batch_size,
                     collate_fn=collate_fn, sampler=sampler,
-                    num_workers=6, pin_memory=False, persistent_workers=True)
+                    num_workers=15, pin_memory=False, persistent_workers=True)
                 # meta_info = predict_dataset.__getmetainfo__()
                 #predict_loader = torch.utils.data.DataLoader(dataset=predict_dataset, batch_size=1, num_workers=0)
                 #val_dataset = Components.Datasets.ValDataset("Datasets/val", size[0], size[1], True, 1)
@@ -414,7 +413,7 @@ if __name__ == "__main__":
                 callbacks.append(LearningRateMonitor(logging_interval='epoch'))
                 #callbacks.append(model_checkpoint_last)
                 #callbacks.append(swa_callback)
-                arch_args = ((4,4,4), 4, 24, False)
+                arch_args = ((4,4,4), 4, 16, False)
                 model = PLModule(arch_args,
                                 True, True, False,
                                 False, False, False, True)
