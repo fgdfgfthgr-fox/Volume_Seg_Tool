@@ -1,6 +1,8 @@
 import os
 import math
 import gc
+from time import sleep
+
 import tifffile
 import time
 import threading
@@ -39,6 +41,7 @@ def start_tensorboard(args):
         stderr=subprocess.DEVNULL,
     )
     tensorboard_url = f'http://localhost:{tensorboard_port}'
+    time.sleep(1)
     webbrowser.open(tensorboard_url)
 
 def generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, persistent_workers):
@@ -52,10 +55,10 @@ def generalised_train(TD, UTD, VD, TeD, instance_mode, desired_num_workers, pers
                                          args.hw_size, args.d_size, args.train_key_name)
     else:
         unsupervised_train_dataset = None
-    train_dataset = Utils.CollectedDataset(train_dataset, unsupervised_train_dataset)
+    collected_dataset = Utils.CollectedDataset(train_dataset, unsupervised_train_dataset)
     sampler = Utils.CollectedSampler(train_dataset, args.batch_size, unsupervised_train_dataset)
     collate_fn = Utils.custom_collate
-    train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size,
+    train_loader = DataLoader(dataset=collected_dataset, batch_size=args.batch_size,
                               collate_fn=collate_fn, sampler=sampler,
                               num_workers=desired_num_workers, persistent_workers=persistent_workers)
                               #num_workers=0, persistent_workers=False)
