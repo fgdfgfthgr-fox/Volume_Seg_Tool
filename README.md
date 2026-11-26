@@ -11,6 +11,10 @@ Supporting Operating Systems includes: Windows and Linux.
 
 (macOS is supported in theory, however some necessary PyTorch operations needed is not yet supported on MPS backend. Nothing I can do here.)
 
+![UI.png](GitHub_Res%2FUI.PNG)
+
+VST just got a new user-interface!
+
 ## About the Tool
 
 Volume Segmentation Tool is a python based tool that utilizes deep learning to perform volumetric electron microscopy image segmentations, both semantic and instance segmentation.
@@ -77,7 +81,6 @@ For more information, please see the [CONTRIBUTING.md](CONTRIBUTING.md)
 
 1. Run the corresponding "start_WebUI" script for your system. This would open up a terminal.
    - For Windows, it would be start_WebUI_Windows.bat
-2. Your web browser should automatically open up a "website" with url "127.0.0.1:7860" or something similar.
 
 ## Tutorials
 
